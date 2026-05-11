@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "layout": {
+    "configById": {
+      "stereo_view": {
+        "type": "Image",
+        "config": {
+          "imageMode": {
+            "mode": "topic",
+            "imageTopic": "/vo/image/stereo"
+          },
+          "calibrationTopic": "",
+          "syncTimestamps": false
+        }
+      },
+      "vo_trajectory": {
+        "type": "ThreeDee",
+        "config": {
+          "topics": {
+            "/vo/odom": {
+              "visible": true
+            }
+          },
+          "displayTF": true
+        }
+      },
+      "vo_landmarks": {
+        "type": "ThreeDee",
+        "config": {
+          "topics": {
+            "/vo/landmarks": {
+              "visible": true,
+              "pointSize": 0.06
+            }
+          },
+          "displayTF": true
+        }
+      },
+      "vo_cost": {
+        "type": "Plot",
+        "config": {
+          "paths": [
+            {
+              "topic": "/vo/error",
+              "lineSize": 2,
+              "lineColor": "#ff6347"
+            }
+          ]
+        }
+      }
+    },
+    "layout": {
+      "type": "Grid",
+      "items": [
+        {
+          "id": "stereo_view",
+          "x": 0,
+          "y": 0,
+          "width": 1,
+          "height": 1
+        },
+        {
+          "id": "vo_trajectory",
+          "x": 1,
+          "y": 0,
+          "width": 2,
+          "height": 1
+        },
+        {
+          "id": "vo_landmarks",
+          "x": 0,
+          "y": 1,
+          "width": 1,
+          "height": 1
+        },
+        {
+          "id": "vo_cost",
+          "x": 1,
+          "y": 1,
+          "width": 1,
+          "height": 1
+        }
+      ]
+    }
+  }
+}

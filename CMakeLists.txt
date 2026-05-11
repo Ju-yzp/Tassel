@@ -1,64 +1,58 @@
 cmake_minimum_required(VERSION 3.24)
 project(
-  stereo_vins
+  tassel
   VERSION 1.0.0
   LANGUAGES CXX)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Debug)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Debug)
-endif()
-
-find_package(OpenCV REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(depthai CONFIG REQUIRED)
-find_package(Ceres REQUIRED)
-find_package(Pangolin REQUIRED)
-find_package(GLEW REQUIRED)
-find_package(OpenGL REQUIRED)
-find_package(yaml-cpp 0.7.0 REQUIRED)
+find_package(OpenCV REQUIRED)
+find_package(spdlog REQUIRED)
+find_package(yaml-cpp REQUIRED)
+list(PREPEND CMAKE_PREFIX_PATH "$ENV{HOME}/.local")
+find_package(Sophus REQUIRED)
+find_package(TBB REQUIRED)
 
-if(NOT TARGET pangolin::pangolin)
-  add_library(pangolin::pangolin INTERFACE IMPORTED)
-
-  if(TARGET pangolin)
-    set(PANGOLIN_LINK_TARGET pangolin)
-  else()
-    set(PANGOLIN_LINK_TARGET ${Pangolin_LIBRARIES})
-  endif()
-
-  set_target_properties(
-    pangolin::pangolin
-    PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${Pangolin_INCLUDE_DIRS}"
-               INTERFACE_LINK_LIBRARIES
-               "${PANGOLIN_LINK_TARGET};GLEW::GLEW;OpenGL::GL")
-endif()
-
-add_library(core src/featureTracker.cpp src/estimator.cpp
-                 src/featureManager.cpp src/visual_factor.cpp)
-
-target_include_directories(core PUBLIC include)
-
+add_library(tassel_deps INTERFACE)
 target_link_libraries(
-  core
-  PUBLIC Eigen3::Eigen
-         ${OpenCV_LIBS}
-         ${GLEW_LIBRARIES}
-         ${OpenGL_LIBRARIES}
-         Ceres::ceres
-         yaml-cpp
-         depthai::core
-         pangolin::pangolin)
+  tassel_deps
+  INTERFACE Eigen3::Eigen
+            opencv_core
+            opencv_imgproc
+            opencv_highgui
+            opencv_video
+            opencv_calib3d
+            spdlog::spdlog
+            yaml-cpp
+            Sophus::Sophus
+            TBB::tbb)
 
-add_executable(estimator test/test_estimator.cpp)
-target_link_libraries(estimator PRIVATE core)
+add_subdirectory(tassel_utils)
+add_subdirectory(tassel_core)
+add_subdirectory(tassel_tools)
 
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL
-                                           "Clang")
-  target_compile_options(core PUBLIC $<$<CONFIG:Debug>:-g -O0>
-                                     $<$<CONFIG:Release>:-O3 -march=native>)
-endif()
+# ── scripts & foxglove package ───────────────────────────────────────────
+install(PROGRAMS scripts/generate_foxglove_layout.py scripts/launch_foxglove.py
+                 scripts/start_foxglove_bridge.sh
+        DESTINATION lib/${PROJECT_NAME}/scripts)
+
+install(
+  DIRECTORY tassel_foxglove/
+  DESTINATION lib/${PROJECT_NAME}/tassel_foxglove
+  FILES_MATCHING
+  PATTERN "*.py"
+  PATTERN "*.yaml")
+
+install(
+  DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
+  FILES_MATCHING
+  PATTERN "*.yaml")

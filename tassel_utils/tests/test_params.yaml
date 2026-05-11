@@ -1,0 +1,48 @@
+---
+# ── test parameters for ParamsParser unit tests ──────────────────────────
+
+# scalar types
+int_val: 42
+double_val: 3.14159
+bool_true: true
+bool_false: false
+string_val: hello_tassel
+size_val: 100
+
+# flat matrix (1-D sequence → Eigen maps to row vector or cv::Mat column)
+flat_vec3: [1.0, 2.0, 3.0]
+flat_vec9: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+# nested matrix (2-D sequence)
+nested_mat3x3:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+
+nested_mat2x3:
+    - [10, 20, 30]
+    - [40, 50, 60]
+
+# camera intrinsics (3x3)
+cam0:
+    intrinsics:
+        - [455.510864, 0.000000, 328.529851]
+        - [0.000000, 455.426715, 225.596721]
+        - [0.0, 0.0, 1.0]
+
+# distortion coefficients as flat sequence
+cam0_dist:
+    distortion_coeffs: [0.010831, -0.007841, 0.000166, 0.000512, 0.000000]
+
+# 4x4 transform
+transform:
+    T_cam_imu:
+        - [0.999968, 0.001596, -0.007793, 0.009659]
+        - [0.001585, -0.999997, -0.001408, 0.001097]
+        - [-0.007795, 0.001396, -0.999968, -0.006894]
+        - [0.0, 0.0, 0.0, 1.0]
+
+# nested key access test
+outer:
+    inner:
+        value: 777

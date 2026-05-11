@@ -1,0 +1,53 @@
+---
+# ── Stereo VIO viewer panel layout ───────────────────────────────────────
+# Matches topics published by tassel_core/examples/stereo_vio.cpp
+#
+# Published topics:
+#   vo/odom          → nav_msgs/Odometry           (estimated pose + velocity)
+#   vo/path          → nav_msgs/Path                (trajectory history)
+#   vo/image/stereo  → sensor_msgs/Image            (stereo with tracking overlay)
+#   vo/landmarks     → sensor_msgs/PointCloud2       (3-D point cloud)
+#   vo/error         → std_msgs/Float32             (optimization residual cost)
+#
+# To use:
+#   1. python3 scripts/launch_foxglove.py config/stereo_vio_viewer.yaml
+#   2. ./build/tassel_core/stereo_vio
+# ──────────────────────────────────────────────────────────────────────────
+
+# ── Bridge settings ─────────────────────────────────────────────────────
+bridge:
+    port: 8765
+
+# ── Grid layout ─────────────────────────────────────────────────────────
+grid_cols: 3
+
+# ── Panels ──────────────────────────────────────────────────────────────
+panels:
+  # ── stereo image (with tracking overlay) ────────────────────────────
+  # The stereo pair is concatenated horizontally (BGR8).
+  # Set sync_timestamps when annotations or calibration are used.
+    - type: image
+      name: stereo_view
+      topic: vo/image/stereo
+      calibration_topic: ''
+      sync_timestamps: false
+
+  # ── 3-D trajectory (from Odometry) ──────────────────────────────────
+    - type: trajectory
+      name: vo_trajectory
+      odom_topic: vo/odom
+      frame: world
+      line_width: 0.02
+
+  # ── point cloud landmarks ───────────────────────────────────────────
+    - type: pointcloud
+      name: vo_landmarks
+      topic: vo/landmarks
+      point_size: 0.06
+
+  # ── optimization cost plot ──────────────────────────────────────────
+    - type: error
+      name: vo_cost
+      topic: vo/error
+      line_size: 2
+      line_color: '#ff6347'
