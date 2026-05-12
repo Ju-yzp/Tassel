@@ -1,10 +1,11 @@
 #include "landmark_block.h"
+#include "feature/feature.h"
+#include "tassel_utils/macros.h"
 
-#include "tassel_utils/utility.h"
+#include <sophus/se3.hpp>
 
 namespace tassel_core {
-
-Eigen::Matrix<double, 2, 3> LandmarkBlock::compute_tangent_base(Eigen::Vector3d uv) {
+Eigen::Matrix<double, 2, 3> compute_tangent_base(Eigen::Vector3d uv) {
     Eigen::Vector3d b1, b2;
     Eigen::Vector3d a = uv.normalized();
     Eigen::Vector3d tmp(0, 0, 1);
@@ -17,6 +18,43 @@ Eigen::Matrix<double, 2, 3> LandmarkBlock::compute_tangent_base(Eigen::Vector3d 
     return tangent_base;
 }
 
+void compute_feature_linearization_block(
+    const Sophus::SE3d& T_w_h, const Sophus::SE3d& T_w_t, double depth,
+    const Eigen::Vector3d& uv_host, const Eigen::Vector3d& uv_target,
+    const Eigen::Matrix<double, 2, 3>& tangent_base, Eigen::Matrix<double, 2, 6>& jacobian_H,
+    Eigen::Matrix<double, 2, 6>& jacobian_T, Eigen::Matrix<double, 2, 1>& jacobian_L,
+    Eigen::Matrix<double, 2, 1>& residual) {
+    Eigen::Matrix3d R_h = T_w_h.rotationMatrix();
+    Eigen::Matrix3d R_t = T_w_t.rotationMatrix();
+    Eigen::Matrix3d R_t_inv = R_t.transpose();
+
+    Eigen::Vector3d pt_in_H = uv_host * depth;
+    Eigen::Vector3d pt_in_W = T_w_h * pt_in_H;
+    Eigen::Vector3d pt_in_T = T_w_t.inverse() * pt_in_W;
+
+    residual = tangent_base * (pt_in_T.normalized() - uv_target);
+
+    double norm = pt_in_T.norm();
+    Eigen::Matrix3d jaco_norm =
+        1.0 / norm *
+        (Eigen::Matrix3d::Identity() - (pt_in_T * pt_in_T.transpose()) / (norm * norm));
+
+    Eigen::Matrix<double, 2, 3> reduce = tangent_base * jaco_norm;
+
+    Eigen::Matrix<double, 3, 6> J_host_3d;
+    J_host_3d.block<3, 3>(0, 0) = R_t_inv * R_h;
+    J_host_3d.block<3, 3>(0, 3) = -R_t_inv * R_h * Sophus::SO3d::hat(pt_in_H);
+    jacobian_H = reduce * J_host_3d;
+
+    Eigen::Matrix<double, 3, 6> J_target_3d;
+    J_target_3d.block<3, 3>(0, 0) = -R_t_inv;
+    J_target_3d.block<3, 3>(0, 3) = Sophus::SO3d::hat(pt_in_T);
+    jacobian_T = reduce * J_target_3d;
+
+    Eigen::Vector3d jaco_depth_3d = R_t_inv * R_h * uv_host;
+    jacobian_L = reduce * jaco_depth_3d;
+}
+
 LandmarkBlock::LandmarkBlock()
     : lm_idx_(0),
       res_idx_(0),
@@ -24,13 +62,15 @@ LandmarkBlock::LandmarkBlock()
       num_cols_(0),
       num_rows_(0),
       state_(nullptr),
-      feature_(nullptr) {}
+      feature_(nullptr),
+      Jl_col_scale_(1.0),
+      lms_(LandmarkState::Initialized) {}
 
 void LandmarkBlock::allocate(Feature* const feature, State* const state) {
     state_ = state;
     feature_ = feature;
 
-    int num_frames = state_->max_frame_count + 1;
+    int num_frames = state_->max_frame_count;
     int start_frame_id = feature_->start_frame_id;
 
     tangent_base_vec_.resize(num_frames);
@@ -39,7 +79,7 @@ void LandmarkBlock::allocate(Feature* const feature, State* const state) {
     }
 
     // Total pose Jacobian columns
-    padding_idx_ = num_frames * POSE_SIZE;
+    padding_idx_ = num_frames * tassel_utils::POSE_SIZE;
 
     // Each target-frame observation contributes 2 rows; +1 damping row (1-DOF inverse depth)
     int num_obs = static_cast<int>(feature_->observations.size()) - 1;
@@ -55,59 +95,25 @@ void LandmarkBlock::allocate(Feature* const feature, State* const state) {
 
     storage_.resize(num_rows_, num_cols_);
     storage_.setZero();
-}
 
-void LandmarkBlock::compute_feature_linearization_block(
-    const Eigen::Matrix3d& host_R, const Eigen::Vector3d& host_P, const Eigen::Matrix3d& target_R,
-    const Eigen::Vector3d& target_P, const double inv_depth, const Eigen::Vector3d& uv_host,
-    const Eigen::Vector3d& uv_target, const Eigen::Matrix<double, 2, 3>& tangent_base,
-    Eigen::Matrix<double, 2, 6>& jacobian_H, Eigen::Matrix<double, 2, 6>& jacobian_T,
-    Eigen::Matrix<double, 2, 1>& jacobian_L, Eigen::Matrix<double, 2, 1>& residual) {
-    Eigen::Vector3d pt_in_H = uv_host / inv_depth;
-    Eigen::Vector3d pt_in_W = host_R * pt_in_H + host_P;
-    Eigen::Vector3d pt_in_T = target_R.transpose() * (pt_in_W - target_P);
-
-    Eigen::Vector2d r = tangent_base * (pt_in_T.normalized() - uv_target);
-    double norm = pt_in_T.norm();
-    Eigen::Matrix3d jaco_norm =
-        1.0 / norm *
-        (Eigen::Matrix3d::Identity() - (pt_in_T * pt_in_T.transpose()) / (norm * norm));
-
-    Eigen::Matrix<double, 2, 3> reduce = tangent_base * jaco_norm;
-
-    Eigen::Matrix<double, 3, 6> J_host_3d;
-    J_host_3d.block<3, 3>(0, 0) = target_R.transpose();
-    J_host_3d.block<3, 3>(0, 3) = -target_R.transpose() * host_R * tassel_utils::skew_x(pt_in_H);
-    jacobian_H = reduce * J_host_3d;
-
-    Eigen::Matrix<double, 3, 6> J_target_3d;
-    J_target_3d.block<3, 3>(0, 0) = -target_R.transpose();
-    J_target_3d.block<3, 3>(0, 3) = tassel_utils::skew_x(pt_in_T);
-    jacobian_T = reduce * J_target_3d;
-
-    Eigen::Vector3d jaco_inv_3d =
-        -target_R.transpose() * host_R * (uv_host / (inv_depth * inv_depth));
-    jacobian_L = reduce * jaco_inv_3d;
-
-    residual = r;
+    lms_ = LandmarkState::Allocated;
 }
 
 void LandmarkBlock::evaluate(
-    int frame_id_H, int frame_id_T, DR_DQ& jacobian_H, DR_DQ& jacobian_T, DR_DL& jacobian_L,
-    Residual& residual) {
-    const Eigen::Matrix3d& host_R = state_->Rs[frame_id_H];
-    const Eigen::Matrix3d& target_R = state_->Rs[frame_id_T];
-    const Eigen::Vector3d& host_P = state_->Ps[frame_id_H];
-    const Eigen::Vector3d& target_P = state_->Ps[frame_id_T];
+    int frame_id_H, int frame_id_T, Eigen::Matrix<double, 2, 6>& jacobian_H,
+    Eigen::Matrix<double, 2, 6>& jacobian_T, Eigen::Matrix<double, 2, 1>& jacobian_L,
+    Eigen::Matrix<double, 2, 1>& residual) {
+    Pose T_w_h = state_->poses[frame_id_H].get_pose();
+    Pose T_w_t = state_->poses[frame_id_T].get_pose();
 
     const Eigen::Matrix<double, 2, 3>& tangent_base = tangent_base_vec_[frame_id_T];
     Eigen::Vector3d uv_host = feature_->observations[0].uv;
     Eigen::Vector3d uv_target = feature_->observations[frame_id_T - frame_id_H].uv;
-    double inv_depth = 1.0 / feature_->estimated_depth;
+    double depth = feature_->estimated_depth;
 
     compute_feature_linearization_block(
-        host_R, host_P, target_R, target_P, inv_depth, uv_host, uv_target, tangent_base, jacobian_H,
-        jacobian_T, jacobian_L, residual);
+        T_w_h, T_w_t, depth, uv_host, uv_target, tangent_base, jacobian_H, jacobian_T, jacobian_L,
+        residual);
 }
 
 double LandmarkBlock::linearize() {
@@ -116,9 +122,9 @@ double LandmarkBlock::linearize() {
     int start_frame_id = feature_->start_frame_id;
     auto& observations = feature_->observations;
 
-    DR_DQ jacobian_H, jacobian_T;
-    DR_DL jacobian_L;
-    Residual residual;
+    Eigen::Matrix<double, 2, 6> jacobian_H, jacobian_T;
+    Eigen::Matrix<double, 2, 1> jacobian_L;
+    Eigen::Matrix<double, 2, 1> residual;
 
     double error_sum = 0.0;
     for (int offset = 1; offset < static_cast<int>(observations.size()); ++offset) {
@@ -128,30 +134,39 @@ double LandmarkBlock::linearize() {
 
         evaluate(start_frame_id, frame_id_T, jacobian_H, jacobian_T, jacobian_L, residual);
 
-        error_sum += residual.squaredNorm();
+        error_sum += 0.5 * residual.squaredNorm();
 
-        storage_.block<2, 6>(row, start_frame_id * POSE_SIZE) += jacobian_H;
-        storage_.block<2, 6>(row, frame_id_T * POSE_SIZE) += jacobian_T;
+        storage_.block<2, 6>(row, start_frame_id * tassel_utils::POSE_SIZE) += jacobian_H;
+        storage_.block<2, 6>(row, frame_id_T * tassel_utils::POSE_SIZE) += jacobian_T;
         storage_.block<2, 1>(row, lm_idx_) += jacobian_L;
         storage_.block<2, 1>(row, res_idx_) += residual;
     }
 
+    lms_ = LandmarkState::Linearized;
     return error_sum;
 }
 
 void LandmarkBlock::performQR() {
     // Householder QR on single landmark column (1-DOF inverse depth)
-    Eigen::VectorXd tempVector1(num_cols_);
-    Eigen::VectorXd tempVector2(num_rows_ - 1);
+    // Eigen::VectorXd tempVector1(num_cols_);
+    // Eigen::VectorXd tempVector2(num_rows_ - 1);
 
-    size_t remainingRows = num_rows_ - 1;
+    // size_t remainingRows = num_rows_ - 1;
 
-    double beta;
-    double tau;
-    storage_.col(lm_idx_).head(remainingRows).makeHouseholder(tempVector2, tau, beta);
+    // double beta;
+    // double tau;
+    // storage_.col(lm_idx_).head(remainingRows).makeHouseholder(tempVector2, tau, beta);
 
-    storage_.block(0, 0, remainingRows, num_cols_)
-        .applyHouseholderOnTheLeft(tempVector2, tau, tempVector1.data());
+    // storage_.block(0, 0, remainingRows, num_cols_)
+    //     .applyHouseholderOnTheLeft(tempVector2, tau, tempVector1.data());
+
+    Eigen::JacobiRotation<double> gr;
+    for (size_t m = num_rows_ - 2; m > 0; m--) {
+        gr.makeGivens(storage_(m - 1, lm_idx_), storage_(m, lm_idx_));
+        storage_.applyOnTheLeft(m, m - 1, gr);
+    }
+
+    lms_ = LandmarkState::Marginalized;
 }
 
 void LandmarkBlock::get_dense_Q2Jp_Q2r(
@@ -170,4 +185,147 @@ void LandmarkBlock::add_dense_H_b(Eigen::MatrixXd& H, Eigen::VectorXd& b) const 
     b.noalias() += J.transpose() * r;
 }
 
+void LandmarkBlock::addJp_diag2(Eigen::VectorXd& res) const {
+    TASSEL_ASSERT(lms_ == LandmarkState::Linearized);
+    int start_frame_id = feature_->start_frame_id;
+    const auto& observations = feature_->observations;
+
+    for (int offset = 1; offset < static_cast<int>(observations.size()); ++offset) {
+        int obs_idx = offset - 1;
+        int frame_id_T = start_frame_id + offset;
+
+        // host frame Jp
+        res.segment<tassel_utils::POSE_SIZE>(start_frame_id * tassel_utils::POSE_SIZE) +=
+            storage_
+                .block<2, tassel_utils::POSE_SIZE>(
+                    obs_idx * 2, start_frame_id * tassel_utils::POSE_SIZE)
+                .colwise()
+                .squaredNorm();
+
+        // target frame Jp
+        res.segment<tassel_utils::POSE_SIZE>(frame_id_T * tassel_utils::POSE_SIZE) +=
+            storage_
+                .block<2, tassel_utils::POSE_SIZE>(
+                    obs_idx * 2, frame_id_T * tassel_utils::POSE_SIZE)
+                .colwise()
+                .squaredNorm();
+    }
+}
+
+void LandmarkBlock::scaleJl_cols() {
+    TASSEL_ASSERT(lms_ == LandmarkState::Linearized);
+
+    const double eps = 1e-6;
+    double col_norm = storage_.col(lm_idx_).head(num_rows_ - 1).norm();
+    Jl_col_scale_ = 1.0 / (eps + col_norm);
+
+    storage_.col(lm_idx_).head(num_rows_ - 1) *= Jl_col_scale_;
+}
+
+void LandmarkBlock::scaleJp_cols(const Eigen::VectorXd& jacobian_scaling) {
+    TASSEL_ASSERT(lms_ == LandmarkState::Marginalized);
+
+    // we assume we apply scaling before damping (we exclude the last 3 rows)
+    TASSEL_ASSERT(!hasLandmarkDamping());
+
+    storage_.topLeftCorner(num_rows_ - 1, padding_idx_) *= jacobian_scaling.asDiagonal();
+}
+
+void LandmarkBlock::setLandmarkDamping(double lambda) {
+    TASSEL_ASSERT(lms_ == LandmarkState::Marginalized);
+    TASSEL_ASSERT(lambda >= 0);
+
+    if (hasLandmarkDamping()) {
+        TASSEL_ASSERT(damping_rotations_.size() == 1);
+
+        storage_.applyOnTheLeft(num_rows_ - 1, 0, damping_rotations_.back().adjoint());
+        damping_rotations_.pop_back();
+    }
+
+    if (lambda == 0) {
+        storage_(num_rows_ - 1, lm_idx_) = 0;
+    } else {
+        TASSEL_ASSERT(std::isfinite(Jl_col_scale_));
+
+        storage_(num_rows_ - 1, lm_idx_) = std::sqrt(lambda);
+
+        TASSEL_ASSERT(damping_rotations_.empty());
+
+        damping_rotations_.emplace_back();
+        damping_rotations_.back().makeGivens(
+            storage_(0, lm_idx_), storage_(num_rows_ - 1, lm_idx_));
+        storage_.applyOnTheLeft(num_rows_ - 1, 0, damping_rotations_.back());
+    }
+}
+
+void LandmarkBlock::backSubstitute(const Eigen::VectorXd& pose_inc, double& l_diff) {
+    TASSEL_ASSERT(lms_ == LandmarkState::Marginalized);
+
+    // For now we include all columns in LMB
+    TASSEL_ASSERT(pose_inc.size() == static_cast<Eigen::Index>(padding_idx_));
+
+    const double Q1Jl = storage_(0, lm_idx_);
+    const double Q1Jr = storage_(0, res_idx_);
+    const auto Q1Jp = storage_.row(0).head(padding_idx_);
+
+    double inc = -(Q1Jr + Q1Jp.dot(pose_inc)) / Q1Jl;
+
+    // We want to compute the model cost change. The model function is
+    //
+    //     L(inc) = F(x) + inc^T J^T r + 0.5 inc^T J^T J inc
+    //
+    // and thus the expected decrease in cost for the computed increment is
+    //
+    //     l_diff = L(0) - L(inc)
+    //            = - inc^T J^T r - 0.5 inc^T J^T J inc
+    //            = - inc^T J^T (r + 0.5 J inc)
+    //            = - (J inc)^T (r + 0.5 (J inc)).
+    //
+    // Here we have J = [Jp, Jl] under the orthogonal projection Q = [Q1, Q2],
+    // i.e. the linearized system (model cost) is
+    //
+    //    L(inc) = 0.5 || J inc + r ||^2 = 0.5 || Q^T J inc + Q^T r ||^2
+    //
+    // and below we thus compute
+    //
+    //    l_diff = - (Q^T J inc)^T (Q^T r + 0.5 (Q^T J inc)).
+    //
+    // We have
+    //             | Q1^T |            | Q1^T Jp   Q1^T Jl |
+    //    Q^T J =  |      | [Jp, Jl] = |                   |
+    //             | Q2^T |            | Q2^T Jp      0    |.
+    //
+    // Note that Q2 is the nullspace of Jl, and Q1^T Jl == R. So with inc =
+    // [incp^T, incl^T]^T we have
+    //
+    //                | Q1^T Jp incp + Q1^T Jl incl |
+    //    Q^T J inc = |                             |
+    //                | Q2^T Jp incp                |
+    //
+
+    // undo damping before we compute the model cost difference
+    setLandmarkDamping(0);
+
+    // compute "Q^T J incp"
+    Eigen::VectorXd QJinc = storage_.topLeftCorner(num_rows_ - 1, padding_idx_) * pose_inc;
+
+    // add "Q1^T Jl incl" to the first 1 rows
+    QJinc(0) += Q1Jl * inc;
+
+    auto Qr = storage_.col(res_idx_).head(num_rows_ - 1);
+    l_diff -= QJinc.transpose() * (0.5 * QJinc + Qr);
+
+    // TODO: detect and handle case like ceres, allowing a few iterations but
+    // stopping eventually
+    // if (!inc.array().isFinite().all() ||
+    //     !lm_ptr->direction.array().isFinite().all() ||
+    //     !std::isfinite(lm_ptr->inv_dist)) {
+    //   std::cerr << "Numerical failure in backsubstitution\n";
+    // }
+
+    // Note: scale only after computing model cost change
+    inc *= Jl_col_scale_;
+
+    feature_->estimated_depth = std::max(0.0, feature_->estimated_depth + inc);
+}
 }  // namespace tassel_core

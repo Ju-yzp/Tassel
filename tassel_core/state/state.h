@@ -2,52 +2,88 @@
 #define TASSEL_CORE_STATE_H_
 
 #include <Eigen/Core>
-#include <memory>
-#include <stdexcept>
+#include <sophus/se3.hpp>
 #include <vector>
 
 namespace tassel_core {
+using Pose = Sophus::SE3d;
 
-class FeatureManager;
+inline void increasePose(const Eigen::Vector<double, 6> delta, Pose& pose) {
+    pose = pose * Sophus::SE3d::exp(delta);
+}
+// vo系统（只带位姿信息）
+struct PoseStateWithLin {
+    PoseStateWithLin() : linearized(false), delta(Eigen::Vector<double, 6>::Zero()) {}
 
-struct State {
-    explicit State(size_t max_frame_count_)
-        : max_frame_count(max_frame_count_), cur_frame_count(0) {
-        if (max_frame_count == 0) {
-            throw std::runtime_error("State: max_frame_count must be > 0");
+    PoseStateWithLin(const Sophus::SE3d& T_wc, bool linearized = false)
+        : pose_linearized(T_wc),
+          linearized(linearized),
+          delta(Eigen::Vector<double, 6>::Zero()),
+          T_wc_current(T_wc) {}
+
+    void setLinearized() {
+        linearized = true;
+        if (!delta.isApproxToConstant(0)) {
+            throw std::runtime_error("delta is not zero");
         }
-        Rs.resize(max_frame_count + 1, Eigen::Matrix3d::Identity());
-        Ps.resize(max_frame_count + 1, Eigen::Vector3d::Zero());
-        Vs.resize(max_frame_count + 1, Eigen::Vector3d::Zero());
-        Bas.resize(max_frame_count + 1, Eigen::Vector3d::Zero());
-        Bgs.resize(max_frame_count + 1, Eigen::Vector3d::Zero());
-        param_pose.resize(max_frame_count + 1, {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0});
-        param_speed.resize(max_frame_count + 1);
+        T_wc_current = pose_linearized;
     }
 
-    State(const State&) = delete;
-    State& operator=(const State&) = delete;
-    State() = delete;
-    void paramsToState(bool use_imu = false);
+    Pose get_pose() const {
+        if (!linearized) {
+            return T_wc_current;
+        } else {
+            return pose_linearized;
+        }
+    };
 
-    void stateToParams(bool use_imu = false);
+    Pose get_pose_linearized() const { return pose_linearized; }
 
-    void forwardSlide();
+    void applyDelta(const Eigen::Vector<double, 6>& delta) {
+        if (!linearized) {
+            increasePose(delta, pose_linearized);
 
-    std::vector<Eigen::Matrix3d> Rs;
-    std::vector<Eigen::Vector3d> Ps;
-    std::vector<Eigen::Vector3d> Vs;
-    std::vector<Eigen::Vector3d> Bas;
-    std::vector<Eigen::Vector3d> Bgs;
+        } else {
+            this->delta += delta;
+            T_wc_current = pose_linearized;
+            increasePose(delta, T_wc_current);
+        }
+    }
 
-    size_t max_frame_count;
-    size_t cur_frame_count;
+    Eigen::Vector<double, 6> get_delta() const { return delta; }
 
-    std::vector<std::array<double, 7>> param_pose;
+    inline bool isLinearized() const { return linearized; }
 
-    std::vector<std::array<double, 9>> param_speed;
-    std::vector<double> param_inv_depth;
-    std::vector<double*> depth_ptrs;
+    inline void restore() {
+        delta = storage_delta;
+        T_wc_current = storage_T_wc_current;
+        pose_linearized = storage_pose_linearized;
+    }
+
+    void save() {
+        storage_delta = delta;
+        storage_T_wc_current = T_wc_current;
+        storage_pose_linearized = pose_linearized;
+    }
+
+private:
+    Pose pose_linearized;
+    bool linearized;  // 线性化标志
+    Eigen::Vector<double, 6> delta;
+    Pose T_wc_current;
+
+    // 旧状态，用于优化失败后恢复原本状态
+    Pose storage_pose_linearized;
+    Eigen::Vector<double, 6> storage_delta;
+    Pose storage_T_wc_current;
+};
+
+struct State {
+    explicit State(int max_frame_count_ = 0) : max_frame_count(max_frame_count_) {
+        poses.resize(max_frame_count);
+    };
+    int max_frame_count;  // 滑动窗口最大帧数
+    std::vector<PoseStateWithLin> poses;
 };
 }  // namespace tassel_core
 

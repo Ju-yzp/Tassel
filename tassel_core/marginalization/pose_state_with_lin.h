@@ -74,9 +74,8 @@ public:
     }
 
 private:
-    bool linearized;  // 线性化标志
-
     PoseState pose_linearized;
+    bool linearized;  // 线性化标志
     VecN delta;
     Sophus::SE3d T_wc_current;
 

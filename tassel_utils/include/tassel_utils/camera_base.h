@@ -36,7 +36,7 @@ protected:
     cv::Mat dist_coeffs_;
 
 private:
-    int height_, width_;
+    int width_, height_;
 };
 }  // namespace tassel_utils
 #endif  // TASSEL_UTILS_CAMERA_BASE_H_

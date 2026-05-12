@@ -24,11 +24,11 @@ void MargHelper::computeDelta(const AbsOrderMap& order, Eigen::VectorXd& delta) 
 void MargHelper::linearizeMargPrior(
     const MargLinData& mld, const AbsOrderMap& aom, Eigen::MatrixXd& abs_H, Eigen::VectorXd& abs_b,
     double& marg_prior_error) {
-    TASSEL_ASSERT(mld.H.cols() == mld.order.total_size);
+    TASSEL_ASSERT(static_cast<size_t>(mld.H.cols()) == mld.order.total_size);
 
     for (const auto& kv : mld.order.abs_order_map) {
         TASSEL_ASSERT(aom.abs_order_map.at(kv.first) == kv.second);
-        TASSEL_ASSERT(kv.second.first < mld.order.total_size);
+        TASSEL_ASSERT(static_cast<size_t>(kv.second.first) < mld.order.total_size);
     }
 
     const size_t marg_size = mld.order.total_size;
@@ -67,7 +67,7 @@ void MargHelper::computeMargPriorError(const MargLinData& mld, double& marg_prio
 void MargHelper::marginalizeOldest(
     size_t keep_size, Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r, Eigen::MatrixXd& marg_sqrt_H,
     Eigen::VectorXd& marg_sqrt_b) {
-    TASSEL_ASSERT(1 + keep_size == Q2Jp.cols());
+    TASSEL_ASSERT(Eigen::Index(1 + keep_size) == Q2Jp.cols());
     TASSEL_ASSERT(Q2Jp.rows() == Q2r.rows());
 
     // 只保留强约束以及先验，弱约束由于缺秩会自动丢弃
@@ -83,13 +83,13 @@ void MargHelper::marginalizeOldest(
     temp_vec.resize(cols + 1);
     double* temp_data = temp_vec.data();
 
-    for (Eigen::Index i = 0; i < rows && total_rank < rows; ++i) {
+    for (Eigen::Index i = 0; i < cols && total_rank < rows; ++i) {
         Eigen::Index remainingRows = rows - total_rank;
         Eigen::Index remainingCols = cols - i - 1;
 
         double beta;
         double hCoeff;
-        Q2Jp.col(i).tail(remainingCols).makeHouseholderInPlace(hCoeff, beta);
+        Q2Jp.col(i).tail(remainingRows).makeHouseholderInPlace(hCoeff, beta);
         if (std::abs(beta) > rank_theshold) {
             Q2Jp.coeffRef(total_rank, i) = beta;
 

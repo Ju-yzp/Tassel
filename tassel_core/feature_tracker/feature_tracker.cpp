@@ -105,7 +105,7 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::monoTracking(
 
     std::unordered_map<int, FeaturePerFrame> feature_frame;
     auto camera = ctc.camera.get();
-    for (int i = 0; i < cur_ids.size(); ++i) {
+    for (size_t i = 0; i < cur_ids.size(); ++i) {
         Eigen::Vector2d pt(cur_pts[i].x, cur_pts[i].y);
         Eigen::Vector2d uv = camera->undistort(pt);
         FeaturePerFrame fpf;
@@ -206,7 +206,7 @@ void FeatureTracker::monoMatching(
             cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01),
             cv::OPTFLOW_USE_INITIAL_FLOW);
 
-        for (int i = 0; i < num; ++i) {
+        for (size_t i = 0; i < num; ++i) {
             p2c_status[i] = p2c_status[i]
                                 ? (c2p_status[i] && (computeSquareDist(prev_pts[i], copy_pts[i]) <
                                                      max_square_move_dist_))
