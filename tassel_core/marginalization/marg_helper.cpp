@@ -2,40 +2,33 @@
 #include "tassel_utils/macros.h"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <limits>
 
 namespace tassel_core {
 
-void MargHelper::computeDelta(const AbsOrderMap& order, Eigen::VectorXd& delta) const {
-    size_t marg_size = order.total_size;
+void MargHelper::computeDelta(const State& state, Eigen::VectorXd& delta) const {
+    size_t marg_size = state.max_frame_count * tassel_utils::POSE_SIZE;
     delta.setZero(marg_size);
-    for (const auto& kv : order.abs_order_map) {
-        if (kv.second.second == tassel_utils::POSE_SIZE) {
-            TASSEL_ASSERT(frame_poses_.at(kv.first).isLinearized());
-            delta.template segment<tassel_utils::POSE_SIZE>(kv.second.first) =
-                frame_poses_.at(kv.first).get_delta();
-        } else {
-            TASSEL_ASSERT(false);
-        }
+    for (int i = 0; i < state.max_frame_count - 1; i++) {
+        TASSEL_ASSERT(state.poses[i].isLinearized());
+        delta.segment<tassel_utils::POSE_SIZE>(i * tassel_utils::POSE_SIZE) =
+            state.poses[i].get_delta();
     }
 }
 
 void MargHelper::linearizeMargPrior(
-    const MargLinData& mld, const AbsOrderMap& aom, Eigen::MatrixXd& abs_H, Eigen::VectorXd& abs_b,
+    const MargLinData& mld, const State& cur_state, Eigen::MatrixXd& abs_H, Eigen::VectorXd& abs_b,
     double& marg_prior_error) {
-    TASSEL_ASSERT(static_cast<size_t>(mld.H.cols()) == mld.order.total_size);
+    size_t total_size = cur_state.max_frame_count * tassel_utils::POSE_SIZE;
+    size_t marg_size = total_size;
 
-    for (const auto& kv : mld.order.abs_order_map) {
-        TASSEL_ASSERT(aom.abs_order_map.at(kv.first) == kv.second);
-        TASSEL_ASSERT(static_cast<size_t>(kv.second.first) < mld.order.total_size);
-    }
-
-    const size_t marg_size = mld.order.total_size;
+    TASSEL_ASSERT(static_cast<size_t>(mld.H.cols()) == total_size);
 
     // 计算增量
     Eigen::VectorXd delta;
-    computeDelta(mld.order, delta);
+    computeDelta(mld.old_state, delta);
 
     // 默认使用平方根形式
     abs_H.topLeftCorner(marg_size, marg_size) += mld.H.transpose() * mld.H;
@@ -45,7 +38,8 @@ void MargHelper::linearizeMargPrior(
 }
 
 void MargHelper::computeMargPriorError(const MargLinData& mld, double& marg_prior_error) const {
-    TASSEL_ASSERT(size_t(mld.H.cols()) == mld.order.total_size);
+    size_t total_size = mld.old_state.max_frame_count * tassel_utils::POSE_SIZE;
+    TASSEL_ASSERT(size_t(mld.H.cols()) == total_size);
     // 当前代价的计算
     //
     //    P(0) = 0.5 || J*delta + r ||^2
@@ -58,7 +52,7 @@ void MargHelper::computeMargPriorError(const MargLinData& mld, double& marg_prio
     // also means the computed error can be negative.
 
     Eigen::VectorXd delta;
-    computeDelta(mld.order, delta);
+    computeDelta(mld.old_state, delta);
 
     // 默认使用平方根形式
     marg_prior_error = delta.transpose() * mld.H.transpose() * (0.5 * mld.H * delta + mld.b);

@@ -3,11 +3,11 @@
 
 #include <Eigen/Dense>
 
-#include "abs_order_map.h"
+#include "state/state.h"
 
 namespace tassel_core {
 struct MargLinData {
-    AbsOrderMap order;
+    State old_state;
     Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic> H;
     Eigen::Matrix<double, Eigen::Dynamic, 1> b;
 };
