@@ -1,16 +1,28 @@
 #ifndef TASSEL_CORE_LM_OPTIMIZER_H_
 #define TASSEL_CORE_LM_OPTIMIZER_H_
 
+#include "linearization/linearization_abs_qr.h"
+
 namespace tassel_core {
+
+struct LMOptions {
+    int max_iterations = 10;
+    double lambda_initial = 1e-3;
+    double lambda_min = 1e-6;
+    double lambda_max = 1e6;
+    double vee_factor = 2.0;
+    double initial_vee = 2.0;
+};
+
 class LMOptimizer {
 public:
-    LMOptimizer(int max_itemrator_num, int thread_num);
-    ~LMOptimizer();
+    LMOptimizer(const LMOptions& options = LMOptions());
+
+    void optimize(LinearizationAbsQR* linearization);
 
 private:
-    int max_itemrator_num_;
-
-    int thread_num_;
+    LMOptions options_;
 };
+
 }  // namespace tassel_core
 #endif /* TASSEL_CORE_LM_OPTIMIZER_H_ */

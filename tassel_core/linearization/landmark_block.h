@@ -4,7 +4,7 @@
 #include <Eigen/Core>
 #include <sophus/se3.hpp>
 
-#include "feature/feature.h"
+#include "frond_end/feature.h"
 #include "state/state.h"
 
 namespace tassel_core {
@@ -47,6 +47,8 @@ public:
     void scaleJl_cols();
 
     void scaleJp_cols(const Eigen::VectorXd& jacobian_scaling);
+
+    inline size_t numQ2rows() const { return num_rows_ - 3; }
 
     int getLandmarkCol() const { return lm_idx_; }
     int getPaddingIdx() const { return padding_idx_; }

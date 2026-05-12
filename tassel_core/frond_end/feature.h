@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <opencv2/core.hpp>
+#include "state/state.h"
 
 namespace tassel_core {
 struct FeaturePerFrame {
@@ -35,26 +36,25 @@ const double MIN_DISTANCE = 0.1;
 const double MAX_DISTANCE = 3.0;
 
 struct Feature {
-    //     Feature(size_t max_capacity);
+    Feature(size_t max_capacity);
 
-    //     Feature(size_t start_frame_id, size_t max_capacity);
+    Feature(size_t start_frame_id, size_t max_capacity);
 
-    //     Feature();
+    Feature();
 
-    //     void stereoTriangulate(
-    //         const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1,
-    //         const Eigen::Vector3d& tic1, double min_depth, double max_depth);
+    void stereoTriangulate(
+        const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1,
+        const Eigen::Vector3d& tic1, double min_depth, double max_depth);
 
-    //     void monoTriangulate(
-    //         std::shared_ptr<State> state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
-    //         double min_depth, double max_depth);
+    void monoTriangulate(
+        const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
+        double min_depth, double max_depth);
 
-    //     void removeOldest(
-    //         const Eigen::Matrix3d& prev_r, const Eigen::Vector3d& prev_t, const Eigen::Matrix3d&
-    //         cur_r, const Eigen::Vector3d& cur_t, const Eigen::Matrix3d& ric, const
-    //         Eigen::Vector3d& tic);
+    void removeOldest(
+        const Eigen::Matrix3d& prev_r, const Eigen::Vector3d& prev_t, const Eigen::Matrix3d& cur_r,
+        const Eigen::Vector3d& cur_t, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
-    //     void removeNewest(size_t frame_count);
+    void removeNewest(size_t frame_count);
 
     size_t start_frame_id;
     double estimated_depth;

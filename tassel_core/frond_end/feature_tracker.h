@@ -9,7 +9,7 @@
 #include <unordered_map>
 
 // tassel
-#include "feature/feature.h"
+#include "feature.h"
 #include "tassel_utils/camera_base.h"
 
 namespace tassel_core {

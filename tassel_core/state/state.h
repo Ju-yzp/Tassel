@@ -21,7 +21,7 @@ struct PoseStateWithLin {
           delta(Eigen::Vector<double, 6>::Zero()),
           T_wc_current(T_wc) {}
 
-    void setLinearized() {
+    inline void setLinearized() {
         linearized = true;
         if (!delta.isApproxToConstant(0)) {
             throw std::runtime_error("delta is not zero");
@@ -29,7 +29,7 @@ struct PoseStateWithLin {
         T_wc_current = pose_linearized;
     }
 
-    Pose get_pose() const {
+    inline Pose get_pose() const {
         if (!linearized) {
             return T_wc_current;
         } else {
@@ -37,12 +37,12 @@ struct PoseStateWithLin {
         }
     };
 
-    Pose get_pose_linearized() const { return pose_linearized; }
+    inline Pose get_pose_linearized() const { return pose_linearized; }
 
-    void applyDelta(const Eigen::Vector<double, 6>& delta) {
+    inline void applyDelta(const Eigen::Vector<double, 6>& delta) {
         if (!linearized) {
             increasePose(delta, pose_linearized);
-
+            T_wc_current = pose_linearized;
         } else {
             this->delta += delta;
             T_wc_current = pose_linearized;
@@ -60,10 +60,18 @@ struct PoseStateWithLin {
         pose_linearized = storage_pose_linearized;
     }
 
-    void save() {
+    inline void save() {
         storage_delta = delta;
         storage_T_wc_current = T_wc_current;
         storage_pose_linearized = pose_linearized;
+    }
+
+    Pose get_optimized_pose() const { return optimized_pose; }
+
+    void set_optimized_pose(const Pose& optimized_pose) { this->optimized_pose = optimized_pose; }
+
+    inline void applyDeltaToOptimizedPose(const Eigen::Vector<double, 6>& delta) {
+        increasePose(delta, optimized_pose);
     }
 
 private:
@@ -76,6 +84,8 @@ private:
     Pose storage_pose_linearized;
     Eigen::Vector<double, 6> storage_delta;
     Pose storage_T_wc_current;
+
+    Pose optimized_pose;
 };
 
 struct State {
@@ -83,6 +93,7 @@ struct State {
         poses.resize(max_frame_count);
     };
     int max_frame_count;  // 滑动窗口最大帧数
+    int cur_frame_count;  // 当前帧数
     std::vector<PoseStateWithLin> poses;
 };
 }  // namespace tassel_core

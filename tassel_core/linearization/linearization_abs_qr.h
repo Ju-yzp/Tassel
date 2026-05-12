@@ -1,70 +1,84 @@
-// #ifndef TASSEL_CORE_LINEARIZATION_ABS_QR_H_
-// #define TASSEL_CORE_LINEARIZATION_ABS_QR_H_
+#ifndef TASSEL_CORE_LINEARIZATION_ABS_QR_H_
+#define TASSEL_CORE_LINEARIZATION_ABS_QR_H_
 
-// // cpp
-// #include <memory>
-// #include <vector>
+// cpp
+#include <cstddef>
+#include <memory>
+#include <vector>
 
-// // tbb
-// #include <tbb/task_arena.h>
+// tbb
+#include <tbb/task_arena.h>
 
-// #include "feature_manager/feature_manager.h"
-// #include "linearization/landmark_block.h"
-// #include "marginalization/abs_order_map.h"
-// #include "marginalization/marg_helper.h"
-// #include "marginalization/marg_linearized_data.h"
-// #include "state/state.h"
+#include "frond_end/feature_manager.h"
+#include "linearization/landmark_block.h"
+#include "marginalization/marg_helper.h"
+#include "marginalization/marg_linearized_data.h"
+#include "state/state.h"
 
-// namespace tassel_core {
-// // VO 版本
-// class LinearizationAbsQR {
-// public:
-//     explicit LinearizationAbsQR(int num_threads = tbb::task_arena::automatic)
-//         : thread_pool_(num_threads) {}
+namespace tassel_core {
+// VO 版本
+class LinearizationAbsQR {
+public:
+    explicit LinearizationAbsQR(int num_threads = 1) : thread_pool_(num_threads) {}
 
-//     double linearizeProbelm();
+    void setFeatureManager(std::shared_ptr<FeatureManager> fm) { feature_manager_ = std::move(fm); }
+    void setState(std::shared_ptr<State> s) { state_ = std::move(s); }
 
-//     void performQR();
+    double linearizeProbelm();
 
-//     void setPoseDamping(const double lambda);
+    void performQR();
 
-//     void get_dense_Q2Jp_Q2r(Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r) const;
+    void setPoseDamping(const double lambda);
 
-//     void get_dense_H_b(Eigen::MatrixXd& H, Eigen::VectorXd& b) const;
+    void get_dense_Q2Jp_Q2r(Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r) const;
 
-//     bool hasPoseDamping() const { return pose_damping_diagonal_ > 0; }
+    void get_dense_H_b(Eigen::MatrixXd& H, Eigen::VectorXd& b) const;
 
-// protected:
-//     void get_dense_Q2Jp_Q2r_pose_damping(Eigen::MatrixXd& Q2Jp, size_t start_idx) const;
+    bool hasPoseDamping() const { return pose_damping_diagonal_ > 0; }
 
-//     void get_dense_Q2Jp_Q2r_marg_prior(
-//         Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r, size_t start_idx) const;
+    double backSubstitute(const Eigen::VectorXd& pose_inc);
 
-//     void add_dense_H_b_pose_damping(Eigen::MatrixXd& H) const;
+    State* getState() const { return state_.get(); }
 
-//     void add_dense_H_b_marg_prior(Eigen::MatrixXd& H, Eigen::VectorXd& b) const;
+    int getPoseDim() const;
 
-// private:
-//     tbb::task_arena thread_pool_;
+    double computeError() const;
 
-//     std::shared_ptr<FeatureManager> feature_manager_;
+    void saveState();
 
-//     std::shared_ptr<MargLinData> marg_lin_data_;
+    void restoreState();
 
-//     std::shared_ptr<State> state_;
+    void applyPoseInc(const Eigen::VectorXd& inc);
 
-//     std::vector<size_t> landmark_block_idx_;  // 用于记录每个landmark block的在Q2Jp和Qr起始索引
-//     std::vector<LandmarkBlock> landmark_blocks_;
+protected:
+    void get_dense_Q2Jp_Q2r_pose_damping(Eigen::MatrixXd& Q2Jp, size_t start_idx) const;
 
-//     double pose_damping_diagonal_;
-//     double pose_damping_diagonal_sqrt_;
-//     Eigen::VectorXd marg_scaling_;
+    void get_dense_Q2Jp_Q2r_marg_prior(
+        Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r, size_t start_idx) const;
 
-//     size_t num_rows_Q2r_;
+    void add_dense_H_b_pose_damping(Eigen::MatrixXd& H) const;
 
-//     std::unique_ptr<MargHelper> marg_helper_;
+    void add_dense_H_b_marg_prior(Eigen::MatrixXd& H, Eigen::VectorXd& b) const;
 
-//     std::shared_ptr<AbsOrderMap> aom_;
-// };
-// }  // namespace tassel_core
-// #endif /* TASSEL_CORE_LINEARIZATION_ABS_QR_H_ */
+private:
+    mutable tbb::task_arena thread_pool_;
+
+    std::shared_ptr<FeatureManager> feature_manager_;
+
+    std::shared_ptr<MargLinData> marg_lin_data_;
+
+    std::shared_ptr<State> state_;
+
+    std::vector<LandmarkBlock> landmark_blocks_;
+
+    double pose_damping_diagonal_;
+    double pose_damping_diagonal_sqrt_;
+    Eigen::VectorXd marg_scaling_;
+
+    std::unique_ptr<MargHelper> marg_helper_;
+
+    // backup for LM rejection
+    std::unordered_map<Feature*, double> saved_feature_depths_;
+};
+}  // namespace tassel_core
+#endif /* TASSEL_CORE_LINEARIZATION_ABS_QR_H_ */

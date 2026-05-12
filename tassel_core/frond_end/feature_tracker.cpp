@@ -1,6 +1,6 @@
 // tassel
-#include "feature_tracker/feature_tracker.h"
-#include "feature/feature.h"
+#include "feature_tracker.h"
+
 // logger
 #include <spdlog/spdlog.h>
 

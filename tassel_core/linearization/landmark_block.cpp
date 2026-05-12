@@ -1,5 +1,5 @@
 #include "landmark_block.h"
-#include "feature/feature.h"
+#include "frond_end/feature.h"
 #include "tassel_utils/macros.h"
 
 #include <sophus/se3.hpp>

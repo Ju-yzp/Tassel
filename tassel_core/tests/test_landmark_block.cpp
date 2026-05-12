@@ -6,7 +6,7 @@
 #include <random>
 #include <vector>
 
-#include "feature/feature.h"
+#include "frond_end/feature.h"
 #include "linearization/landmark_block.h"
 #include "state/state.h"
 

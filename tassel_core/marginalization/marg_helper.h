@@ -1,7 +1,6 @@
 #ifndef TASSEL_CORE_MARGINALIZATION_MARG_HELPER_H_
 #define TASSEL_CORE_MARGINALIZATION_MARG_HELPER_H_
 
-#include <memory>
 #include "marg_linearized_data.h"
 #include "state/state.h"
 
