@@ -5,6 +5,7 @@ file(
   ${CMAKE_CURRENT_SOURCE_DIR}/linearization/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/lm_optimizer/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/marginalization/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/estimator/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/state/*.cpp)
 
 add_library(tassel_core SHARED ${TASSEL_CORE_SRCS})

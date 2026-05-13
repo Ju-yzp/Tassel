@@ -7,7 +7,7 @@
 #include <opencv2/core.hpp>
 #include <string>
 
-#include "tassel_utils/params_parser.h"
+#include "parameters/params_parser.h"
 
 namespace fs = std::filesystem;
 
@@ -17,11 +17,11 @@ protected:
         // test YAML lives next to this source file
         fs::path test_dir = fs::path(__FILE__).parent_path();
         yaml_path_ = (test_dir / "test_params.yaml").string();
-        parser_ = std::make_unique<tassel_utils::ParamsParser>(yaml_path_);
+        parser_ = std::make_unique<tassel_tools::ParamsParser>(yaml_path_);
     }
 
     std::string yaml_path_;
-    std::unique_ptr<tassel_utils::ParamsParser> parser_;
+    std::unique_ptr<tassel_tools::ParamsParser> parser_;
 };
 
 // ── scalar types ───────────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ TEST_F(ParamsParserTest, ReadNestedKey) {
 // ── error cases ────────────────────────────────────────────────────────────
 
 TEST_F(ParamsParserTest, ThrowsOnMissingFile) {
-    EXPECT_THROW(tassel_utils::ParamsParser("nonexistent_file.yaml"), std::runtime_error);
+    EXPECT_THROW(tassel_tools::ParamsParser("nonexistent_file.yaml"), std::runtime_error);
 }
 
 TEST_F(ParamsParserTest, ThrowsOnMissingKey) {

@@ -1,11 +1,11 @@
-#ifndef TASSEL_UTILS_CAMERA_BASE_H_
-#define TASSEL_UTILS_CAMERA_BASE_H_
+#ifndef TASSEL_CORE_CAM_CAMERA_BASE_H_
+#define TASSEL_CORE_CAM_CAMERA_BASE_H_
 
 #include <Eigen/Core>
 
 #include <opencv2/core.hpp>
 
-namespace tassel_utils {
+namespace tassel_core {
 class CameraBase {
 public:
     explicit CameraBase(const cv::Mat& k, const cv::Mat& dist_coeffs, int width, int height)
@@ -38,5 +38,5 @@ protected:
 private:
     int width_, height_;
 };
-}  // namespace tassel_utils
-#endif  // TASSEL_UTILS_CAMERA_BASE_H_
+}  // namespace tassel_core
+#endif  // TASSEL_CORE_CAM_CAMERA_BASE_H_

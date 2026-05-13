@@ -41,6 +41,11 @@ public:
 
     std::vector<std::pair<int, const Feature*>> collectMarginalizationFeatures() const;
 
+    // ── Point cloud ──────────────────────────────────────────────────────────
+    std::vector<Eigen::Vector3d> getPointCloud(
+        const State& state, const Eigen::Matrix3d& ric = Eigen::Matrix3d::Identity(),
+        const Eigen::Vector3d& tic = Eigen::Vector3d::Zero()) const;
+
     // Test-only: direct access to feature map
     std::unordered_map<int, Feature>& testFeatures() { return features_; }
 

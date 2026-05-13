@@ -1,5 +1,5 @@
-#ifndef TASSEL_UTILS_PARAMS_PARSER_H_
-#define TASSEL_UTILS_PARAMS_PARSER_H_
+#ifndef TASSEL_TOOLS_PARAMETERS_PARAMS_PARSER_H_
+#define TASSEL_TOOLS_PARAMETERS_PARAMS_PARSER_H_
 
 // yaml-cpp
 #include <yaml-cpp/node/node.h>
@@ -20,7 +20,7 @@
 #include <filesystem>
 #include <utility>
 
-namespace tassel_utils {
+namespace tassel_tools {
 namespace fs = std::filesystem;
 
 template <typename T>
@@ -76,8 +76,8 @@ public:
                 size_t rows = node.size();
                 size_t cols = node[0].size();
                 cv::Mat mat(rows, cols, CV_64F);
-                for (int i = 0; i < rows; ++i) {
-                    for (int j = 0; j < cols; ++j) {
+                for (size_t i = 0; i < rows; ++i) {
+                    for (size_t j = 0; j < cols; ++j) {
                         mat.at<double>(i, j) = node[i][j].template as<double>();
                     }
                 }
@@ -85,7 +85,7 @@ public:
             } else if (node.IsSequence()) {
                 size_t rows = node.size();
                 cv::Mat mat(rows, 1, CV_64F);
-                for (int i = 0; i < rows; ++i) {
+                for (size_t i = 0; i < rows; ++i) {
                     mat.at<double>(i, 0) = node[i].template as<double>();
                 }
                 return mat;
@@ -130,6 +130,6 @@ private:
     }
     YAML::Node config_;
 };
-}  // namespace tassel_utils
+}  // namespace tassel_tools
 
-#endif
+#endif  // TASSEL_TOOLS_PARAMETERS_PARAMS_PARSER_H_

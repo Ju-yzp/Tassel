@@ -13,7 +13,12 @@ inline void increasePose(const Eigen::Vector<double, 6> delta, Pose& pose) {
 }
 // vo系统（只带位姿信息）
 struct PoseStateWithLin {
-    PoseStateWithLin() : linearized(false), delta(Eigen::Vector<double, 6>::Zero()) {}
+    PoseStateWithLin()
+        : pose_linearized(Sophus::SE3d()),
+          linearized(false),
+          delta(Eigen::Vector<double, 6>::Zero()),
+          T_wc_current(Sophus::SE3d()),
+          optimized_pose(Sophus::SE3d()) {}
 
     PoseStateWithLin(const Sophus::SE3d& T_wc, bool linearized = false)
         : pose_linearized(T_wc),
@@ -72,6 +77,14 @@ struct PoseStateWithLin {
 
     inline void applyDeltaToOptimizedPose(const Eigen::Vector<double, 6>& delta) {
         increasePose(delta, optimized_pose);
+    }
+
+    inline void reset() {
+        linearized = false;
+        delta.setZero();
+        T_wc_current = Sophus::SE3d();
+        pose_linearized = Sophus::SE3d();
+        optimized_pose = Sophus::SE3d();
     }
 
 private:

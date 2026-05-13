@@ -3,8 +3,8 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 
-#include "tassel_core/feature_tracker.h"
-#include "tassel_utils/camera_rad_tan.h"
+#include "cam/camera_rad_tan.h"
+#include "frond_end/feature_tracker.h"
 #include "tassel_utils/timer.h"
 
 int main() {
@@ -58,10 +58,10 @@ int main() {
     tassel_core::FeatureTracker tracker(
         flow_back, max_square_move_dist, enable_statistics, 5, min_gradient);
 
-    auto cam0 = std::make_unique<tassel_utils::CameraRadTan>(K0, D0, cols, rows);
+    auto cam0 = std::make_unique<tassel_core::CameraRadTan>(K0, D0, cols, rows);
     tracker.addCamera(std::move(cam0), per_grid_rows, per_grid_cols, edge_y, edge_x, mask_radius);
 
-    auto cam1 = std::make_unique<tassel_utils::CameraRadTan>(K1, D1, cols, rows);
+    auto cam1 = std::make_unique<tassel_core::CameraRadTan>(K1, D1, cols, rows);
     tracker.addCamera(std::move(cam1), per_grid_rows, per_grid_cols, edge_y, edge_x, mask_radius);
 
     cv::namedWindow("stereo", cv::WINDOW_NORMAL);

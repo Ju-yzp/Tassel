@@ -1,7 +1,9 @@
 #include "linearization_abs_qr.h"
+#include "marginalization/marg_helper.h"
 #include "tassel_utils/macros.h"
 
 // tbb
+#include <spdlog/spdlog.h>
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 #include <tbb/parallel_reduce.h>
@@ -11,8 +13,18 @@
 
 namespace tassel_core {
 
+LinearizationAbsQR::LinearizationAbsQR(
+    int num_threads, std::shared_ptr<State> state, std::shared_ptr<FeatureManager> fm,
+    LossVariant reprojection_loss, DepthLoss depth_loss, std::shared_ptr<MargLinData> marg_lin_data)
+    : thread_pool_(num_threads),
+      cur_state_(std::move(state)),
+      feature_manager_(std::move(fm)),
+      marg_lin_data_(std::move(marg_lin_data)),
+      reprojection_loss_(std::move(reprojection_loss)),
+      depth_loss_(std::move(depth_loss)) {}
+
 int LinearizationAbsQR::getPoseDim() const {
-    return state_->max_frame_count * tassel_utils::POSE_SIZE;
+    return cur_state_->max_frame_count * tassel_utils::POSE_SIZE;
 }
 
 double LinearizationAbsQR::linearizeProbelm() {
@@ -20,9 +32,11 @@ double LinearizationAbsQR::linearizeProbelm() {
     pose_damping_diagonal_sqrt_ = 0.0;
 
     auto features = feature_manager_->collectOptimizationFeatures();
+    spdlog::info("{} landmarks need to optimize", static_cast<int>(features.size()));
     landmark_blocks_.resize(features.size());
     for (size_t i = 0; i < features.size(); ++i) {
-        landmark_blocks_[i].allocate(features[i], state_.get());
+        landmark_blocks_[i].allocate(
+            features[i], cur_state_.get(), reprojection_loss_, depth_loss_);
     }
 
     size_t num_landmarks = landmark_blocks_.size();
@@ -39,8 +53,16 @@ double LinearizationAbsQR::linearizeProbelm() {
     auto join = [](double a, double b) { return a + b; };
 
     tbb::blocked_range<size_t> range(0, num_landmarks);
-    return thread_pool_.execute(
+    double error = thread_pool_.execute(
         [&] { return tbb::parallel_reduce(range, initial_value, body, join); });
+
+    if (marg_lin_data_) {
+        double marg_prior_error;
+        MargHelper::computeMargPriorError(*marg_lin_data_, *cur_state_, marg_prior_error);
+        error += marg_prior_error;
+    }
+
+    return error;
 }
 
 void LinearizationAbsQR::performQR() {
@@ -69,7 +91,7 @@ void LinearizationAbsQR::get_dense_Q2Jp_Q2r(Eigen::MatrixXd& Q2Jp, Eigen::Vector
         rows += landmark_blocks_[i].getNumRows() - 1;
     }
 
-    size_t cols = state_->max_frame_count * tassel_utils::POSE_SIZE;
+    size_t cols = cur_state_->max_frame_count * tassel_utils::POSE_SIZE;
 
     // 为边缘化部分预留位置，暂时不填充
     size_t marg_start_idx = rows;
@@ -136,7 +158,8 @@ void LinearizationAbsQR::get_dense_H_b(Eigen::MatrixXd& H, Eigen::VectorXd& b) c
         Eigen::VectorXd b_;
     };
 
-    size_t opt_size = state_->max_frame_count * tassel_utils::POSE_SIZE + landmark_blocks_.size();
+    size_t opt_size =
+        cur_state_->max_frame_count * tassel_utils::POSE_SIZE + landmark_blocks_.size();
 
     Reductor r(opt_size, landmark_blocks_);
 
@@ -174,7 +197,7 @@ void LinearizationAbsQR::get_dense_Q2Jp_Q2r_marg_prior(
     size_t marg_cols = marg_lin_data_->H.cols();
 
     Eigen::VectorXd delta;
-    marg_helper_->computeDelta(marg_lin_data_->old_state, delta);
+    MargHelper::computeDelta(*cur_state_, delta);
 
     if (marg_scaling_.rows() > 0) {
         Q2Jp.block(start_idx, 0, marg_rows, marg_cols) =
@@ -199,7 +222,7 @@ void LinearizationAbsQR::add_dense_H_b_marg_prior(Eigen::MatrixXd& H, Eigen::Vec
     TASSEL_ASSERT(marg_scaling_.rows() == 0);
 
     double marg_prior_error;
-    marg_helper_->linearizeMargPrior(*marg_lin_data_, *state_, H, b, marg_prior_error);
+    MargHelper::linearizeMargPrior(*marg_lin_data_, *cur_state_, H, b, marg_prior_error);
 }
 
 double LinearizationAbsQR::computeError() const {
@@ -208,11 +231,11 @@ double LinearizationAbsQR::computeError() const {
 
     for (auto* f : features) {
         int host_id = f->start_frame_id;
-        Pose T_w_h = state_->poses[host_id].get_pose();
+        Pose T_w_h = cur_state_->poses[host_id].get_pose();
 
         for (int offset = 1; offset < static_cast<int>(f->observations.size()); offset++) {
             int target_id = host_id + offset;
-            Pose T_w_t = state_->poses[target_id].get_pose();
+            Pose T_w_t = cur_state_->poses[target_id].get_pose();
 
             Eigen::Matrix<double, 2, 3> tangent_base =
                 compute_tangent_base(f->observations[offset].uv);
@@ -223,14 +246,14 @@ double LinearizationAbsQR::computeError() const {
 
             Eigen::Vector2d residual =
                 tangent_base * (pt_in_T.normalized() - f->observations[offset].uv);
-            error += 0.5 * residual.squaredNorm();
+            error += computeRho(reprojection_loss_, residual.norm());
         }
     }
     return error;
 }
 
 void LinearizationAbsQR::saveState() {
-    for (auto& p : state_->poses) p.save();
+    for (auto& p : cur_state_->poses) p.save();
 
     saved_feature_depths_.clear();
     auto features = feature_manager_->collectOptimizationFeatures();
@@ -240,7 +263,7 @@ void LinearizationAbsQR::saveState() {
 }
 
 void LinearizationAbsQR::restoreState() {
-    for (auto& p : state_->poses) p.restore();
+    for (auto& p : cur_state_->poses) p.restore();
 
     for (auto& [f, depth] : saved_feature_depths_) {
         f->estimated_depth = depth;
@@ -248,14 +271,14 @@ void LinearizationAbsQR::restoreState() {
 }
 
 void LinearizationAbsQR::applyPoseInc(const Eigen::VectorXd& inc) {
-    for (int k = 0; k < state_->cur_frame_count; k++) {
+    for (int k = 0; k < cur_state_->cur_frame_count; k++) {
         Eigen::Vector<double, 6> delta = inc.segment<6>(k * tassel_utils::POSE_SIZE);
-        state_->poses[k].applyDelta(delta);
+        cur_state_->poses[k].applyDelta(delta);
     }
 }
 
 double LinearizationAbsQR::backSubstitute(const Eigen::VectorXd& pose_inc) {
-    TASSEL_ASSERT(pose_inc.size() == state_->max_frame_count * tassel_utils::POSE_SIZE);
+    TASSEL_ASSERT(pose_inc.size() == cur_state_->max_frame_count * tassel_utils::POSE_SIZE);
 
     auto body = [&](const tbb::blocked_range<size_t>& range, double l_diff) {
         for (size_t r = range.begin(); r != range.end(); ++r) {
@@ -272,8 +295,8 @@ double LinearizationAbsQR::backSubstitute(const Eigen::VectorXd& pose_inc) {
         size_t marg_size = marg_lin_data_->H.cols();
         Eigen::VectorXd pose_inc_marg = pose_inc.head(marg_size);
 
-        // l_diff += estimator->computeMargPriorModelCostChange(
-        //     *marg_lin_data, marg_scaling, pose_inc_marg);
+        l_diff += MargHelper::computeMargPriorModelCostChange(
+            *marg_lin_data_, *cur_state_, marg_scaling_, pose_inc_marg);
     }
 
     return l_diff;

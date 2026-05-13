@@ -15,5 +15,11 @@ enable_testing()
 
 message(STATUS "tassel_utils tests:")
 tassel_add_tests(
-  TEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests" LINK_LIBS tassel_utils
-  INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  TEST_DIR
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+  LINK_LIBS
+  tassel_utils
+  tassel_core
+  tassel_tools
+  INCLUDE_DIRS
+  "${CMAKE_CURRENT_SOURCE_DIR}/include")

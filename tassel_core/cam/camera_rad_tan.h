@@ -1,13 +1,13 @@
-#ifndef TASSEL_UTILS_CAMERA_RAD_TAN_H_
-#define TASSEL_UTILS_CAMERA_RAD_TAN_H_
+#ifndef TASSEL_CORE_CAM_CAMERA_RAD_TAN_H_
+#define TASSEL_CORE_CAM_CAMERA_RAD_TAN_H_
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
-#include "tassel_utils/camera_base.h"
+#include "cam/camera_base.h"
 
-namespace tassel_utils {
+namespace tassel_core {
 
 class CameraRadTan : public CameraBase {
 public:
@@ -51,5 +51,5 @@ public:
     }
 };
 
-}  // namespace tassel_utils
-#endif  // TASSEL_UTILS_CAMERA_RAD_TAN_H_
+}  // namespace tassel_core
+#endif  // TASSEL_CORE_CAM_CAMERA_RAD_TAN_H_

@@ -8,9 +8,11 @@
 
 namespace tassel_core {
 
-void MargHelper::computeDelta(const State& state, Eigen::VectorXd& delta) const {
-    size_t marg_size = state.max_frame_count * tassel_utils::POSE_SIZE;
+void MargHelper::computeDelta(const State& state, Eigen::VectorXd& delta) {
+    size_t marg_size = (state.max_frame_count - 1) * tassel_utils::POSE_SIZE;
     delta.setZero(marg_size);
+    // Extract kept frames 0..(n-2), matching the prior's column mapping.
+    // Frame n-1 is the newest frame, not yet in the prior.
     for (int i = 0; i < state.max_frame_count - 1; i++) {
         TASSEL_ASSERT(state.poses[i].isLinearized());
         delta.segment<tassel_utils::POSE_SIZE>(i * tassel_utils::POSE_SIZE) =
@@ -21,14 +23,14 @@ void MargHelper::computeDelta(const State& state, Eigen::VectorXd& delta) const 
 void MargHelper::linearizeMargPrior(
     const MargLinData& mld, const State& cur_state, Eigen::MatrixXd& abs_H, Eigen::VectorXd& abs_b,
     double& marg_prior_error) {
-    size_t total_size = cur_state.max_frame_count * tassel_utils::POSE_SIZE;
+    size_t total_size = (cur_state.max_frame_count - 1) * tassel_utils::POSE_SIZE;
     size_t marg_size = total_size;
 
     TASSEL_ASSERT(static_cast<size_t>(mld.H.cols()) == total_size);
 
     // 计算增量
     Eigen::VectorXd delta;
-    computeDelta(mld.old_state, delta);
+    computeDelta(cur_state, delta);
 
     // 默认使用平方根形式
     abs_H.topLeftCorner(marg_size, marg_size) += mld.H.transpose() * mld.H;
@@ -37,8 +39,9 @@ void MargHelper::linearizeMargPrior(
     marg_prior_error = delta.transpose() * mld.H.transpose() * (0.5 * mld.H * delta + mld.b);
 }
 
-void MargHelper::computeMargPriorError(const MargLinData& mld, double& marg_prior_error) const {
-    size_t total_size = mld.old_state.max_frame_count * tassel_utils::POSE_SIZE;
+void MargHelper::computeMargPriorError(
+    const MargLinData& mld, const State& cur_state, double& marg_prior_error) {
+    size_t total_size = (cur_state.max_frame_count - 1) * tassel_utils::POSE_SIZE;
     TASSEL_ASSERT(size_t(mld.H.cols()) == total_size);
     // 当前代价的计算
     //
@@ -46,22 +49,17 @@ void MargHelper::computeMargPriorError(const MargLinData& mld, double& marg_prio
     //         = 0.5 delta^T J^T J delta + delta^T J^T r + 0.5 r^T r
     //         = 0.5 delta^T Hmarg delta + delta^T bmarg + 0.5 r^T r.
     //
-    // Note: Since the r^T r term does not change with delta, we drop it from the
-    // error computation. The main need for the error value is for comparing
-    // the cost before and after an update to delta in the optimization loop. This
-    // also means the computed error can be negative.
-
     Eigen::VectorXd delta;
-    computeDelta(mld.old_state, delta);
+    computeDelta(cur_state, delta);
 
     // 默认使用平方根形式
     marg_prior_error = delta.transpose() * mld.H.transpose() * (0.5 * mld.H * delta + mld.b);
 }
 
 void MargHelper::marginalizeOldest(
-    size_t keep_size, Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r, Eigen::MatrixXd& marg_sqrt_H,
-    Eigen::VectorXd& marg_sqrt_b) {
-    TASSEL_ASSERT(Eigen::Index(1 + keep_size) == Q2Jp.cols());
+    size_t marg_size, size_t keep_size, Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r,
+    Eigen::MatrixXd& marg_sqrt_H, Eigen::VectorXd& marg_sqrt_b) {
+    TASSEL_ASSERT(Eigen::Index(marg_size + keep_size) == Q2Jp.cols());
     TASSEL_ASSERT(Q2Jp.rows() == Q2r.rows());
 
     // 只保留强约束以及先验，弱约束由于缺秩会自动丢弃
@@ -100,17 +98,37 @@ void MargHelper::marginalizeOldest(
 
         Q2Jp.col(i).tail(remainingRows - 1).setZero();
 
-        if (i == 0) {
+        if (i == Eigen::Index(marg_size) - 1) {
             marg_rank = total_rank;
         }
     }
 
     Eigen::Index keep_valid_rows = std::max(total_rank - marg_rank, Eigen::Index(1));
 
-    marg_sqrt_H = Q2Jp.block(marg_rank, 1, keep_valid_rows, keep_size);
+    marg_sqrt_H = Q2Jp.block(marg_rank, marg_size, keep_valid_rows, keep_size);
     marg_sqrt_b = Q2r.segment(marg_rank, keep_valid_rows);
 
     Q2Jp.resize(0, 0);
     Q2r.resize(0);
+}
+
+double MargHelper::computeMargPriorModelCostChange(
+    const MargLinData& mld, const State& cur_state, const Eigen::VectorXd& marg_scaling,
+    const Eigen::VectorXd& marg_pose_inc) {
+    Eigen::VectorXd delta;
+    computeDelta(cur_state, delta);
+
+    Eigen::VectorXd J_inc = marg_pose_inc;
+    if (marg_scaling.rows() > 0) {
+        J_inc = marg_scaling.asDiagonal() * J_inc;
+    }
+
+    double l_diff;
+
+    const Eigen::VectorXd b_Jdelta = mld.H * delta + mld.b;
+
+    J_inc = mld.H * J_inc;
+    l_diff = -J_inc.transpose() * (b_Jdelta + 0.5 * J_inc);
+    return l_diff;
 }
 }  // namespace tassel_core

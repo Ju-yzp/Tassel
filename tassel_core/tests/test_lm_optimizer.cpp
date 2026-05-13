@@ -8,6 +8,7 @@
 #include "linearization/landmark_block.h"
 #include "linearization/linearization_abs_qr.h"
 #include "lm_optimizer/lm_optimizer.h"
+#include "loss_fuction/loss_fuction_base.h"
 #include "state/state.h"
 
 namespace tassel_core {
@@ -201,9 +202,7 @@ OptimizeResult runOptimize(
     }
 
     // setup optimisation
-    LinearizationAbsQR linearization(1);  // single-thread for deterministic tests
-    linearization.setState(state);
-    linearization.setFeatureManager(fm);
+    LinearizationAbsQR linearization(1, state, fm, TrivialLoss{}, DepthLoss::none(), nullptr);
 
     LMOptions opts;
     opts.max_iterations = 10;

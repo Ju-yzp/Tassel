@@ -25,7 +25,7 @@ FeatureTracker::FeatureTracker(
       min_gradient_thres_(min_gradient) {}
 
 void FeatureTracker::addCamera(
-    std::unique_ptr<tassel_utils::CameraBase> camera, int per_grid_rows, int per_grid_cols,
+    std::unique_ptr<tassel_core::CameraBase> camera, int per_grid_rows, int per_grid_cols,
     int grid_edge_rows, int grid_edge_cols, double mask_radius, int min_feature_num) {
     size_t camera_id = ctc_map_.size();
     CameraTrackingContext ctc;

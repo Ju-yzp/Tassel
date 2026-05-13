@@ -18,7 +18,7 @@ class LMOptimizer {
 public:
     LMOptimizer(const LMOptions& options = LMOptions());
 
-    void optimize(LinearizationAbsQR* linearization);
+    int optimize(LinearizationAbsQR* linearization);
 
 private:
     LMOptions options_;

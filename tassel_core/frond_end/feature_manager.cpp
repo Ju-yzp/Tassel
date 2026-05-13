@@ -149,9 +149,9 @@ void FeatureManager::initPoseByPNP(
 
 void FeatureManager::removeOldest(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
-    if (state.cur_frame_count > 0) {
-        Pose prev_pose = state.poses[state.cur_frame_count - 1].get_optimized_pose();
-        Pose cur_pose = state.poses[state.cur_frame_count].get_optimized_pose();
+    if (state.cur_frame_count > 1) {
+        Pose prev_pose = state.poses[0].get_optimized_pose();
+        Pose cur_pose = state.poses[1].get_optimized_pose();
         Eigen::Matrix3d prev_r = prev_pose.rotationMatrix();
         Eigen::Vector3d prev_t = prev_pose.translation();
         Eigen::Matrix3d cur_r = cur_pose.rotationMatrix();
@@ -226,6 +226,22 @@ std::vector<std::pair<int, const Feature*>> FeatureManager::collectMarginalizati
         result.emplace_back(id, &feature);
     }
     return result;
+}
+
+std::vector<Eigen::Vector3d> FeatureManager::getPointCloud(
+    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) const {
+    std::vector<Eigen::Vector3d> points;
+    for (const auto& [id, feature] : features_) {
+        if (feature.estimated_depth == INVALID_DEPTH) continue;
+        if (feature.estimated_depth <= 0) continue;
+        int start_frame_id = feature.start_frame_id;
+        if (start_frame_id >= state.cur_frame_count) continue;
+        Eigen::Vector3d pt_in_C = feature.observations[0].uv * feature.estimated_depth;
+        Eigen::Vector3d pt_in_I = ric * pt_in_C + tic;
+        Eigen::Vector3d pt_in_W = state.poses[start_frame_id].get_pose() * pt_in_I;
+        points.push_back(pt_in_W);
+    }
+    return points;
 }
 
 std::vector<Feature*> FeatureManager::collectOptimizationFeatures() {

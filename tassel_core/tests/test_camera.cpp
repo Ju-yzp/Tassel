@@ -4,9 +4,9 @@
 #include <opencv2/core.hpp>
 #include <random>
 
-#include "tassel_utils/camera_base.h"
-#include "tassel_utils/camera_equi.h"
-#include "tassel_utils/camera_rad_tan.h"
+#include "cam/camera_base.h"
+#include "cam/camera_equi.h"
+#include "cam/camera_rad_tan.h"
 
 namespace {
 
@@ -29,23 +29,22 @@ const int kHeight = 480;
 TEST(CameraBase, ThrowsOnInvalidIntrinsicsSize) {
     cv::Mat bad_K(2, 2, CV_64F);
     EXPECT_THROW(
-        tassel_utils::CameraRadTan(bad_K, radtan_D, kWidth, kHeight), std::invalid_argument);
+        tassel_core::CameraRadTan(bad_K, radtan_D, kWidth, kHeight), std::invalid_argument);
 }
 
 TEST(CameraBase, ThrowsOnInvalidDistortionSize) {
     cv::Mat bad_D(1, 3, CV_64F);  // must be 4 or 5
     EXPECT_THROW(
-        tassel_utils::CameraRadTan(radtan_K, bad_D, kWidth, kHeight), std::invalid_argument);
+        tassel_core::CameraRadTan(radtan_K, bad_D, kWidth, kHeight), std::invalid_argument);
 }
 
 TEST(CameraBase, ThrowsOnNonPositiveDimensions) {
-    EXPECT_THROW(tassel_utils::CameraRadTan(radtan_K, radtan_D, 0, kWidth), std::invalid_argument);
-    EXPECT_THROW(
-        tassel_utils::CameraRadTan(radtan_K, radtan_D, kHeight, -1), std::invalid_argument);
+    EXPECT_THROW(tassel_core::CameraRadTan(radtan_K, radtan_D, 0, kWidth), std::invalid_argument);
+    EXPECT_THROW(tassel_core::CameraRadTan(radtan_K, radtan_D, kHeight, -1), std::invalid_argument);
 }
 
 TEST(CameraBase, GettersReturnCorrectValues) {
-    tassel_utils::CameraRadTan cam(radtan_K, radtan_D, kWidth, kHeight);
+    tassel_core::CameraRadTan cam(radtan_K, radtan_D, kWidth, kHeight);
     EXPECT_EQ(cam.get_width(), kWidth);
     EXPECT_EQ(cam.get_height(), kHeight);
 }
@@ -55,7 +54,7 @@ TEST(CameraBase, GettersReturnCorrectValues) {
 class CameraRadTanTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        cam_ = std::make_unique<tassel_utils::CameraRadTan>(radtan_K, radtan_D, kWidth, kHeight);
+        cam_ = std::make_unique<tassel_core::CameraRadTan>(radtan_K, radtan_D, kWidth, kHeight);
     }
 
     // normalize pixel coords: K^-1 * pixel
@@ -67,7 +66,7 @@ protected:
         return Eigen::Vector2d((pixel(0) - cx) / fx, (pixel(1) - cy) / fy);
     }
 
-    std::unique_ptr<tassel_utils::CameraBase> cam_;
+    std::unique_ptr<tassel_core::CameraBase> cam_;
 };
 
 TEST_F(CameraRadTanTest, UndistortMatchesOpenCV) {
@@ -115,7 +114,7 @@ TEST_F(CameraRadTanTest, PixelRoundTrip) {
 class CameraEquiTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        cam_ = std::make_unique<tassel_utils::CameraEqui>(equi_K, equi_D, kWidth, kHeight);
+        cam_ = std::make_unique<tassel_core::CameraEqui>(equi_K, equi_D, kWidth, kHeight);
     }
 
     Eigen::Vector2d normalize(const Eigen::Vector2d& pixel) {
@@ -126,7 +125,7 @@ protected:
         return Eigen::Vector2d((pixel(0) - cx) / fx, (pixel(1) - cy) / fy);
     }
 
-    std::unique_ptr<tassel_utils::CameraBase> cam_;
+    std::unique_ptr<tassel_core::CameraBase> cam_;
 };
 
 TEST_F(CameraEquiTest, UndistortMatchesOpenCV) {
@@ -168,7 +167,7 @@ TEST_F(CameraEquiTest, PixelRoundTrip) {
 TEST_F(CameraEquiTest, ZeroDistortionRoundTrip) {
     // 零畸变 equi: 小 r 时 atan(r)/r ≈ 1，靠近中心时模型近似为针孔。
     cv::Mat zero_D = (cv::Mat_<double>(1, 4) << 0.0, 0.0, 0.0, 0.0);
-    tassel_utils::CameraEqui cam_zero(equi_K, zero_D, kWidth, kHeight);
+    tassel_core::CameraEqui cam_zero(equi_K, zero_D, kWidth, kHeight);
 
     std::vector<Eigen::Vector2d> norms = {
         {0.001, 0.0}, {-0.001, 0.0}, {0.0, 0.001}, {0.0, -0.001}, {0.0007, 0.0007},
@@ -182,14 +181,14 @@ TEST_F(CameraEquiTest, ZeroDistortionRoundTrip) {
 }
 
 TEST(CameraEqui, FourCoefDistortionIsValid) {
-    EXPECT_NO_THROW(tassel_utils::CameraEqui(equi_K, equi_D, kWidth, kHeight));
+    EXPECT_NO_THROW(tassel_core::CameraEqui(equi_K, equi_D, kWidth, kHeight));
 }
 
 // ── Polymorphism ───────────────────────────────────────────────────────────
 
 TEST(CameraPolymorphism, BothModelsWorkThroughBasePtr) {
-    auto radtan = std::make_unique<tassel_utils::CameraRadTan>(radtan_K, radtan_D, kWidth, kHeight);
-    auto equi = std::make_unique<tassel_utils::CameraEqui>(equi_K, equi_D, kWidth, kHeight);
+    auto radtan = std::make_unique<tassel_core::CameraRadTan>(radtan_K, radtan_D, kWidth, kHeight);
+    auto equi = std::make_unique<tassel_core::CameraEqui>(equi_K, equi_D, kWidth, kHeight);
 
     // undistort some points through base pointer
     std::vector<Eigen::Vector2d> pixels = {{350, 200}, {150, 300}, {500, 400}};

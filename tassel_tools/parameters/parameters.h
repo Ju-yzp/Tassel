@@ -1,14 +1,14 @@
-#ifndef TASSEL_UTILS_PARAMETERS_H_
-#define TASSEL_UTILS_PARAMETERS_H_
+#ifndef TASSEL_TOOLS_PARAMETERS_PARAMETERS_H_
+#define TASSEL_TOOLS_PARAMETERS_PARAMETERS_H_
 
 #include <Eigen/Core>
 #include <cstddef>
 #include <map>
 #include <opencv2/core.hpp>
 
-#include "tassel_utils/params_parser.h"
+#include "parameters/params_parser.h"
 
-namespace tassel_utils {
+namespace tassel_tools {
 
 struct Parameters {
     explicit Parameters(const std::string& config_file) {
@@ -37,7 +37,7 @@ struct Parameters {
         min_pnp_num = parser.as<int>("min_pnp_num");
         tracked_times_thres = parser.as<int>("tracked_times_thres");
         min_pnp_inliers_ratio = parser.as<double>("min_pnp_inliers_ratio");
-        double min_translation = parser.as<double>("min_translation");
+        min_translation = parser.as<double>("min_translation");
         min_depth = parser.as<double>("min_depth");
         max_depth = parser.as<double>("max_depth");
 
@@ -59,6 +59,11 @@ struct Parameters {
         repropagate_ba_thres = parser.as<double>("repropagate_ba_thres");
         repropagate_bg_thres = parser.as<double>("repropagate_bg_thres");
         num_threads = parser.as<int>("num_threads");
+
+        // ── VO estimator ──────────────────────────────────────────────
+        optimize_enabled = parser.as<bool>("optimize_enabled");
+        marginalization_enabled = parser.as<bool>("marginalization_enabled");
+        lambda_initial = parser.as<double>("lambda_initial");
 
         // ── IMU noise ──────────────────────────────────────────────────
         acc_n = parser.as<double>("acc_n");
@@ -107,11 +112,16 @@ struct Parameters {
     double repropagate_bg_thres;
     int num_threads;
 
+    // ── VO estimator ────────────────────────────────────────────────────
+    bool optimize_enabled;
+    bool marginalization_enabled;
+    double lambda_initial;
+
     // ── IMU noise ──────────────────────────────────────────────────────
     double acc_n, acc_w;
     double gyr_n, gyr_w;
 };
 
-}  // namespace tassel_utils
+}  // namespace tassel_tools
 
-#endif  // TASSEL_UTILS_PARAMETERS_H_
+#endif  // TASSEL_TOOLS_PARAMETERS_PARAMETERS_H_

@@ -3,8 +3,8 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 
-#include "tassel_core/feature_tracker.h"
-#include "tassel_utils/camera_rad_tan.h"
+#include "cam/camera_rad_tan.h"
+#include "frond_end/feature_tracker.h"
 #include "tassel_utils/timer.h"
 
 int main() {
@@ -40,7 +40,7 @@ int main() {
     auto queue = device.getOutputQueue("mono", 8, false);
 
     // Feature tracker
-    auto camera = std::make_unique<tassel_utils::CameraRadTan>(K, D, cols, rows);
+    auto camera = std::make_unique<tassel_core::CameraRadTan>(K, D, cols, rows);
     tassel_core::FeatureTracker tracker(
         flow_back, max_square_move_dist, enable_statistics, 5, min_gradient);
     tracker.addCamera(std::move(camera), per_grid_rows, per_grid_cols, edge_y, edge_x, mask_radius);

@@ -5,6 +5,7 @@
 #include <sophus/se3.hpp>
 
 #include "frond_end/feature.h"
+#include "loss_fuction/loss_fuction_base.h"
 #include "state/state.h"
 
 namespace tassel_core {
@@ -21,7 +22,9 @@ class LandmarkBlock {
 public:
     LandmarkBlock();
 
-    void allocate(Feature* const feature, State* const state);
+    void allocate(
+        Feature* const feature, State* const state, const LossVariant& reprojection_loss,
+        const DepthLoss& depth_loss);
 
     double linearize();
 
@@ -70,28 +73,30 @@ private:
         Eigen::Matrix<double, 2, 6>& jacobian_T, Eigen::Matrix<double, 2, 1>& jacobian_L,
         Eigen::Matrix<double, 2, 1>& residual);
 
-    // 存储残差对于位姿部分，残差对于逆深度的雅各比矩阵，以及残差
     // | J_p 2x6N | padding | J_l 2x1 | residual 2x1 |
     // | damping 3 x cols|
     Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> storage_;
 
     std::vector<Eigen::JacobiRotation<double>> damping_rotations_;
 
-    int lm_idx_;       // 逆深度的列索引
-    int res_idx_;      // 残差的列索引
-    int padding_idx_;  // 内存对齐填充
+    int lm_idx_;
+    int res_idx_;
+    int padding_idx_;
     int padding_size_;
 
     int num_cols_, num_rows_;
 
-    State* state_;      // 状态量
-    Feature* feature_;  // 特征点
+    State* state_;
+    Feature* feature_;
 
     std::vector<Eigen::Matrix<double, 2, 3>> tangent_base_vec_;
 
     double Jl_col_scale_;
 
     LandmarkState lms_;
+
+    LossVariant reprojection_loss_;
+    DepthLoss depth_loss_;
 };
 }  // namespace tassel_core
 #endif  // TASSEL_CORE_LINEARIZATION_LANDMARK_BLOCK_H_

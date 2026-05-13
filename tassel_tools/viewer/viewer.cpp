@@ -1,4 +1,4 @@
-#include "tassel_tools/viewer.h"
+#include "viewer/viewer.h"
 
 namespace tassel_tools {
 Viewer::Viewer(const std::string& frame_id) : Node("viewer"), frame_id_(frame_id) {

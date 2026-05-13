@@ -7,7 +7,7 @@
 
 namespace tassel_core {
 struct MargLinData {
-    State old_state;
+    MargLinData() {}
     Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic> H;
     Eigen::Matrix<double, Eigen::Dynamic, 1> b;
 };

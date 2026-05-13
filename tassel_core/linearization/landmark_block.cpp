@@ -32,9 +32,18 @@ void compute_feature_linearization_block(
     Eigen::Vector3d pt_in_W = T_w_h * pt_in_H;
     Eigen::Vector3d pt_in_T = T_w_t.inverse() * pt_in_W;
 
-    residual = tangent_base * (pt_in_T.normalized() - uv_target);
-
     double norm = pt_in_T.norm();
+    if (norm < 1e-12) {
+        // point projects to camera center — cannot compute meaningful Jacobian
+        jacobian_H.setZero();
+        jacobian_T.setZero();
+        jacobian_L.setZero();
+        residual.setZero();
+        return;
+    }
+
+    residual = tangent_base * (pt_in_T / norm - uv_target);
+
     Eigen::Matrix3d jaco_norm =
         1.0 / norm *
         (Eigen::Matrix3d::Identity() - (pt_in_T * pt_in_T.transpose()) / (norm * norm));
@@ -47,7 +56,7 @@ void compute_feature_linearization_block(
     jacobian_H = reduce * J_host_3d;
 
     Eigen::Matrix<double, 3, 6> J_target_3d;
-    J_target_3d.block<3, 3>(0, 0) = -R_t_inv;
+    J_target_3d.block<3, 3>(0, 0) = -Eigen::Matrix3d::Identity();
     J_target_3d.block<3, 3>(0, 3) = Sophus::SO3d::hat(pt_in_T);
     jacobian_T = reduce * J_target_3d;
 
@@ -66,9 +75,13 @@ LandmarkBlock::LandmarkBlock()
       Jl_col_scale_(1.0),
       lms_(LandmarkState::Initialized) {}
 
-void LandmarkBlock::allocate(Feature* const feature, State* const state) {
+void LandmarkBlock::allocate(
+    Feature* const feature, State* const state, const LossVariant& reprojection_loss,
+    const DepthLoss& depth_loss) {
     state_ = state;
     feature_ = feature;
+    reprojection_loss_ = reprojection_loss;
+    depth_loss_ = depth_loss;
 
     int num_frames = state_->max_frame_count;
     int start_frame_id = feature_->start_frame_id;
@@ -134,12 +147,16 @@ double LandmarkBlock::linearize() {
 
         evaluate(start_frame_id, frame_id_T, jacobian_H, jacobian_T, jacobian_L, residual);
 
-        error_sum += 0.5 * residual.squaredNorm();
+        double s = residual.norm();
+        double w = computeWeight(reprojection_loss_, s);
+        double scale = std::sqrt(w);
 
-        storage_.block<2, 6>(row, start_frame_id * tassel_utils::POSE_SIZE) += jacobian_H;
-        storage_.block<2, 6>(row, frame_id_T * tassel_utils::POSE_SIZE) += jacobian_T;
-        storage_.block<2, 1>(row, lm_idx_) += jacobian_L;
-        storage_.block<2, 1>(row, res_idx_) += residual;
+        error_sum += computeRho(reprojection_loss_, s);
+
+        storage_.block<2, 6>(row, start_frame_id * tassel_utils::POSE_SIZE) += scale * jacobian_H;
+        storage_.block<2, 6>(row, frame_id_T * tassel_utils::POSE_SIZE) += scale * jacobian_T;
+        storage_.block<2, 1>(row, lm_idx_) += scale * jacobian_L;
+        storage_.block<2, 1>(row, res_idx_) += scale * residual;
     }
 
     lms_ = LandmarkState::Linearized;
@@ -147,18 +164,11 @@ double LandmarkBlock::linearize() {
 }
 
 void LandmarkBlock::performQR() {
-    // Householder QR on single landmark column (1-DOF inverse depth)
-    // Eigen::VectorXd tempVector1(num_cols_);
-    // Eigen::VectorXd tempVector2(num_rows_ - 1);
-
-    // size_t remainingRows = num_rows_ - 1;
-
-    // double beta;
-    // double tau;
-    // storage_.col(lm_idx_).head(remainingRows).makeHouseholder(tempVector2, tau, beta);
-
-    // storage_.block(0, 0, remainingRows, num_cols_)
-    //     .applyHouseholderOnTheLeft(tempVector2, tau, tempVector1.data());
+    if (num_rows_ < 3) {
+        // Not enough rows for meaningful QR — mark as marginalized anyway
+        lms_ = LandmarkState::Marginalized;
+        return;
+    }
 
     Eigen::JacobiRotation<double> gr;
     for (size_t m = num_rows_ - 2; m > 0; m--) {
@@ -268,6 +278,13 @@ void LandmarkBlock::backSubstitute(const Eigen::VectorXd& pose_inc, double& l_di
     const double Q1Jr = storage_(0, res_idx_);
     const auto Q1Jp = storage_.row(0).head(padding_idx_);
 
+    // Guard against near-zero Q1Jl — would produce infinite depth update
+    // and poison subsequent Jacobian computations with NaN.
+    if (std::abs(Q1Jl) < 1e-12) {
+        setLandmarkDamping(0);
+        return;
+    }
+
     double inc = -(Q1Jr + Q1Jp.dot(pose_inc)) / Q1Jl;
 
     // We want to compute the model cost change. The model function is
@@ -325,6 +342,8 @@ void LandmarkBlock::backSubstitute(const Eigen::VectorXd& pose_inc, double& l_di
 
     // Note: scale only after computing model cost change
     inc *= Jl_col_scale_;
+
+    inc = depth_loss_.apply(inc);
 
     feature_->estimated_depth = std::max(0.0, feature_->estimated_depth + inc);
 }
