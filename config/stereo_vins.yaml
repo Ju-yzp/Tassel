@@ -52,6 +52,8 @@ min_pnp_inliers_ratio: 0.85
 min_depth: 0.1
 max_depth: 3.0
 min_translation: 0.1
+min_tracked_pts_num: 20
+
 # ── estimator ─────────────────────────────────────────────────────────────
 use_imu: true
 visual_sqrt_info: 340.0

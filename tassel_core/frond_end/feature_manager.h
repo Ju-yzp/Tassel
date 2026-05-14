@@ -15,7 +15,7 @@ class FeatureManager {
 public:
     FeatureManager(
         double reprojection_error_thres, double parallax_thres, int tracked_times_thres,
-        int max_pnp_needed_num, int min_pnp_pt_num, double min_pnp_inliers_ratio,
+        int min_tracked_pts_num, int min_pnp_pt_num, double min_pnp_inliers_ratio,
         double min_translation, double min_depth = MIN_DISTANCE, double max_depth = MAX_DISTANCE);
 
     bool checkKeyFrameByParallax(
@@ -41,12 +41,10 @@ public:
 
     std::vector<std::pair<int, const Feature*>> collectMarginalizationFeatures() const;
 
-    // ── Point cloud ──────────────────────────────────────────────────────────
     std::vector<Eigen::Vector3d> getPointCloud(
         const State& state, const Eigen::Matrix3d& ric = Eigen::Matrix3d::Identity(),
         const Eigen::Vector3d& tic = Eigen::Vector3d::Zero()) const;
 
-    // Test-only: direct access to feature map
     std::unordered_map<int, Feature>& testFeatures() { return features_; }
 
 private:
@@ -56,6 +54,8 @@ private:
 
     int tracked_times_thres_;
 
+    int min_tracked_pts_num_;
+
     int min_pnp_pt_num_;
 
     double min_pnp_inliers_ratio_;
@@ -63,8 +63,6 @@ private:
     double min_translation_;
 
     double min_depth_, max_depth_;
-
-    int max_pnp_needed_num_;
 
     std::unordered_map<int, Feature> features_;
 };

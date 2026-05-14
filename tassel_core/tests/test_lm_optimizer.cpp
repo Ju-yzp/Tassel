@@ -7,8 +7,8 @@
 #include "frond_end/feature_manager.h"
 #include "linearization/landmark_block.h"
 #include "linearization/linearization_abs_qr.h"
-#include "lm_optimizer/lm_optimizer.h"
 #include "loss_fuction/loss_fuction_base.h"
+#include "optimizer/lm_optimizer.h"
 #include "state/state.h"
 
 namespace tassel_core {
@@ -96,7 +96,6 @@ protected:
         // initialise state with ground-truth poses (will be noised later)
         for (int i = 0; i < NUM_FRAMES; ++i) {
             state_->poses[i] = PoseStateWithLin(gt_poses_[i]);
-            state_->poses[i].set_optimized_pose(gt_poses_[i]);
         }
 
         // generate world points visible in the first frame
@@ -202,7 +201,8 @@ OptimizeResult runOptimize(
     }
 
     // setup optimisation
-    LinearizationAbsQR linearization(1, state, fm, TrivialLoss{}, DepthLoss::none(), nullptr);
+    LinearizationAbsQR linearization(
+        1, state, fm, TrivialLoss{}, DepthLoss::none(), MIN_DISTANCE, MAX_DISTANCE, nullptr);
 
     LMOptions opts;
     opts.max_iterations = 10;

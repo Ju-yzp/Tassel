@@ -22,7 +22,8 @@ public:
         const Eigen::Matrix3d& ric1 = Eigen::Matrix3d::Identity(),
         const Eigen::Vector3d& tic1 = Eigen::Vector3d::Zero());
 
-    bool processMeasurement(const std::unordered_map<int, FeaturePerFrame>& feature_frame);
+    void processMeasurement(
+        double ts, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
 
     std::shared_ptr<State> getState() const { return state_; }
     std::shared_ptr<FeatureManager> getFeatureManager() const { return feature_manager_; }
@@ -42,6 +43,8 @@ private:
     Eigen::Vector3d tic_;
     Eigen::Matrix3d ric1_;
     Eigen::Vector3d tic1_;
+
+    double init_ts_;
 };
 
 }  // namespace tassel_core

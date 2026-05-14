@@ -3,8 +3,6 @@
 
 #include <Eigen/Dense>
 
-#include "state/state.h"
-
 namespace tassel_core {
 struct MargLinData {
     MargLinData() {}

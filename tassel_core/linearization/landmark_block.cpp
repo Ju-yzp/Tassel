@@ -1,4 +1,5 @@
 #include "landmark_block.h"
+#include <spdlog/spdlog.h>
 #include "frond_end/feature.h"
 #include "tassel_utils/macros.h"
 
@@ -18,7 +19,7 @@ Eigen::Matrix<double, 2, 3> compute_tangent_base(Eigen::Vector3d uv) {
     return tangent_base;
 }
 
-void compute_feature_linearization_block(
+bool compute_feature_linearization_block(
     const Sophus::SE3d& T_w_h, const Sophus::SE3d& T_w_t, double depth,
     const Eigen::Vector3d& uv_host, const Eigen::Vector3d& uv_target,
     const Eigen::Matrix<double, 2, 3>& tangent_base, Eigen::Matrix<double, 2, 6>& jacobian_H,
@@ -33,13 +34,8 @@ void compute_feature_linearization_block(
     Eigen::Vector3d pt_in_T = T_w_t.inverse() * pt_in_W;
 
     double norm = pt_in_T.norm();
-    if (norm < 1e-12) {
-        // point projects to camera center — cannot compute meaningful Jacobian
-        jacobian_H.setZero();
-        jacobian_T.setZero();
-        jacobian_L.setZero();
-        residual.setZero();
-        return;
+    if (pt_in_T.z() < 0.0) {
+        return false;
     }
 
     residual = tangent_base * (pt_in_T / norm - uv_target);
@@ -62,9 +58,11 @@ void compute_feature_linearization_block(
 
     Eigen::Vector3d jaco_depth_3d = R_t_inv * R_h * uv_host;
     jacobian_L = reduce * jaco_depth_3d;
+
+    return true;
 }
 
-LandmarkBlock::LandmarkBlock()
+LandmarkBlock::LandmarkBlock(double min_depth, double max_depth)
     : lm_idx_(0),
       res_idx_(0),
       padding_idx_(0),
@@ -73,11 +71,14 @@ LandmarkBlock::LandmarkBlock()
       state_(nullptr),
       feature_(nullptr),
       Jl_col_scale_(1.0),
-      lms_(LandmarkState::Initialized) {}
+      lms_(LandmarkState::Uninitialized),
+      min_depth_(min_depth),
+      max_depth_(max_depth) {}
 
 void LandmarkBlock::allocate(
     Feature* const feature, State* const state, const LossVariant& reprojection_loss,
     const DepthLoss& depth_loss) {
+    TASSEL_ASSERT(lms_ == LandmarkState::Uninitialized);
     state_ = state;
     feature_ = feature;
     reprojection_loss_ = reprojection_loss;
@@ -91,14 +92,11 @@ void LandmarkBlock::allocate(
         tangent_base_vec_[start_frame_id + i] = compute_tangent_base(feature_->observations[i].uv);
     }
 
-    // Total pose Jacobian columns
     padding_idx_ = num_frames * tassel_utils::POSE_SIZE;
 
-    // Each target-frame observation contributes 2 rows; +1 damping row (1-DOF inverse depth)
     int num_obs = static_cast<int>(feature_->observations.size()) - 1;
     num_rows_ = num_obs * 2 + 1;
 
-    // Padding for 4-column alignment
     int pad = padding_idx_ % 4;
     int padding_cols = (pad != 0) ? (4 - pad) : 0;
 
@@ -112,7 +110,7 @@ void LandmarkBlock::allocate(
     lms_ = LandmarkState::Allocated;
 }
 
-void LandmarkBlock::evaluate(
+bool LandmarkBlock::evaluate(
     int frame_id_H, int frame_id_T, Eigen::Matrix<double, 2, 6>& jacobian_H,
     Eigen::Matrix<double, 2, 6>& jacobian_T, Eigen::Matrix<double, 2, 1>& jacobian_L,
     Eigen::Matrix<double, 2, 1>& residual) {
@@ -124,14 +122,20 @@ void LandmarkBlock::evaluate(
     Eigen::Vector3d uv_target = feature_->observations[frame_id_T - frame_id_H].uv;
     double depth = feature_->estimated_depth;
 
-    compute_feature_linearization_block(
+    return compute_feature_linearization_block(
         T_w_h, T_w_t, depth, uv_host, uv_target, tangent_base, jacobian_H, jacobian_T, jacobian_L,
         residual);
 }
 
 double LandmarkBlock::linearize() {
+    TASSEL_ASSERT(
+        lms_ == LandmarkState::Allocated || lms_ == LandmarkState::Linearized ||
+        lms_ == LandmarkState::Marginalized || lms_ == LandmarkState::NumericalFailure);
     storage_.setZero();
+    damping_rotations_.clear();
+    damping_rotations_.reserve(6);
 
+    bool numerically_valid = true;
     int start_frame_id = feature_->start_frame_id;
     auto& observations = feature_->observations;
 
@@ -139,37 +143,41 @@ double LandmarkBlock::linearize() {
     Eigen::Matrix<double, 2, 1> jacobian_L;
     Eigen::Matrix<double, 2, 1> residual;
 
+    if (static_cast<int>(observations.size()) <= 2) {
+        spdlog::error("Observation size is less than 2");
+    }
+
     double error_sum = 0.0;
     for (int offset = 1; offset < static_cast<int>(observations.size()); ++offset) {
         int frame_id_T = start_frame_id + offset;
         int obs_idx = offset - 1;
         int row = obs_idx * 2;
 
-        evaluate(start_frame_id, frame_id_T, jacobian_H, jacobian_T, jacobian_L, residual);
+        if (evaluate(start_frame_id, frame_id_T, jacobian_H, jacobian_T, jacobian_L, residual)) {
+            numerically_valid = numerically_valid && jacobian_H.array().isFinite().all() &&
+                                jacobian_L.array().isFinite().all();
+            double s = residual.norm();
+            double w = computeWeight(reprojection_loss_, s);
+            double scale = std::sqrt(w);
 
-        double s = residual.norm();
-        double w = computeWeight(reprojection_loss_, s);
-        double scale = std::sqrt(w);
+            error_sum += computeRho(reprojection_loss_, s);
 
-        error_sum += computeRho(reprojection_loss_, s);
-
-        storage_.block<2, 6>(row, start_frame_id * tassel_utils::POSE_SIZE) += scale * jacobian_H;
-        storage_.block<2, 6>(row, frame_id_T * tassel_utils::POSE_SIZE) += scale * jacobian_T;
-        storage_.block<2, 1>(row, lm_idx_) += scale * jacobian_L;
-        storage_.block<2, 1>(row, res_idx_) += scale * residual;
+            storage_.block<2, 6>(row, start_frame_id * tassel_utils::POSE_SIZE) +=
+                scale * jacobian_H;
+            storage_.block<2, 6>(row, frame_id_T * tassel_utils::POSE_SIZE) += scale * jacobian_T;
+            storage_.block<2, 1>(row, lm_idx_) += scale * jacobian_L;
+            storage_.block<2, 1>(row, res_idx_) += scale * residual;
+        }
     }
-
-    lms_ = LandmarkState::Linearized;
+    if (numerically_valid) {
+        lms_ = LandmarkState::Linearized;
+    } else {
+        lms_ = LandmarkState::NumericalFailure;
+    }
     return error_sum;
 }
 
 void LandmarkBlock::performQR() {
-    if (num_rows_ < 3) {
-        // Not enough rows for meaningful QR — mark as marginalized anyway
-        lms_ = LandmarkState::Marginalized;
-        return;
-    }
-
     Eigen::JacobiRotation<double> gr;
     for (size_t m = num_rows_ - 2; m > 0; m--) {
         gr.makeGivens(storage_(m - 1, lm_idx_), storage_(m, lm_idx_));
@@ -269,6 +277,9 @@ void LandmarkBlock::setLandmarkDamping(double lambda) {
 }
 
 void LandmarkBlock::backSubstitute(const Eigen::VectorXd& pose_inc, double& l_diff) {
+    if (lms_ == LandmarkState::NumericalFailure) {
+        return;
+    }
     TASSEL_ASSERT(lms_ == LandmarkState::Marginalized);
 
     // For now we include all columns in LMB
@@ -343,8 +354,9 @@ void LandmarkBlock::backSubstitute(const Eigen::VectorXd& pose_inc, double& l_di
     // Note: scale only after computing model cost change
     inc *= Jl_col_scale_;
 
-    inc = depth_loss_.apply(inc);
-
-    feature_->estimated_depth = std::max(0.0, feature_->estimated_depth + inc);
+    feature_->estimated_depth = 1.0 / (1.0 / feature_->estimated_depth + inc);
+    if (feature_->estimated_depth < min_depth_ || feature_->estimated_depth > max_depth_) {
+        lms_ = LandmarkState::NumericalFailure;
+    }
 }
 }  // namespace tassel_core

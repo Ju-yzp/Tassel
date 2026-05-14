@@ -162,7 +162,7 @@ protected:
     void CheckLowNoise() {
         Feature f = MakeFeature(0, P_world_, poses_);
         AddNoiseObs(f.observations, 1e-4, rng_);
-        f.monoTriangulate(*state_, ric_, tic_, MIN_DISTANCE, MAX_DISTANCE);
+        f.monoTriangulate(*state_, ric_, tic_, 0.0, MIN_DISTANCE, MAX_DISTANCE);
         EXPECT_NEAR(f.estimated_depth, P_world_.z(), 0.005);
     }
 
@@ -181,7 +181,7 @@ TEST_F(monoTriangulateTest, OffCenterPoint) {
     Eigen::Vector3d P(-0.3, 0.2, 1.5);
     Feature f = MakeFeature(0, P, poses_);
     AddNoiseObs(f.observations, 1e-4, rng_);
-    f.monoTriangulate(*state_, ric_, tic_, MIN_DISTANCE, MAX_DISTANCE);
+    f.monoTriangulate(*state_, ric_, tic_, 0.0, MIN_DISTANCE, MAX_DISTANCE);
     EXPECT_NEAR(f.estimated_depth, P.z(), 0.005);
 }
 
@@ -191,7 +191,7 @@ TEST_F(monoTriangulateTest, MinimalFrames) {
     SetupState(p, *s, ric_, tic_);
     Feature f = MakeFeature(0, P_world_, p);
     AddNoiseObs(f.observations, 1e-4, rng_);
-    f.monoTriangulate(*s, ric_, tic_, MIN_DISTANCE, MAX_DISTANCE);
+    f.monoTriangulate(*s, ric_, tic_, 0.0, MIN_DISTANCE, MAX_DISTANCE);
     EXPECT_NEAR(f.estimated_depth, P_world_.z(), 0.005);
 }
 
@@ -200,7 +200,7 @@ TEST_F(monoTriangulateTest, TooFewFrames) {
     auto s = std::make_shared<State>(2);
     SetupState(p, *s, ric_, tic_);
     Feature f = MakeFeature(0, P_world_, p);
-    f.monoTriangulate(*s, ric_, tic_, MIN_DISTANCE, MAX_DISTANCE);
+    f.monoTriangulate(*s, ric_, tic_, 0.0, MIN_DISTANCE, MAX_DISTANCE);
     EXPECT_DOUBLE_EQ(f.estimated_depth, INVALID_DEPTH);
 }
 
@@ -211,7 +211,7 @@ TEST_F(monoTriangulateTest, NoisyPoses) {
     SetupState(poses_, *s, ric_, tic_);
     Feature f = MakeFeature(0, P_world_, poses_);
     AddNoiseObs(f.observations, 1e-4, rng_);
-    f.monoTriangulate(*s, ric_, tic_, MIN_DISTANCE, MAX_DISTANCE);
+    f.monoTriangulate(*s, ric_, tic_, 0.0, MIN_DISTANCE, MAX_DISTANCE);
     EXPECT_NEAR(f.estimated_depth, P_world_.z(), 0.1);
 }
 
@@ -219,7 +219,7 @@ TEST_F(monoTriangulateTest, NoisyObservations) {
     // σ = 0.002 归一化坐标 ≈ 0.8 px (f=400) → depth 误差 ≤ 10 cm
     Feature f = MakeFeature(0, P_world_, poses_);
     AddNoiseObs(f.observations, 0.002, rng_);
-    f.monoTriangulate(*state_, ric_, tic_, MIN_DISTANCE, MAX_DISTANCE);
+    f.monoTriangulate(*state_, ric_, tic_, 0.0, MIN_DISTANCE, MAX_DISTANCE);
     EXPECT_NEAR(f.estimated_depth, P_world_.z(), 0.1);
 }
 
@@ -228,29 +228,29 @@ TEST_F(monoTriangulateTest, PureRotationFails) {
     auto s = std::make_shared<State>(4);
     SetupState(rp, *s, ric_, tic_);
     Feature f = MakeFeature(0, P_world_, rp);
-    f.monoTriangulate(*s, ric_, tic_, MIN_DISTANCE, MAX_DISTANCE);
+    f.monoTriangulate(*s, ric_, tic_, 0.0, MIN_DISTANCE, MAX_DISTANCE);
     EXPECT_DOUBLE_EQ(f.estimated_depth, INVALID_DEPTH);
 }
 
 TEST_F(monoTriangulateTest, PointTooCloseRejected) {
     Feature f = MakeFeature(0, {0.0, 0.0, 0.05}, poses_);
-    f.monoTriangulate(*state_, ric_, tic_, MIN_DISTANCE, MAX_DISTANCE);
+    f.monoTriangulate(*state_, ric_, tic_, 0.0, MIN_DISTANCE, MAX_DISTANCE);
     EXPECT_DOUBLE_EQ(f.estimated_depth, INVALID_DEPTH);
 }
 
 TEST_F(monoTriangulateTest, PointTooFarRejected) {
     Feature f = MakeFeature(0, {0.0, 0.0, 5.0}, poses_);
-    f.monoTriangulate(*state_, ric_, tic_, MIN_DISTANCE, MAX_DISTANCE);
+    f.monoTriangulate(*state_, ric_, tic_, 0.0, MIN_DISTANCE, MAX_DISTANCE);
     EXPECT_DOUBLE_EQ(f.estimated_depth, INVALID_DEPTH);
 }
 
 TEST_F(monoTriangulateTest, DepthAlreadySet) {
     Feature f = MakeFeature(0, P_world_, poses_);
     AddNoiseObs(f.observations, 1e-4, rng_);
-    f.monoTriangulate(*state_, ric_, tic_, MIN_DISTANCE, MAX_DISTANCE);
+    f.monoTriangulate(*state_, ric_, tic_, 0.0, MIN_DISTANCE, MAX_DISTANCE);
     ASSERT_NEAR(f.estimated_depth, P_world_.z(), 0.005);
     f.estimated_depth = 0.5;
-    f.monoTriangulate(*state_, ric_, tic_, MIN_DISTANCE, MAX_DISTANCE);
+    f.monoTriangulate(*state_, ric_, tic_, 0.0, MIN_DISTANCE, MAX_DISTANCE);
     EXPECT_DOUBLE_EQ(f.estimated_depth, 0.5);
 }
 
@@ -347,7 +347,7 @@ TEST_F(SlideWindowTest, RemoveOldestReparenting) {
 
     Feature f = MakeFeature(0, P_world_, poses);
     AddNoiseObs(f.observations, 1e-4, rng_);
-    f.monoTriangulate(*state, ric_, tic_, MIN_DISTANCE, MAX_DISTANCE);
+    f.monoTriangulate(*state, ric_, tic_, 0.0, MIN_DISTANCE, MAX_DISTANCE);
     ASSERT_NEAR(f.estimated_depth, P_world_.z(), 0.005);
 
     f.removeOldest(

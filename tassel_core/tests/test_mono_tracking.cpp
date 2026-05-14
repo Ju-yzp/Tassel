@@ -51,7 +51,8 @@ int main() {
         auto frame = queue->get<dai::ImgFrame>();
         if (!frame) continue;
 
-        cv::Mat img(frame->getHeight(), frame->getWidth(), CV_8UC1, frame->getData().data());
+        auto data = frame->getData();
+        cv::Mat img(frame->getHeight(), frame->getWidth(), CV_8UC1, data.data());
         img = img.clone();
 
         {

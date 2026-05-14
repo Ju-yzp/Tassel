@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include <Eigen/SVD>
+#include <vector>
 #include "state/state.h"
 
 namespace tassel_core {
@@ -48,20 +49,19 @@ void Feature::stereoTriangulate(
 }
 
 void Feature::monoTriangulate(
-    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, double min_depth,
-    double max_depth) {
+    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
+    double min_translation, double min_depth, double max_depth) {
     if (estimated_depth != INVALID_DEPTH) {
         return;
     }
     if (observations.size() > 2) {
-        Eigen::MatrixXd A(2 * static_cast<int>(observations.size()), 4);
         Pose reference_pose = state.poses[start_frame_id].get_optimized_pose();
         Eigen::Matrix3d reference_r = reference_pose.rotationMatrix();
         Eigen::Vector3d reference_t = reference_r * tic + reference_pose.translation();
 
         int cur_frame_id = start_frame_id;
 
-        int row = 0;
+        std::vector<Eigen::Matrix<double, 2, 4>> conditions;
         for (auto& observation : observations) {
             Pose cur_pose = state.poses[cur_frame_id].get_optimized_pose();
             Eigen::Matrix3d cur_r = cur_pose.rotationMatrix() * ric;
@@ -69,16 +69,29 @@ void Feature::monoTriangulate(
 
             Eigen::Matrix3d dr = cur_r.transpose() * reference_r;
             Eigen::Vector3d dt = cur_r.transpose() * (reference_t - cur_t);
-            Eigen::Matrix<double, 3, 4> pose;
-            pose.block(0, 0, 3, 3) = dr;
-            pose.block(0, 3, 3, 1) = dt;
-            Eigen::Vector3d direction = observation.uv;
+            Eigen::Matrix<double, 2, 4> condition;
+            if (dt.norm() > min_translation) {
+                Eigen::Matrix<double, 3, 4> pose;
+                pose.block(0, 0, 3, 3) = dr;
+                pose.block(0, 3, 3, 1) = dt;
+                Eigen::Vector3d direction = observation.uv;
 
-            A.row(row++) = direction.x() * pose.row(2) - pose.row(0);
-            A.row(row++) = direction.y() * pose.row(2) - pose.row(1);
+                condition.row(0) = direction.x() * pose.row(2) - pose.row(0);
+                condition.row(1) = direction.y() * pose.row(2) - pose.row(1);
+            }
             ++cur_frame_id;
         }
 
+        if (conditions.size() < 2) {
+            // spdlog::info("conditions.size() < 2");
+            return;
+        }
+        Eigen::MatrixXd A(2 * static_cast<int>(conditions.size()), 4);
+        int row = 0;
+        for (auto cond : conditions) {
+            A.row(row++) = cond.row(0);
+            A.row(row++) = cond.row(1);
+        }
         Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeFullV);
         Eigen::Vector4d homogeneous_point = svd.matrixV().col(3);
         Eigen::Vector3d point_3d = homogeneous_point.head<3>() / homogeneous_point(3);

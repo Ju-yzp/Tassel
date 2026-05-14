@@ -5,8 +5,8 @@
 #include <Eigen/Core>
 
 #include "linearization/linearization_abs_qr.h"
-#include "lm_optimizer/lm_optimizer.h"
 #include "marginalization/marg_helper.h"
+#include "optimizer/lm_optimizer.h"
 #include "tassel_utils/macros.h"
 
 namespace tassel_core {
@@ -21,7 +21,8 @@ VoEstimator::VoEstimator(
       ric_(ric),
       tic_(tic),
       ric1_(ric1),
-      tic1_(tic1) {
+      tic1_(tic1),
+      init_ts_(-1) {
     state_->cur_frame_count = 0;
     initializeMargPrior();
 }
@@ -40,24 +41,27 @@ void VoEstimator::initializeMargPrior() {
     cur_marg_lin_data_->b = Eigen::VectorXd::Zero(tassel_utils::POSE_SIZE);
 }
 
-bool VoEstimator::processMeasurement(
-    const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
+void VoEstimator::processMeasurement(
+    double ts, const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
+    if (init_ts_ == -1) {
+        init_ts_ = ts;
+    }
+    if (ts - init_ts_ < 5.0) {
+        return;
+    }
     int& frame_count = state_->cur_frame_count;
 
     // Pose prediction: copy previous pose
     if (frame_count > 0) {
         state_->poses[frame_count] = state_->poses[frame_count - 1];
-        state_->poses[frame_count].set_optimized_pose(
-            state_->poses[frame_count - 1].get_optimized_pose());
     } else {
         state_->poses[0] = PoseStateWithLin(Sophus::SE3d());
-        state_->poses[0].set_optimized_pose(Sophus::SE3d());
     }
 
     bool is_keyframe = feature_manager_->checkKeyFrameByParallax(frame_count, feature_frame);
 
     if (is_keyframe) {
-        if (frame_count + 1 >= state_->max_frame_count) {
+        if (frame_count + 1 == state_->max_frame_count) {
             feature_manager_->initPoseByPNP(
                 *state_, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
             feature_manager_->triangulate(*state_, ric_, tic_, ric1_, tic1_);
@@ -83,8 +87,6 @@ bool VoEstimator::processMeasurement(
     } else {
         feature_manager_->removeNewest(frame_count);
     }
-
-    return is_keyframe;
 }
 
 void VoEstimator::optimize() {
@@ -98,7 +100,7 @@ void VoEstimator::optimize() {
 
     LinearizationAbsQR linearization(
         4, state_, feature_manager_, option_.reprojection_loss, option_.depth_loss,
-        cur_marg_lin_data_);
+        option_.min_depth, option_.max_depth, cur_marg_lin_data_);
 
     double initial_cost = linearization.computeError();
 
@@ -106,17 +108,11 @@ void VoEstimator::optimize() {
     opts.max_iterations = option_.num_iterations;
     opts.lambda_initial = option_.lambda_initial;
     LMOptimizer optimizer(opts);
-    int iterations = optimizer.optimize(&linearization);
-
-    double final_cost = linearization.computeError();
+    auto result = optimizer.optimize(&linearization);
 
     spdlog::info(
-        "optimize: initial_cost={:.6f}, final_cost={:.6f}, iterations={}", initial_cost, final_cost,
-        iterations);
-
-    for (int i = 0; i < state_->cur_frame_count; i++) {
-        state_->poses[i].set_optimized_pose(state_->poses[i].get_pose());
-    }
+        "optimize: initial_cost={:.6f}, final_cost={:.6f}, iterations={}", initial_cost,
+        result.final_error, result.num_iterations);
 }
 
 void VoEstimator::marginalizeOldestFrame() {
@@ -126,7 +122,7 @@ void VoEstimator::marginalizeOldestFrame() {
     // as prior rows, accumulating over multiple marginalizations.
     LinearizationAbsQR linearization(
         4, state_, feature_manager_, option_.reprojection_loss, option_.depth_loss,
-        cur_marg_lin_data_);
+        option_.min_depth, option_.max_depth, cur_marg_lin_data_);
     linearization.linearizeProbelm();
     linearization.performQR();
 
@@ -155,13 +151,10 @@ void VoEstimator::slideWindow() {
         if (state_->poses[i + 1].isLinearized()) {
             actual_pose = actual_pose * Sophus::SE3d::exp(state_->poses[i + 1].get_delta());
         }
-        Pose optimized_pose = state_->poses[i + 1].get_optimized_pose();
 
         state_->poses[i] = PoseStateWithLin(actual_pose);
-        state_->poses[i].set_optimized_pose(optimized_pose);
     }
     state_->poses[state_->max_frame_count - 1].reset();
-    --state_->cur_frame_count;
 }
 
 }  // namespace tassel_core

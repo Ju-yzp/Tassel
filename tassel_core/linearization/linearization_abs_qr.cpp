@@ -1,4 +1,5 @@
 #include "linearization_abs_qr.h"
+#include "linearization/landmark_block.h"
 #include "marginalization/marg_helper.h"
 #include "tassel_utils/macros.h"
 
@@ -10,59 +11,71 @@
 
 // eigen
 #include <Eigen/Core>
+#include <utility>
 
 namespace tassel_core {
 
 LinearizationAbsQR::LinearizationAbsQR(
     int num_threads, std::shared_ptr<State> state, std::shared_ptr<FeatureManager> fm,
-    LossVariant reprojection_loss, DepthLoss depth_loss, std::shared_ptr<MargLinData> marg_lin_data)
+    LossVariant reprojection_loss, DepthLoss depth_loss, double min_depth, double max_depth,
+    std::shared_ptr<MargLinData> marg_lin_data)
     : thread_pool_(num_threads),
       cur_state_(std::move(state)),
       feature_manager_(std::move(fm)),
       marg_lin_data_(std::move(marg_lin_data)),
       reprojection_loss_(std::move(reprojection_loss)),
-      depth_loss_(std::move(depth_loss)) {}
+      depth_loss_(std::move(depth_loss)),
+      min_depth_(min_depth),
+      max_depth_(max_depth) {
+    auto features = feature_manager_->collectOptimizationFeatures();
+    spdlog::info("{} landmarks need to optimize", static_cast<int>(features.size()));
+    landmark_blocks_.resize(features.size(), LandmarkBlock(min_depth_, max_depth_));
+    for (size_t i = 0; i < features.size(); ++i) {
+        landmark_blocks_[i].allocate(
+            features[i], cur_state_.get(), reprojection_loss_, depth_loss_);
+    }
+}
 
 int LinearizationAbsQR::getPoseDim() const {
     return cur_state_->max_frame_count * tassel_utils::POSE_SIZE;
 }
 
-double LinearizationAbsQR::linearizeProbelm() {
+double LinearizationAbsQR::linearizeProbelm(bool* numerically_valid) {
     pose_damping_diagonal_ = 0.0;
     pose_damping_diagonal_sqrt_ = 0.0;
 
-    auto features = feature_manager_->collectOptimizationFeatures();
-    spdlog::info("{} landmarks need to optimize", static_cast<int>(features.size()));
-    landmark_blocks_.resize(features.size());
-    for (size_t i = 0; i < features.size(); ++i) {
-        landmark_blocks_[i].allocate(
-            features[i], cur_state_.get(), reprojection_loss_, depth_loss_);
-    }
-
     size_t num_landmarks = landmark_blocks_.size();
 
-    double initial_value = 0.0;
-
-    auto body = [&](const tbb::blocked_range<size_t>& range, double error) {
+    auto body = [&](const tbb::blocked_range<size_t>& range, std::pair<double, bool> error_valid) {
         for (size_t r = range.begin(); r != range.end(); ++r) {
-            error += landmark_blocks_[r].linearize();
+            error_valid.first += landmark_blocks_[r].linearize();
+            error_valid.second = error_valid.second && !landmark_blocks_[r].isNumericalFailure();
         }
-        return error;
+        return error_valid;
     };
 
-    auto join = [](double a, double b) { return a + b; };
+    std::pair<double, bool> initial_value = {0.0, true};
+    auto join = [](std::pair<double, bool> a, std::pair<double, bool> b) {
+        a.first += b.first;
+        a.second = a.second && b.second;
+        return a;
+    };
 
     tbb::blocked_range<size_t> range(0, num_landmarks);
-    double error = thread_pool_.execute(
+    auto reduction_res = thread_pool_.execute(
         [&] { return tbb::parallel_reduce(range, initial_value, body, join); });
+
+    if (numerically_valid) {
+        *numerically_valid = reduction_res.second;
+    }
 
     if (marg_lin_data_) {
         double marg_prior_error;
         MargHelper::computeMargPriorError(*marg_lin_data_, *cur_state_, marg_prior_error);
-        error += marg_prior_error;
+        reduction_res.first += marg_prior_error;
     }
 
-    return error;
+    return reduction_res.first;
 }
 
 void LinearizationAbsQR::performQR() {
@@ -249,6 +262,12 @@ double LinearizationAbsQR::computeError() const {
             error += computeRho(reprojection_loss_, residual.norm());
         }
     }
+
+    if (marg_lin_data_) {
+        double marg_prior_error = 0.0;
+        MargHelper::computeMargPriorError(*marg_lin_data_, *cur_state_, marg_prior_error);
+        error += marg_prior_error;
+    }
     return error;
 }
 
@@ -260,6 +279,11 @@ void LinearizationAbsQR::saveState() {
     for (auto* f : features) {
         saved_feature_depths_[f] = f->estimated_depth;
     }
+
+    saved_lms_states_.resize(landmark_blocks_.size());
+    for (size_t i = 0; i < landmark_blocks_.size(); ++i) {
+        saved_lms_states_[i] = landmark_blocks_[i].getState();
+    }
 }
 
 void LinearizationAbsQR::restoreState() {
@@ -267,6 +291,10 @@ void LinearizationAbsQR::restoreState() {
 
     for (auto& [f, depth] : saved_feature_depths_) {
         f->estimated_depth = depth;
+    }
+
+    for (size_t i = 0; i < saved_lms_states_.size() && i < landmark_blocks_.size(); ++i) {
+        landmark_blocks_[i].setState(saved_lms_states_[i]);
     }
 }
 

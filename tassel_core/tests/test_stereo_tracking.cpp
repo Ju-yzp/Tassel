@@ -71,11 +71,12 @@ int main() {
         auto right_frame = queue_right->get<dai::ImgFrame>();
         if (!left_frame || !right_frame) continue;
 
+        auto left_data = left_frame->getData();
         cv::Mat left_img(
-            left_frame->getHeight(), left_frame->getWidth(), CV_8UC1, left_frame->getData().data());
+            left_frame->getHeight(), left_frame->getWidth(), CV_8UC1, left_data.data());
+        auto right_data = right_frame->getData();
         cv::Mat right_img(
-            right_frame->getHeight(), right_frame->getWidth(), CV_8UC1,
-            right_frame->getData().data());
+            right_frame->getHeight(), right_frame->getWidth(), CV_8UC1, right_data.data());
         left_img = left_img.clone();
         right_img = right_img.clone();
 

@@ -19,6 +19,9 @@ struct EstimatorOption {
 
     // ── depth robust kernel ─────────────────────────────────────────────────
     DepthLoss depth_loss = DepthLoss::none();
+
+    double min_depth = 0.05;
+    double max_depth = 10.0;
 };
 
 }  // namespace tassel_core

@@ -20,9 +20,7 @@ Eigen::Matrix3d ric, ric1;
 Eigen::Vector3d tic, tic1;
 
 namespace {
-struct CameraInitResult {
-    std::vector<std::unique_ptr<tassel_core::CameraBase>> cameras;
-};
+using CameraInitResult = std::vector<std::unique_ptr<tassel_core::CameraBase>>;
 
 CameraInitResult initializeCameras(const tassel_tools::Parameters& params) {
     CameraInitResult result;
@@ -39,7 +37,7 @@ CameraInitResult initializeCameras(const tassel_tools::Parameters& params) {
         cv::Mat k = params.cam_intrinsic_map.at(id);
         cv::Mat dist = params.cam_distort_map.at(id);
 
-        result.cameras.emplace_back(
+        result.emplace_back(
             std::make_unique<tassel_core::CameraRadTan>(k, dist, params.cols, params.rows));
 
         if (id == 0) {
@@ -93,7 +91,7 @@ int main(int argc, char** argv) {
     auto queue_right = device.getOutputQueue("right", 8, false);
 
     // ── Initialize cameras from Parameters ────────────────────────────────
-    auto cameras = initializeCameras(params).cameras;
+    auto cameras = initializeCameras(params);
 
     // ── Feature tracker — left (id=0) and right (id=1) cameras ─────────────
     FeatureTracker tracker(
@@ -113,14 +111,16 @@ int main(int argc, char** argv) {
     option.lambda_initial = params.lambda_initial;
     option.reprojection_loss = HuberLoss{0.5};
     option.depth_loss = DepthLoss::huber(0.3);
+    option.min_depth = params.min_depth;
+    option.max_depth = params.max_depth;
 
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count));
     auto feature_manager = std::make_shared<FeatureManager>(
         params.reprojection_error_thres, params.parallax_thres, params.tracked_times_thres,
-        params.max_pnp_needed_num, params.min_pnp_num, params.min_pnp_inliers_ratio,
+        params.min_tracked_pts_num, params.min_pnp_num, params.min_pnp_inliers_ratio,
         params.min_translation, params.min_depth, params.max_depth);
 
-    VoEstimator vo_estimator(option, state, feature_manager, ric, tic);
+    VoEstimator vo_estimator(option, state, feature_manager, ric, tic, ric1, tic1);
 
     int frame_count = 0;
     rclcpp::Rate rate(30);
@@ -132,12 +132,14 @@ int main(int argc, char** argv) {
         auto right_frame = queue_right->get<dai::ImgFrame>();
         if (!left_frame || !right_frame) continue;
 
+        double ts = left_frame->getTimestamp().time_since_epoch().count() / 1e9;
+        auto left_data = left_frame->getData();
         cv::Mat left_img(
-            left_frame->getHeight(), left_frame->getWidth(), CV_8UC1, left_frame->getData().data());
+            left_frame->getHeight(), left_frame->getWidth(), CV_8UC1, left_data.data());
         left_img = left_img.clone();
+        auto right_data = right_frame->getData();
         cv::Mat right_img(
-            right_frame->getHeight(), right_frame->getWidth(), CV_8UC1,
-            right_frame->getData().data());
+            right_frame->getHeight(), right_frame->getWidth(), CV_8UC1, right_data.data());
         right_img = right_img.clone();
 
         // ── stereo tracking ────────────────────────────────────────────────
@@ -147,17 +149,7 @@ int main(int argc, char** argv) {
             feature_frame = tracker.stereoTracking(0, left_img, 1, right_img);
         }
 
-        // ── VO processing ──────────────────────────────────────────────────
-        bool is_kf = false;
-        {
-            tassel_utils::Timer t("vo");
-            is_kf = vo_estimator.processMeasurement(feature_frame);
-        }
-
-        if (is_kf) {
-            std::cout << "[VO] keyframe " << state->cur_frame_count << "/" << state->max_frame_count
-                      << "  features: " << feature_frame.size() << "\n";
-        }
+        vo_estimator.processMeasurement(ts, feature_frame);
 
         // ── Build stereo display image ──────────────────────────────────────
         cv::Mat disp_left, disp_right;
@@ -168,13 +160,6 @@ int main(int argc, char** argv) {
 
         cv::Mat stereo_disp;
         cv::hconcat(disp_left, disp_right, stereo_disp);
-
-        std::string status = "KF: " + std::to_string(state->cur_frame_count) +
-                             "  Features: " + std::to_string(feature_frame.size()) +
-                             (is_kf ? " [KF]" : "");
-        cv::putText(
-            stereo_disp, status, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.6,
-            cv::Scalar(0, 255, 0), 1);
 
         viewer->publishImage("stereo/image", "camera", stereo_disp);
 

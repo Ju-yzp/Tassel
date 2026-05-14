@@ -33,7 +33,7 @@ struct Parameters {
         // ── feature manager ────────────────────────────────────────────
         reprojection_error_thres = parser.as<double>("reprojection_error_thres");
         parallax_thres = parser.as<double>("parallax_thres");
-        max_pnp_needed_num = parser.as<int>("max_pnp_needed_num");
+        min_tracked_pts_num = parser.as<int>("min_tracked_pts_num");
         min_pnp_num = parser.as<int>("min_pnp_num");
         tracked_times_thres = parser.as<int>("tracked_times_thres");
         min_pnp_inliers_ratio = parser.as<double>("min_pnp_inliers_ratio");
@@ -93,7 +93,7 @@ struct Parameters {
     // ── feature manager ────────────────────────────────────────────────
     double reprojection_error_thres;
     double parallax_thres;
-    int max_pnp_needed_num;
+    int min_tracked_pts_num;
     int min_pnp_num;
     double min_pnp_inliers_ratio;
     double min_translation;

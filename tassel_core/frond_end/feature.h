@@ -2,7 +2,6 @@
 #define TASSEL_CORE_FEATURE_H_
 
 #include <Eigen/Core>
-#include <memory>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -48,7 +47,7 @@ struct Feature {
 
     void monoTriangulate(
         const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
-        double min_depth, double max_depth);
+        double min_translation, double min_depth, double max_depth);
 
     void removeOldest(
         const Eigen::Matrix3d& prev_r, const Eigen::Vector3d& prev_t, const Eigen::Matrix3d& cur_r,

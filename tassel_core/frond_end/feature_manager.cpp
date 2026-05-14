@@ -14,6 +14,8 @@
 #include "feature.h"
 #include "feature_manager.h"
 
+#include <spdlog/spdlog.h>
+
 namespace tassel_core {
 
 namespace {
@@ -26,22 +28,18 @@ inline double computeParallax(const cv::Point2f& p1, const cv::Point2f& p2) {
 
 FeatureManager::FeatureManager(
     double reprojection_error_thres, double parallax_thres, int tracked_times_thres,
-    int max_pnp_needed_num, int min_pnp_pt_num, double min_pnp_inliers_ratio,
+    int min_tracked_pts_num, int min_pnp_pt_num, double min_pnp_inliers_ratio,
     double min_translation, double min_depth, double max_depth)
     : reprojection_error_thres_(reprojection_error_thres),
       parallax_thres_(parallax_thres),
       tracked_times_thres_(tracked_times_thres),
+      min_tracked_pts_num_(min_tracked_pts_num),
       min_pnp_pt_num_(min_pnp_pt_num),
+
       min_pnp_inliers_ratio_(min_pnp_inliers_ratio),
       min_translation_(min_translation),
       min_depth_(min_depth),
-      max_depth_(max_depth),
-      max_pnp_needed_num_(max_pnp_needed_num) {
-    if (min_pnp_pt_num >= max_pnp_needed_num) {
-        throw std::runtime_error(
-            std::string("[") + __FUNCTION__ +
-            "] Input 'min_pnp_pt_num' must be less than 'max_pnp_needed_num'.");
-    }
+      max_depth_(max_depth) {
     features_.reserve(1000);
 }
 
@@ -64,7 +62,10 @@ bool FeatureManager::checkKeyFrameByParallax(
         }
     }
 
-    return (parallax_num == 0 || (parallax_sum / parallax_num) > parallax_thres_);
+    // spdlog::info("Current frame track {}.f old feature from last frame", parallax_num);
+    return (
+        parallax_num == 0 || (parallax_sum / parallax_num) > parallax_thres_ ||
+        parallax_num < min_tracked_pts_num_);
 }
 
 void FeatureManager::triangulate(
@@ -75,7 +76,7 @@ void FeatureManager::triangulate(
     for (auto& [id, feature] : features_) {
         feature.stereoTriangulate(ric, tic, ric1, tic1, min_depth_, max_depth_);
         if (mono_triangulate) {
-            feature.monoTriangulate(state, ric, tic, min_depth_, max_depth_);
+            feature.monoTriangulate(state, ric, tic, min_translation_, min_depth_, max_depth_);
         }
     }
 }
@@ -89,7 +90,7 @@ void FeatureManager::initPoseByPNP(
     }
 
     Pose prev_pose = state.poses[frame_count - 1].get_optimized_pose();
-    state.poses[frame_count].set_optimized_pose(prev_pose);
+    state.poses[frame_count].init_pose(prev_pose);
     std::vector<cv::Point3f> object_pts;
     std::vector<cv::Point2f> normalize_pts;
     std::vector<size_t> candidate_ids;
@@ -106,13 +107,12 @@ void FeatureManager::initPoseByPNP(
             Eigen::Vector3d uv = feature.observations[frame_count].uv;
             normalize_pts.push_back(cv::Point2f(uv(0), uv(1)));
             candidate_ids.push_back(id);
-            if (static_cast<int>(object_pts.size()) >= max_pnp_needed_num_) {
-                break;
-            }
         }
     }
 
     if (static_cast<int>(object_pts.size()) < min_pnp_pt_num_) {
+        spdlog::warn(
+            "Not enough points for PnP. Only {} points.", static_cast<int>(object_pts.size()));
         return;
     }
 
@@ -143,7 +143,11 @@ void FeatureManager::initPoseByPNP(
         guess_P = (-guess_R * guess_P).eval();
 
         Pose final_pose(guess_R * ric.transpose(), guess_P - guess_R * tic);
-        state.poses[frame_count].set_optimized_pose(final_pose);
+        state.poses[frame_count].init_pose(final_pose);
+    } else {
+        spdlog::warn(
+            "PnP failed,inliers ratio:{}",
+            static_cast<double>(inliers.size()) / static_cast<double>(object_pts.size()));
     }
 }
 

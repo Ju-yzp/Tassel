@@ -78,6 +78,7 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::monoTracking(
     std::vector<size_t>& cur_ids = ctc.cur_ids;
 
     cur_ids = prev_ids;
+    cur_pts = prev_pts;
 
     if (!prev_pts.empty()) {
         monoMatching(camera_id, prev_img, img, prev_pts, cur_pts, prev_ids, cur_ids);
@@ -139,13 +140,18 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::stereoTracking(
         r_ctc.cur_ids);
     std::swap(r_ctc.prev_pts, r_ctc.cur_pts);
     std::swap(r_ctc.prev_ids, r_ctc.cur_ids);
-    // monoTracking 将结果交换到 prev_pts/prev_ids，然后清空 cur_pts/cur_ids
+    r_ctc.prev_img = right_img;
     auto r_camera = r_ctc.camera.get();
     for (size_t i = 0; i < r_ctc.prev_ids.size(); ++i) {
-        Eigen::Vector2d pt(r_ctc.prev_pts[i].x, r_ctc.prev_pts[i].y);
-        Eigen::Vector2d uv = r_camera->undistort(pt);
-        FeaturePerFrame& fpf = feature_frame[r_ctc.prev_ids[i]];
-        fpf.setRight(uv, r_ctc.prev_pts[i]);
+        auto it = feature_frame.find(r_ctc.prev_ids[i]);
+        if (it != feature_frame.end()) {
+            Eigen::Vector2d pt(r_ctc.prev_pts[i].x, r_ctc.prev_pts[i].y);
+            Eigen::Vector2d uv = r_camera->undistort(pt);
+            FeaturePerFrame& fpf = feature_frame[r_ctc.prev_ids[i]];
+            fpf.setRight(uv, r_ctc.prev_pts[i]);
+        } else {
+            spdlog::error("stereoTracking: feature not found");
+        }
     }
     return feature_frame;
 }
@@ -167,7 +173,7 @@ void FeatureTracker::drawTrackingResult(size_t camera_id, cv::Mat& img) {
         for (size_t i = 0; i < prev_pts.size(); ++i) {
             float ratio = std::min(tracked_times[i], tracked_times_thres_) /
                           static_cast<float>(tracked_times_thres_);
-            cv::circle(img, prev_pts[i], 2, cv::Scalar(255 * (1.0 - ratio), 0, 255 * ratio), 2);
+            cv::circle(img, prev_pts[i], 4, cv::Scalar(255 * (1.0 - ratio), 0, 255 * ratio), 2);
         }
     } else {
         for (auto pt : prev_pts) {
@@ -221,7 +227,7 @@ void FeatureTracker::monoMatching(
     for (size_t index = 0; index < num; ++index) {
         if (p2c_status[index] && !isOutOfImage(cur_pts[index], rows, cols)) {
             cur_pts[valid_count] = cur_pts[index];
-            cur_ids[valid_count] = prev_ids[index];
+            cur_ids[valid_count] = cur_ids[index];
             if (enable_statistics_) {
                 tracked_times[valid_count] = tracked_times[index] + 1;
             }
@@ -313,9 +319,11 @@ void FeatureTracker::extractNewFeatures(
         const float* grad_row = ctc.grad.ptr<float>(y);
         const float* gmask_row = grad_mask.ptr<float>(y);
         for (int x = x0; x < x1; ++x) {
+            if (mask_row[x] == 0) continue;
             int cell_r = (y - y0) / cell_h;
             int cell_c = (x - x0) / cell_w;
             int idx = cell_r * grid_cols + cell_c;
+            if (grid_mask[idx]) continue;
             float s = grad_row[x];
             if (s > best_scores[idx]) {
                 best_scores[idx] = s;

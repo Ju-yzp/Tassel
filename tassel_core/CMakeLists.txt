@@ -3,7 +3,7 @@ file(
   TASSEL_CORE_SRCS
   ${CMAKE_CURRENT_SOURCE_DIR}/frond_end/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/linearization/*.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/lm_optimizer/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/optimizer/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/marginalization/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/estimator/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/state/*.cpp)

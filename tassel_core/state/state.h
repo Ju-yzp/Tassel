@@ -17,8 +17,7 @@ struct PoseStateWithLin {
         : pose_linearized(Sophus::SE3d()),
           linearized(false),
           delta(Eigen::Vector<double, 6>::Zero()),
-          T_wc_current(Sophus::SE3d()),
-          optimized_pose(Sophus::SE3d()) {}
+          T_wc_current(Sophus::SE3d()) {}
 
     PoseStateWithLin(const Sophus::SE3d& T_wc, bool linearized = false)
         : pose_linearized(T_wc),
@@ -42,7 +41,7 @@ struct PoseStateWithLin {
         }
     };
 
-    inline Pose get_pose_linearized() const { return pose_linearized; }
+    inline Pose get_optimized_pose() const { return T_wc_current; }
 
     inline void applyDelta(const Eigen::Vector<double, 6>& delta) {
         if (!linearized) {
@@ -71,20 +70,18 @@ struct PoseStateWithLin {
         storage_pose_linearized = pose_linearized;
     }
 
-    Pose get_optimized_pose() const { return optimized_pose; }
-
-    void set_optimized_pose(const Pose& optimized_pose) { this->optimized_pose = optimized_pose; }
-
-    inline void applyDeltaToOptimizedPose(const Eigen::Vector<double, 6>& delta) {
-        increasePose(delta, optimized_pose);
-    }
-
     inline void reset() {
         linearized = false;
         delta.setZero();
         T_wc_current = Sophus::SE3d();
         pose_linearized = Sophus::SE3d();
-        optimized_pose = Sophus::SE3d();
+    }
+
+    void init_pose(Pose init_pose) {
+        T_wc_current = init_pose;
+        pose_linearized = init_pose;
+        storage_pose_linearized = init_pose;
+        storage_T_wc_current = init_pose;
     }
 
 private:
@@ -97,8 +94,6 @@ private:
     Pose storage_pose_linearized;
     Eigen::Vector<double, 6> storage_delta;
     Pose storage_T_wc_current;
-
-    Pose optimized_pose;
 };
 
 struct State {
