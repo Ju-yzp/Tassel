@@ -10,6 +10,7 @@ struct OptimizerResult {
     int num_rejected = 0;
     double final_error = 0;
     bool converged = false;
+    double spend_time = 0.0;
 };
 
 class Optimizer {

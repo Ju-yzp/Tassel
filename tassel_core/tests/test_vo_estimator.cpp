@@ -110,7 +110,6 @@ int main(int argc, char** argv) {
     option.num_iterations = params.num_iterations;
     option.lambda_initial = params.lambda_initial;
     option.reprojection_loss = HuberLoss{0.5};
-    option.depth_loss = DepthLoss::huber(0.3);
     option.min_depth = params.min_depth;
     option.max_depth = params.max_depth;
 

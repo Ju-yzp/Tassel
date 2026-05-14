@@ -56,8 +56,8 @@ bool compute_feature_linearization_block(
     J_target_3d.block<3, 3>(0, 3) = Sophus::SO3d::hat(pt_in_T);
     jacobian_T = reduce * J_target_3d;
 
-    Eigen::Vector3d jaco_depth_3d = R_t_inv * R_h * uv_host;
-    jacobian_L = reduce * jaco_depth_3d;
+    double inv_depth = 1.0 / depth;
+    jacobian_L = -reduce * R_t_inv * R_h * (uv_host / (inv_depth * inv_depth));
 
     return true;
 }
@@ -76,13 +76,11 @@ LandmarkBlock::LandmarkBlock(double min_depth, double max_depth)
       max_depth_(max_depth) {}
 
 void LandmarkBlock::allocate(
-    Feature* const feature, State* const state, const LossVariant& reprojection_loss,
-    const DepthLoss& depth_loss) {
+    Feature* const feature, State* const state, const LossVariant& reprojection_loss) {
     TASSEL_ASSERT(lms_ == LandmarkState::Uninitialized);
     state_ = state;
     feature_ = feature;
     reprojection_loss_ = reprojection_loss;
-    depth_loss_ = depth_loss;
 
     int num_frames = state_->max_frame_count;
     int start_frame_id = feature_->start_frame_id;
@@ -171,6 +169,7 @@ double LandmarkBlock::linearize() {
     }
     if (numerically_valid) {
         lms_ = LandmarkState::Linearized;
+        scaleJl_cols();
     } else {
         lms_ = LandmarkState::NumericalFailure;
     }

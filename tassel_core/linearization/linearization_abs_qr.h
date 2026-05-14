@@ -21,7 +21,7 @@ class LinearizationAbsQR {
 public:
     LinearizationAbsQR(
         int num_threads, std::shared_ptr<State> state, std::shared_ptr<FeatureManager> fm,
-        LossVariant reprojection_loss, DepthLoss depth_loss, double min_depth, double max_depth,
+        LossVariant reprojection_loss, double min_depth, double max_depth,
         std::shared_ptr<MargLinData> marg_lin_data = nullptr);
 
     double linearizeProbelm(bool* numerically_valid = nullptr);
@@ -68,7 +68,6 @@ private:
     std::shared_ptr<MargLinData> marg_lin_data_;
 
     LossVariant reprojection_loss_;
-    DepthLoss depth_loss_;
 
     std::vector<LandmarkBlock> landmark_blocks_;
 

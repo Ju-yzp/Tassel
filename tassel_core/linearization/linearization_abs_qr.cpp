@@ -17,22 +17,20 @@ namespace tassel_core {
 
 LinearizationAbsQR::LinearizationAbsQR(
     int num_threads, std::shared_ptr<State> state, std::shared_ptr<FeatureManager> fm,
-    LossVariant reprojection_loss, DepthLoss depth_loss, double min_depth, double max_depth,
+    LossVariant reprojection_loss, double min_depth, double max_depth,
     std::shared_ptr<MargLinData> marg_lin_data)
     : thread_pool_(num_threads),
       cur_state_(std::move(state)),
       feature_manager_(std::move(fm)),
       marg_lin_data_(std::move(marg_lin_data)),
       reprojection_loss_(std::move(reprojection_loss)),
-      depth_loss_(std::move(depth_loss)),
       min_depth_(min_depth),
       max_depth_(max_depth) {
     auto features = feature_manager_->collectOptimizationFeatures();
     spdlog::info("{} landmarks need to optimize", static_cast<int>(features.size()));
     landmark_blocks_.resize(features.size(), LandmarkBlock(min_depth_, max_depth_));
     for (size_t i = 0; i < features.size(); ++i) {
-        landmark_blocks_[i].allocate(
-            features[i], cur_state_.get(), reprojection_loss_, depth_loss_);
+        landmark_blocks_[i].allocate(features[i], cur_state_.get(), reprojection_loss_);
     }
 }
 
@@ -171,8 +169,7 @@ void LinearizationAbsQR::get_dense_H_b(Eigen::MatrixXd& H, Eigen::VectorXd& b) c
         Eigen::VectorXd b_;
     };
 
-    size_t opt_size =
-        cur_state_->max_frame_count * tassel_utils::POSE_SIZE + landmark_blocks_.size();
+    size_t opt_size = cur_state_->max_frame_count * tassel_utils::POSE_SIZE;
 
     Reductor r(opt_size, landmark_blocks_);
 
@@ -244,11 +241,11 @@ double LinearizationAbsQR::computeError() const {
 
     for (auto* f : features) {
         int host_id = f->start_frame_id;
-        Pose T_w_h = cur_state_->poses[host_id].get_pose();
+        Pose T_w_h = cur_state_->poses[host_id].get_optimized_pose();
 
         for (int offset = 1; offset < static_cast<int>(f->observations.size()); offset++) {
             int target_id = host_id + offset;
-            Pose T_w_t = cur_state_->poses[target_id].get_pose();
+            Pose T_w_t = cur_state_->poses[target_id].get_optimized_pose();
 
             Eigen::Matrix<double, 2, 3> tangent_base =
                 compute_tangent_base(f->observations[offset].uv);

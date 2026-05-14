@@ -98,13 +98,14 @@ void FeatureManager::initPoseByPNP(
         int start_frame_id = feature.start_frame_id;
         int observation_num = static_cast<int>(feature.observations.size());
         double depth = feature.estimated_depth;
-        if (frame_count + 1 == observation_num && depth != INVALID_DEPTH) {
+        int obs_idx = frame_count - start_frame_id;
+        if (obs_idx >= 0 && obs_idx < observation_num && depth != INVALID_DEPTH) {
             Eigen::Vector3d p_in_I = ric * feature.observations[0].uv * depth + tic;
             Eigen::Vector3d p_in_W =
                 state.poses[start_frame_id].get_pose().rotationMatrix() * p_in_I +
                 state.poses[start_frame_id].get_pose().translation();
             object_pts.push_back(cv::Point3f(p_in_W(0), p_in_W(1), p_in_W(2)));
-            Eigen::Vector3d uv = feature.observations[frame_count].uv;
+            Eigen::Vector3d uv = feature.observations[obs_idx].uv;
             normalize_pts.push_back(cv::Point2f(uv(0), uv(1)));
             candidate_ids.push_back(id);
         }
@@ -144,6 +145,7 @@ void FeatureManager::initPoseByPNP(
 
         Pose final_pose(guess_R * ric.transpose(), guess_P - guess_R * tic);
         state.poses[frame_count].init_pose(final_pose);
+        spdlog::info("PNP success");
     } else {
         spdlog::warn(
             "PnP failed,inliers ratio:{}",

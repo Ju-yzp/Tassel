@@ -202,7 +202,7 @@ OptimizeResult runOptimize(
 
     // setup optimisation
     LinearizationAbsQR linearization(
-        1, state, fm, TrivialLoss{}, DepthLoss::none(), MIN_DISTANCE, MAX_DISTANCE, nullptr);
+        1, state, fm, TrivialLoss{}, MIN_DISTANCE, MAX_DISTANCE, nullptr);
 
     LMOptions opts;
     opts.max_iterations = 10;

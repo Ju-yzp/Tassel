@@ -107,29 +107,5 @@ inline double computeWeight(const LossVariant& loss, double s) {
     return std::visit([s](const auto& l) { return l.weight(s); }, loss);
 }
 
-// ── Depth robust kernel ─────────────────────────────────────────────────────
-//
-// Applied to the inverse-depth increment during back-substitution.
-// Prevents the depth estimate from changing too rapidly or going negative.
-
-struct DepthLoss {
-    enum class Type { None, Huber };
-
-    Type type = Type::None;
-    double delta = 0.5;  // max allowed depth increment (meters)
-
-    static DepthLoss none() { return {Type::None, 0.0}; }
-    static DepthLoss huber(double d) { return {Type::Huber, d}; }
-
-    /// Clamp / weight a depth increment.
-    /// Returns the (possibly damped) increment.
-    double apply(double inc) const {
-        if (type == Type::None) return inc;
-        // Huber-style clamping: sign(inc) * min(|inc|, delta)
-        if (std::abs(inc) <= delta) return inc;
-        return std::copysign(delta, inc);
-    }
-};
-
 }  // namespace tassel_core
 #endif  // TASSEL_CORE_LOSS_FUCTION_LOSS_FUCTION_BASE_H_

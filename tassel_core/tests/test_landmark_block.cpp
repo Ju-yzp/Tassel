@@ -66,7 +66,7 @@ TEST(LandmarkBlockTest, AllocateSingleObs) {
     Feature f = MakeFeature(0, {Eigen::Vector3d::UnitZ(), Eigen::Vector3d(0.1, 0.2, 1.0)}, 1.5);
 
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&f, state.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&f, state.get(), TrivialLoss{});
 
     EXPECT_EQ(lb.getNumRows(), 3);
     EXPECT_EQ(lb.getPaddingIdx(), 24);
@@ -83,7 +83,7 @@ TEST(LandmarkBlockTest, AllocateMultiObs) {
         1.5);
 
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&f, state.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&f, state.get(), TrivialLoss{});
 
     EXPECT_EQ(lb.getNumRows(), 7);
     EXPECT_EQ(lb.getNumCols(), 26);
@@ -94,7 +94,7 @@ TEST(LandmarkBlockTest, AllocatePadding) {
     Feature f = MakeFeature(0, {Eigen::Vector3d::UnitZ(), Eigen::Vector3d(0.1, 0.2, 1.0)}, 1.5);
 
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&f, state.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&f, state.get(), TrivialLoss{});
 
     EXPECT_EQ(lb.getPaddingIdx(), 30);
     EXPECT_EQ(lb.getLandmarkCol(), 32);
@@ -129,14 +129,14 @@ protected:
 
 TEST_F(LinearizeFixture, ResidualNearZero) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     double err = lb.linearize();
     EXPECT_NEAR(err, 0.0, 1e-8);
 }
 
 TEST_F(LinearizeFixture, ObsRowsSparsity) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
 
     const auto& S = lb.getStorage();
@@ -170,7 +170,7 @@ TEST_F(LinearizeFixture, ObsRowsSparsity) {
 
 TEST_F(LinearizeFixture, JacobianColumnNonZero) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
 
     const auto& S = lb.getStorage();
@@ -187,27 +187,29 @@ TEST_F(LinearizeFixture, JacobianColumnNonZero) {
 // ── analytical vs numerical Jacobian ──────────────────────────────────────────
 
 TEST_F(LinearizeFixture, JlNumericalDerivative) {
-    LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
     const double eps = 1e-6;
 
     feat_.estimated_depth = P_world_.z() + eps;
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
-    lb.linearize();
-    Eigen::MatrixXd S_plus = lb.getStorage();
+    LandmarkBlock lb_plus(MIN_DISTANCE, MAX_DISTANCE);
+    lb_plus.allocate(&feat_, state_.get(), TrivialLoss{});
+    lb_plus.linearize();
+    Eigen::MatrixXd S_plus = lb_plus.getStorage();
 
     feat_.estimated_depth = P_world_.z() - eps;
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
-    lb.linearize();
-    Eigen::MatrixXd S_minus = lb.getStorage();
+    LandmarkBlock lb_minus(MIN_DISTANCE, MAX_DISTANCE);
+    lb_minus.allocate(&feat_, state_.get(), TrivialLoss{});
+    lb_minus.linearize();
+    Eigen::MatrixXd S_minus = lb_minus.getStorage();
 
-    int lc = lb.getLandmarkCol();
+    int lc = lb_plus.getLandmarkCol();
     int rc = lc + 1;
-    Eigen::VectorXd Jl_num =
-        (S_plus.col(rc).head(lb.getNumRows() - 1) - S_minus.col(rc).head(lb.getNumRows() - 1)) /
-        (2 * eps);
+    Eigen::VectorXd Jl_num = (S_plus.col(rc).head(lb_plus.getNumRows() - 1) -
+                              S_minus.col(rc).head(lb_minus.getNumRows() - 1)) /
+                             (2 * eps);
 
     feat_.estimated_depth = P_world_.z();
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     Eigen::VectorXd Jl_ana = lb.getStorage().col(lc).head(lb.getNumRows() - 1);
 
@@ -221,7 +223,7 @@ TEST_F(LinearizeFixture, JpNumericalDerivative) {
 
     feat_.estimated_depth = P_world_.z();
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     const auto& S_nom = lb.getStorage();
     int rc = lb.getLandmarkCol() + 1;
@@ -236,13 +238,13 @@ TEST_F(LinearizeFixture, JpNumericalDerivative) {
 
     state_->poses[0] = PoseStateWithLin(perturb(T0, eps));
     LandmarkBlock lb_p(MIN_DISTANCE, MAX_DISTANCE);
-    lb_p.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb_p.allocate(&feat_, state_.get(), TrivialLoss{});
     lb_p.linearize();
     Eigen::VectorXd r_p = lb_p.getStorage().col(rc).head(nr);
 
     state_->poses[0] = PoseStateWithLin(perturb(T0, -eps));
     LandmarkBlock lb_m(MIN_DISTANCE, MAX_DISTANCE);
-    lb_m.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb_m.allocate(&feat_, state_.get(), TrivialLoss{});
     lb_m.linearize();
     Eigen::VectorXd r_m = lb_m.getStorage().col(rc).head(nr);
 
@@ -260,7 +262,7 @@ TEST_F(LinearizeFixture, JpNumericalDerivative) {
 
 TEST_F(LinearizeFixture, QRUpperTriangular) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     lb.performQR();
 
@@ -275,7 +277,7 @@ TEST_F(LinearizeFixture, QRUpperTriangular) {
 
 TEST_F(LinearizeFixture, QRRowZeroResidualMatchesQ1) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     lb.performQR();
 
@@ -289,7 +291,7 @@ TEST_F(LinearizeFixture, QRRowZeroResidualMatchesQ1) {
 
 TEST_F(LinearizeFixture, Q2JpQ2rDimensions) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     lb.performQR();
 
@@ -308,7 +310,7 @@ TEST_F(LinearizeFixture, Q2JpQ2rDimensions) {
 
 TEST_F(LinearizeFixture, Q2JpQ2rOffset) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     lb.performQR();
 
@@ -334,7 +336,7 @@ TEST_F(LinearizeFixture, Q2JpQ2rOffset) {
 
 TEST_F(LinearizeFixture, DenseHbSymmetry) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     lb.performQR();
 
@@ -349,7 +351,7 @@ TEST_F(LinearizeFixture, DenseHbSymmetry) {
 
 TEST_F(LinearizeFixture, DenseHbPositiveSemidefinite) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     lb.performQR();
 
@@ -367,7 +369,7 @@ TEST_F(LinearizeFixture, DenseHbPositiveSemidefinite) {
 
 TEST_F(LinearizeFixture, JpDiag2MatchesManual) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
 
     int pdim = lb.getPaddingIdx();
@@ -394,7 +396,7 @@ TEST_F(LinearizeFixture, JpDiag2MatchesManual) {
 
 TEST_F(LinearizeFixture, ScaleJlColsEffect) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
 
     int lc = lb.getLandmarkCol();
@@ -412,7 +414,7 @@ TEST_F(LinearizeFixture, ScaleJlColsEffect) {
 
 TEST_F(LinearizeFixture, ScaleJpColsEffect) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     lb.performQR();
 
@@ -433,7 +435,7 @@ TEST_F(LinearizeFixture, ScaleJpColsEffect) {
 
 TEST_F(LinearizeFixture, DampingApplyUndo) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     lb.performQR();
 
@@ -450,7 +452,7 @@ TEST_F(LinearizeFixture, DampingApplyUndo) {
 
 TEST_F(LinearizeFixture, DampingAddsDiagonal) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     lb.performQR();
 
@@ -468,7 +470,7 @@ TEST_F(LinearizeFixture, DampingAddsDiagonal) {
 
 TEST_F(LinearizeFixture, BackSubZeroInc) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     lb.performQR();
 
@@ -484,7 +486,7 @@ TEST_F(LinearizeFixture, BackSubZeroInc) {
 
 TEST_F(LinearizeFixture, BackSubModelCostPositive) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     lb.performQR();
 
@@ -500,20 +502,21 @@ TEST_F(LinearizeFixture, BackSubModelCostPositive) {
 
 TEST_F(LinearizeFixture, BackSubDepthUpdate) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     lb.performQR();
 
     feat_.estimated_depth = P_world_.z() * 0.9;
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
-    lb.linearize();
-    lb.performQR();
+    LandmarkBlock lb2(MIN_DISTANCE, MAX_DISTANCE);
+    lb2.allocate(&feat_, state_.get(), TrivialLoss{});
+    lb2.linearize();
+    lb2.performQR();
 
     double depth_before = feat_.estimated_depth;
-    Eigen::VectorXd inc = Eigen::VectorXd::Zero(lb.getPaddingIdx());
+    Eigen::VectorXd inc = Eigen::VectorXd::Zero(lb2.getPaddingIdx());
     double l_diff = 0.0;
 
-    lb.backSubstitute(inc, l_diff);
+    lb2.backSubstitute(inc, l_diff);
 
     EXPECT_GT(feat_.estimated_depth, depth_before);
 }
@@ -537,8 +540,8 @@ TEST(LandmarkBlockTest, MultiBlockAssembly) {
 
     auto f0 = make_feat(P0), f1 = make_feat(P1);
     LandmarkBlock lb0(MIN_DISTANCE, MAX_DISTANCE), lb1(MIN_DISTANCE, MAX_DISTANCE);
-    lb0.allocate(&f0, state.get(), TrivialLoss{}, DepthLoss::none());
-    lb1.allocate(&f1, state.get(), TrivialLoss{}, DepthLoss::none());
+    lb0.allocate(&f0, state.get(), TrivialLoss{});
+    lb1.allocate(&f1, state.get(), TrivialLoss{});
     lb0.linearize();
     lb0.performQR();
     lb1.linearize();
@@ -562,7 +565,7 @@ TEST(LandmarkBlockTest, MultiBlockAssembly) {
 
 TEST_F(LinearizeFixture, FullPipelineOrder) {
     LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb.allocate(&feat_, state_.get(), TrivialLoss{});
     lb.linearize();
     Eigen::VectorXd d2(lb.getPaddingIdx());
     d2.setZero();
@@ -838,41 +841,6 @@ TEST(LossFunctionTest, TukeyLossDispatch) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Depth loss tests
-// ═══════════════════════════════════════════════════════════════════════════════
-
-TEST(DepthLossTest, NonePassesThrough) {
-    DepthLoss dl = DepthLoss::none();
-    EXPECT_EQ(dl.type, DepthLoss::Type::None);
-    EXPECT_NEAR(dl.apply(0.5), 0.5, 1e-14);
-    EXPECT_NEAR(dl.apply(-0.3), -0.3, 1e-14);
-    EXPECT_NEAR(dl.apply(10.0), 10.0, 1e-14);
-    EXPECT_NEAR(dl.apply(0.0), 0.0, 1e-14);
-}
-
-TEST(DepthLossTest, HuberClampsLargePositive) {
-    DepthLoss dl = DepthLoss::huber(0.5);
-    EXPECT_EQ(dl.type, DepthLoss::Type::Huber);
-    EXPECT_NEAR(dl.apply(0.2), 0.2, 1e-14);  // within range
-    EXPECT_NEAR(dl.apply(1.0), 0.5, 1e-14);  // clamped
-    EXPECT_NEAR(dl.apply(0.5), 0.5, 1e-14);  // at boundary
-}
-
-TEST(DepthLossTest, HuberClampsLargeNegative) {
-    DepthLoss dl = DepthLoss::huber(0.5);
-    EXPECT_NEAR(dl.apply(-0.2), -0.2, 1e-14);
-    EXPECT_NEAR(dl.apply(-1.0), -0.5, 1e-14);  // clamped, preserves sign
-    EXPECT_NEAR(dl.apply(-0.5), -0.5, 1e-14);
-}
-
-TEST(DepthLossTest, HuberCustomDelta) {
-    DepthLoss dl = DepthLoss::huber(1.0);
-    EXPECT_NEAR(dl.apply(0.8), 0.8, 1e-14);
-    EXPECT_NEAR(dl.apply(2.0), 1.0, 1e-14);
-    EXPECT_NEAR(dl.apply(-1.5), -1.0, 1e-14);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // Loss integrated with LandmarkBlock
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -882,13 +850,13 @@ TEST_F(LinearizeFixture, HuberLossReducesWeights) {
     // Extreme depth error to produce residuals well beyond Huber threshold
     feat_.estimated_depth = P_world_.z() * 0.01;  // 100x too small → huge residuals
 
-    lb_trivial.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
+    lb_trivial.allocate(&feat_, state_.get(), TrivialLoss{});
     double err_trivial = lb_trivial.linearize();
     double norm_trivial = lb_trivial.getStorage()
                               .block(0, 0, lb_trivial.getNumRows() - 1, lb_trivial.getPaddingIdx())
                               .norm();
 
-    lb_huber.allocate(&feat_, state_.get(), HuberLoss{0.01}, DepthLoss::none());
+    lb_huber.allocate(&feat_, state_.get(), HuberLoss{0.01});
     double err_huber = lb_huber.linearize();
     double norm_huber = lb_huber.getStorage()
                             .block(0, 0, lb_huber.getNumRows() - 1, lb_huber.getPaddingIdx())
@@ -897,43 +865,6 @@ TEST_F(LinearizeFixture, HuberLossReducesWeights) {
     // Huber should damp large residuals → lower error and smaller Jacobian norm
     EXPECT_LT(err_huber, err_trivial);
     EXPECT_LT(norm_huber, norm_trivial);
-}
-
-TEST_F(LinearizeFixture, DepthLossClampsBackSub) {
-    // Use trivial loss so only depth loss matters
-    LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::huber(0.1));
-    lb.linearize();
-    lb.performQR();
-
-    // Create a large pose increment that would cause a huge depth update
-    Eigen::VectorXd inc = Eigen::VectorXd::Zero(lb.getPaddingIdx());
-    inc(0) = 10.0;  // large host frame translation
-
-    double depth_before = feat_.estimated_depth;
-    double l_diff = 0.0;
-    lb.backSubstitute(inc, l_diff);
-
-    double depth_change = std::abs(feat_.estimated_depth - depth_before);
-    // Depth change should be clamped by Huber depth loss
-    EXPECT_LE(depth_change, 0.11);  // slightly above 0.1 due to floating point
-}
-
-TEST_F(LinearizeFixture, DepthLossNoneAllowsLargeUpdate) {
-    LandmarkBlock lb(MIN_DISTANCE, MAX_DISTANCE);
-    lb.allocate(&feat_, state_.get(), TrivialLoss{}, DepthLoss::none());
-    lb.linearize();
-    lb.performQR();
-
-    Eigen::VectorXd inc = Eigen::VectorXd::Zero(lb.getPaddingIdx());
-    inc(0) = 1.0;
-
-    double depth_before = feat_.estimated_depth;
-    double l_diff = 0.0;
-    lb.backSubstitute(inc, l_diff);
-
-    double depth_change = std::abs(feat_.estimated_depth - depth_before);
-    EXPECT_GT(depth_change, 0.1);  // no clamping, so large change allowed
 }
 
 TEST(LossFunctionTest, VariantAssignment) {

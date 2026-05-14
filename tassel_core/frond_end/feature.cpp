@@ -63,6 +63,9 @@ void Feature::monoTriangulate(
 
         std::vector<Eigen::Matrix<double, 2, 4>> conditions;
         for (auto& observation : observations) {
+            if (cur_frame_id >= static_cast<int>(state.poses.size())) {
+                break;
+            }
             Pose cur_pose = state.poses[cur_frame_id].get_optimized_pose();
             Eigen::Matrix3d cur_r = cur_pose.rotationMatrix() * ric;
             Eigen::Vector3d cur_t = cur_pose.rotationMatrix() * tic + cur_pose.translation();
@@ -107,8 +110,8 @@ void Feature::monoTriangulate(
 void Feature::removeOldest(
     const Eigen::Matrix3d& prev_r, const Eigen::Vector3d& prev_t, const Eigen::Matrix3d& cur_r,
     const Eigen::Vector3d& cur_t, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
-    if (start_frame_id == 0 && estimated_depth != INVALID_DEPTH) {
-        if (observations.size() > 1) {
+    if (start_frame_id == 0) {
+        if (estimated_depth != INVALID_DEPTH && observations.size() > 1) {
             Eigen::Vector3d pi_in_C = estimated_depth * observations[0].uv;
             Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
             Eigen::Vector3d pi_in_W = prev_r * pi_in_I + prev_t;

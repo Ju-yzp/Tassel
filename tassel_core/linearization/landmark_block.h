@@ -27,9 +27,7 @@ public:
     inline uint8_t getState() const { return static_cast<uint8_t>(lms_); }
     inline void setState(uint8_t s) { lms_ = static_cast<LandmarkState>(s); }
 
-    void allocate(
-        Feature* const feature, State* const state, const LossVariant& reprojection_loss,
-        const DepthLoss& depth_loss);
+    void allocate(Feature* const feature, State* const state, const LossVariant& reprojection_loss);
 
     double linearize();
 
@@ -99,7 +97,6 @@ private:
     LandmarkState lms_;
 
     LossVariant reprojection_loss_;
-    DepthLoss depth_loss_;
 
     double min_depth_, max_depth_;
 };

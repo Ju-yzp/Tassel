@@ -78,6 +78,7 @@ void VoEstimator::processMeasurement(
             feature_manager_->removeOldest(
                 *state_, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
             slideWindow();
+            --frame_count;
         } else {
             feature_manager_->initPoseByPNP(
                 *state_, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
@@ -99,8 +100,8 @@ void VoEstimator::optimize() {
     }
 
     LinearizationAbsQR linearization(
-        4, state_, feature_manager_, option_.reprojection_loss, option_.depth_loss,
-        option_.min_depth, option_.max_depth, cur_marg_lin_data_);
+        4, state_, feature_manager_, option_.reprojection_loss, option_.min_depth,
+        option_.max_depth, cur_marg_lin_data_);
 
     double initial_cost = linearization.computeError();
 
@@ -121,8 +122,8 @@ void VoEstimator::marginalizeOldestFrame() {
     // Build linear system. cur_marg_lin_data_ (from previous marg) is included
     // as prior rows, accumulating over multiple marginalizations.
     LinearizationAbsQR linearization(
-        4, state_, feature_manager_, option_.reprojection_loss, option_.depth_loss,
-        option_.min_depth, option_.max_depth, cur_marg_lin_data_);
+        4, state_, feature_manager_, option_.reprojection_loss, option_.min_depth,
+        option_.max_depth, cur_marg_lin_data_);
     linearization.linearizeProbelm();
     linearization.performQR();
 
