@@ -6,7 +6,7 @@
 #include <iostream>
 #include <memory>
 
-#include "cam/camera_rad_tan.h"
+#include "cam/camera_factory.h"
 #include "estimator/estimator_option.h"
 #include "estimator/vo_estimator.h"
 #include "frond_end/feature_manager.h"
@@ -20,7 +20,7 @@ Eigen::Matrix3d ric, ric1;
 Eigen::Vector3d tic, tic1;
 
 namespace {
-using CameraInitResult = std::vector<std::unique_ptr<tassel_core::CameraBase>>;
+using CameraInitResult = std::vector<tassel_core::Camera>;
 
 CameraInitResult initializeCameras(const tassel_tools::Parameters& params) {
     CameraInitResult result;

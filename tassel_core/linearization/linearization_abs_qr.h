@@ -20,7 +20,7 @@ namespace tassel_core {
 class LinearizationAbsQR {
 public:
     LinearizationAbsQR(
-        int num_threads, std::shared_ptr<State> state, std::shared_ptr<FeatureManager> fm,
+        int num_threads, std::shared_ptr<State> state, std::vector<Feature*> features,
         LossVariant reprojection_loss, double min_depth, double max_depth,
         std::shared_ptr<MargLinData> marg_lin_data = nullptr);
 
@@ -64,18 +64,17 @@ private:
     mutable tbb::task_arena thread_pool_;
 
     std::shared_ptr<State> cur_state_;
-    std::shared_ptr<FeatureManager> feature_manager_;
     std::shared_ptr<MargLinData> marg_lin_data_;
 
     LossVariant reprojection_loss_;
 
     std::vector<LandmarkBlock> landmark_blocks_;
-
+    std::vector<Feature*> features_;
     double pose_damping_diagonal_ = 0;
     double pose_damping_diagonal_sqrt_ = 0;
     Eigen::VectorXd marg_scaling_;
 
-    std::unordered_map<Feature*, double> saved_feature_depths_;
+    std::vector<double> saved_feature_depths_;
     std::vector<uint8_t> saved_lms_states_;
 
     double min_depth_, max_depth_;

@@ -9,7 +9,7 @@
 #include <unordered_map>
 
 // tassel
-#include "cam/camera_base.h"
+#include "cam/camera_factory.h"
 #include "feature.h"
 
 namespace tassel_core {
@@ -20,9 +20,8 @@ public:
         int tracked_times_thres = 5, double min_gradient = 50.0);
 
     void addCamera(
-        std::unique_ptr<tassel_core::CameraBase> camera, int per_grid_rows = 4,
-        int per_grid_cols = 4, int grid_edge_rows = 2, int grid_edge_cols = 2,
-        double mask_radius = 15.0, int min_feature_num = 100);
+        Camera camera, int per_grid_rows = 4, int per_grid_cols = 4, int grid_edge_rows = 2,
+        int grid_edge_cols = 2, double mask_radius = 15.0, int min_feature_num = 100);
 
     void predict();
 
@@ -54,7 +53,7 @@ private:
         std::vector<bool> grid_mask;
 
         // camera model
-        std::unique_ptr<tassel_core::CameraBase> camera;
+        Camera camera;
 
         // gradient cache (overwritten each frame)
         cv::Mat grad;

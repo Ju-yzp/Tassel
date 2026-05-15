@@ -4,13 +4,11 @@
 #include <opencv2/core.hpp>
 #include <random>
 
-#include "cam/camera_base.h"
 #include "cam/camera_equi.h"
+#include "cam/camera_factory.h"
 #include "cam/camera_rad_tan.h"
 
 namespace {
-
-// ── shared test camera matrices ────────────────────────────────────────────
 
 cv::Mat radtan_K =
     (cv::Mat_<double>(3, 3) << 455.510864, 0.000000, 328.529851, 0.000000, 455.426715, 225.596721,
@@ -24,21 +22,21 @@ const int kWidth = 640;
 const int kHeight = 480;
 }  // namespace
 
-// ── CameraBase ─────────────────────────────────────────────────────────────
+// ── Validation tests ───────────────────────────────────────────────────────
 
-TEST(CameraBase, ThrowsOnInvalidIntrinsicsSize) {
+TEST(CameraRadTan, ThrowsOnInvalidIntrinsicsSize) {
     cv::Mat bad_K(2, 2, CV_64F);
     EXPECT_THROW(
         tassel_core::CameraRadTan(bad_K, radtan_D, kWidth, kHeight), std::invalid_argument);
 }
 
-TEST(CameraBase, ThrowsOnInvalidDistortionSize) {
-    cv::Mat bad_D(1, 3, CV_64F);  // must be 4 or 5
+TEST(CameraRadTan, ThrowsOnInvalidDistortionSize) {
+    cv::Mat bad_D(1, 3, CV_64F);
     EXPECT_THROW(
         tassel_core::CameraRadTan(radtan_K, bad_D, kWidth, kHeight), std::invalid_argument);
 }
 
-TEST(CameraBase, ThrowsOnNonPositiveDimensions) {
+TEST(CameraRadTan, ThrowsOnNonPositiveDimensions) {
     EXPECT_THROW(tassel_core::CameraRadTan(radtan_K, radtan_D, 0, kWidth), std::invalid_argument);
     EXPECT_THROW(tassel_core::CameraRadTan(radtan_K, radtan_D, kHeight, -1), std::invalid_argument);
 }
@@ -57,7 +55,6 @@ protected:
         cam_ = std::make_unique<tassel_core::CameraRadTan>(radtan_K, radtan_D, kWidth, kHeight);
     }
 
-    // normalize pixel coords: K^-1 * pixel
     Eigen::Vector2d normalize(const Eigen::Vector2d& pixel) {
         double fx = radtan_K.at<double>(0, 0);
         double fy = radtan_K.at<double>(1, 1);
@@ -66,24 +63,21 @@ protected:
         return Eigen::Vector2d((pixel(0) - cx) / fx, (pixel(1) - cy) / fy);
     }
 
-    std::unique_ptr<tassel_core::CameraBase> cam_;
+    tassel_core::Camera cam_;
 };
 
 TEST_F(CameraRadTanTest, UndistortMatchesOpenCV) {
-    // pixel → undistort (returns undistorted pixels) → normalize → compare with opencv
     std::vector<Eigen::Vector2d> pixels = {
         {350, 200},
         {150, 300},
         {500, 400},
         {320, 225},
     };
-    for (const auto& p : pixels) {
-        Eigen::Vector2d uv_pixel = cam_->undistort(p);
-        Eigen::Vector2d uv_norm = normalize(uv_pixel);
-
-        // OpenCV undistortPoints with P=cv::noArray() returns normalized coords
+    auto uv_pixels = cam_->undistort(pixels);
+    for (size_t i = 0; i < pixels.size(); ++i) {
+        Eigen::Vector2d uv_norm = normalize(uv_pixels[i]);
         std::vector<cv::Point2f> cv_in = {
-            cv::Point2f(static_cast<float>(p(0)), static_cast<float>(p(1)))};
+            cv::Point2f(static_cast<float>(pixels[i](0)), static_cast<float>(pixels[i](1)))};
         std::vector<cv::Point2f> cv_out;
         cv::Mat I = cv::Mat::eye(3, 3, CV_64F);
         cv::undistortPoints(cv_in, cv_out, radtan_K, radtan_D, I);
@@ -93,8 +87,6 @@ TEST_F(CameraRadTanTest, UndistortMatchesOpenCV) {
 }
 
 TEST_F(CameraRadTanTest, PixelRoundTrip) {
-    // distorted pixel → undistort → undsitorted pixel → normalize → distort → back to pixel ≈
-    // original
     std::mt19937 rng(42);
     std::uniform_real_distribution<double> dx(0, kWidth);
     std::uniform_real_distribution<double> dy(0, kHeight);
@@ -125,7 +117,7 @@ protected:
         return Eigen::Vector2d((pixel(0) - cx) / fx, (pixel(1) - cy) / fy);
     }
 
-    std::unique_ptr<tassel_core::CameraBase> cam_;
+    tassel_core::Camera cam_;
 };
 
 TEST_F(CameraEquiTest, UndistortMatchesOpenCV) {
@@ -135,12 +127,11 @@ TEST_F(CameraEquiTest, UndistortMatchesOpenCV) {
         {500, 400},
         {320, 240},
     };
-    for (const auto& p : pixels) {
-        Eigen::Vector2d uv_pixel = cam_->undistort(p);
-        Eigen::Vector2d uv_norm = normalize(uv_pixel);
-
+    auto uv_pixels = cam_->undistort(pixels);
+    for (size_t i = 0; i < pixels.size(); ++i) {
+        Eigen::Vector2d uv_norm = normalize(uv_pixels[i]);
         std::vector<cv::Point2f> cv_in = {
-            cv::Point2f(static_cast<float>(p(0)), static_cast<float>(p(1)))};
+            cv::Point2f(static_cast<float>(pixels[i](0)), static_cast<float>(pixels[i](1)))};
         std::vector<cv::Point2f> cv_out;
         cv::Mat I = cv::Mat::eye(3, 3, CV_64F);
         cv::fisheye::undistortPoints(cv_in, cv_out, equi_K, equi_D, I);
@@ -165,7 +156,6 @@ TEST_F(CameraEquiTest, PixelRoundTrip) {
 }
 
 TEST_F(CameraEquiTest, ZeroDistortionRoundTrip) {
-    // 零畸变 equi: 小 r 时 atan(r)/r ≈ 1，靠近中心时模型近似为针孔。
     cv::Mat zero_D = (cv::Mat_<double>(1, 4) << 0.0, 0.0, 0.0, 0.0);
     tassel_core::CameraEqui cam_zero(equi_K, zero_D, kWidth, kHeight);
 
@@ -184,22 +174,41 @@ TEST(CameraEqui, FourCoefDistortionIsValid) {
     EXPECT_NO_THROW(tassel_core::CameraEqui(equi_K, equi_D, kWidth, kHeight));
 }
 
-// ── Polymorphism ───────────────────────────────────────────────────────────
+// ── Polymorphism through base pointer ─────────────────────────────────────
 
 TEST(CameraPolymorphism, BothModelsWorkThroughBasePtr) {
-    auto radtan = std::make_unique<tassel_core::CameraRadTan>(radtan_K, radtan_D, kWidth, kHeight);
-    auto equi = std::make_unique<tassel_core::CameraEqui>(equi_K, equi_D, kWidth, kHeight);
+    tassel_core::Camera radtan =
+        std::make_unique<tassel_core::CameraRadTan>(radtan_K, radtan_D, kWidth, kHeight);
+    tassel_core::Camera equi =
+        std::make_unique<tassel_core::CameraEqui>(equi_K, equi_D, kWidth, kHeight);
 
-    // undistort some points through base pointer
     std::vector<Eigen::Vector2d> pixels = {{350, 200}, {150, 300}, {500, 400}};
 
     for (const auto& p : pixels) {
         auto r1 = radtan->undistort(p);
         auto r2 = radtan->undistort(p);
-        EXPECT_EQ(r1, r2);  // deterministic
+        EXPECT_EQ(r1, r2);
 
         auto e1 = equi->undistort(p);
         auto e2 = equi->undistort(p);
         EXPECT_EQ(e1, e2);
     }
+}
+
+// ── Factory ────────────────────────────────────────────────────────────────
+
+TEST(CameraFactory, CreatesFromString) {
+    auto cam1 = tassel_core::CameraFactory::create("radtan", radtan_K, radtan_D, kWidth, kHeight);
+    auto cam2 = tassel_core::CameraFactory::create("equi", equi_K, equi_D, kWidth, kHeight);
+
+    EXPECT_EQ(cam1->get_width(), kWidth);
+    EXPECT_EQ(cam1->get_height(), kHeight);
+    EXPECT_EQ(cam2->get_width(), kWidth);
+    EXPECT_EQ(cam2->get_height(), kHeight);
+}
+
+TEST(CameraFactory, ThrowsOnUnknownModel) {
+    EXPECT_THROW(
+        tassel_core::CameraFactory::create("unknown", radtan_K, radtan_D, kWidth, kHeight),
+        std::invalid_argument);
 }

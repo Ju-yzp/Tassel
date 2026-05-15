@@ -51,13 +51,6 @@ void VoEstimator::processMeasurement(
     }
     int& frame_count = state_->cur_frame_count;
 
-    // Pose prediction: copy previous pose
-    if (frame_count > 0) {
-        state_->poses[frame_count] = state_->poses[frame_count - 1];
-    } else {
-        state_->poses[0] = PoseStateWithLin(Sophus::SE3d());
-    }
-
     bool is_keyframe = feature_manager_->checkKeyFrameByParallax(frame_count, feature_frame);
 
     if (is_keyframe) {
@@ -91,17 +84,15 @@ void VoEstimator::processMeasurement(
 }
 
 void VoEstimator::optimize() {
-    // Set linearization point for kept frames before building the linear system.
-    // Frame n-1 (newest) is excluded — it is not in the marg prior.
-    for (int i = 0; i < state_->cur_frame_count - 1; i++) {
+    for (int i = 0; i < state_->max_frame_count; ++i) {
         if (!state_->poses[i].isLinearized()) {
             state_->poses[i].setLinearized();
         }
     }
 
     LinearizationAbsQR linearization(
-        4, state_, feature_manager_, option_.reprojection_loss, option_.min_depth,
-        option_.max_depth, cur_marg_lin_data_);
+        4, state_, feature_manager_->collectOptimizationFeatures(), option_.reprojection_loss,
+        option_.min_depth, option_.max_depth, cur_marg_lin_data_);
 
     double initial_cost = linearization.computeError();
 
@@ -122,8 +113,8 @@ void VoEstimator::marginalizeOldestFrame() {
     // Build linear system. cur_marg_lin_data_ (from previous marg) is included
     // as prior rows, accumulating over multiple marginalizations.
     LinearizationAbsQR linearization(
-        4, state_, feature_manager_, option_.reprojection_loss, option_.min_depth,
-        option_.max_depth, cur_marg_lin_data_);
+        4, state_, feature_manager_->collectMarginalizationFeatures(), option_.reprojection_loss,
+        option_.min_depth, option_.max_depth, cur_marg_lin_data_);
     linearization.linearizeProbelm();
     linearization.performQR();
 
@@ -142,18 +133,13 @@ void VoEstimator::marginalizeOldestFrame() {
     new_mld.b = marg_sqrt_b;
 
     cur_marg_lin_data_ = std::make_shared<MargLinData>(std::move(new_mld));
+
+    feature_manager_->removeMarginalizedFeatures();
 }
 
 void VoEstimator::slideWindow() {
     for (int i = 0; i < state_->max_frame_count - 1; i++) {
-        // Absorb delta into linearization point: the actual current pose
-        // becomes the new baseline for the next optimization round.
-        Pose actual_pose = state_->poses[i + 1].get_pose();
-        if (state_->poses[i + 1].isLinearized()) {
-            actual_pose = actual_pose * Sophus::SE3d::exp(state_->poses[i + 1].get_delta());
-        }
-
-        state_->poses[i] = PoseStateWithLin(actual_pose);
+        state_->poses[i] = state_->poses[i + 1];
     }
     state_->poses[state_->max_frame_count - 1].reset();
 }

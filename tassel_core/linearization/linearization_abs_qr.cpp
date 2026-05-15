@@ -11,26 +11,26 @@
 
 // eigen
 #include <Eigen/Core>
+#include <cstddef>
 #include <utility>
 
 namespace tassel_core {
 
 LinearizationAbsQR::LinearizationAbsQR(
-    int num_threads, std::shared_ptr<State> state, std::shared_ptr<FeatureManager> fm,
+    int num_threads, std::shared_ptr<State> state, std::vector<Feature*> features,
     LossVariant reprojection_loss, double min_depth, double max_depth,
     std::shared_ptr<MargLinData> marg_lin_data)
     : thread_pool_(num_threads),
       cur_state_(std::move(state)),
-      feature_manager_(std::move(fm)),
       marg_lin_data_(std::move(marg_lin_data)),
       reprojection_loss_(std::move(reprojection_loss)),
+      features_(features),
       min_depth_(min_depth),
       max_depth_(max_depth) {
-    auto features = feature_manager_->collectOptimizationFeatures();
     spdlog::info("{} landmarks need to optimize", static_cast<int>(features.size()));
-    landmark_blocks_.resize(features.size(), LandmarkBlock(min_depth_, max_depth_));
+    landmark_blocks_.resize(features_.size(), LandmarkBlock(min_depth_, max_depth_));
     for (size_t i = 0; i < features.size(); ++i) {
-        landmark_blocks_[i].allocate(features[i], cur_state_.get(), reprojection_loss_);
+        landmark_blocks_[i].allocate(features_[i], cur_state_.get(), reprojection_loss_);
     }
 }
 
@@ -236,10 +236,9 @@ void LinearizationAbsQR::add_dense_H_b_marg_prior(Eigen::MatrixXd& H, Eigen::Vec
 }
 
 double LinearizationAbsQR::computeError() const {
-    auto features = feature_manager_->collectOptimizationFeatures();
     double error = 0.0;
 
-    for (auto* f : features) {
+    for (auto* f : features_) {
         int host_id = f->start_frame_id;
         Pose T_w_h = cur_state_->poses[host_id].get_optimized_pose();
 
@@ -271,10 +270,11 @@ double LinearizationAbsQR::computeError() const {
 void LinearizationAbsQR::saveState() {
     for (auto& p : cur_state_->poses) p.save();
 
-    saved_feature_depths_.clear();
-    auto features = feature_manager_->collectOptimizationFeatures();
-    for (auto* f : features) {
-        saved_feature_depths_[f] = f->estimated_depth;
+    saved_feature_depths_.resize(features_.size());
+    for (size_t i = 0; i < features_.size(); ++i) {
+        auto& f = features_[i];
+        saved_feature_depths_[i] = f->estimated_depth;
+        saved_feature_depths_[i] = f->estimated_depth;
     }
 
     saved_lms_states_.resize(landmark_blocks_.size());
@@ -286,8 +286,9 @@ void LinearizationAbsQR::saveState() {
 void LinearizationAbsQR::restoreState() {
     for (auto& p : cur_state_->poses) p.restore();
 
-    for (auto& [f, depth] : saved_feature_depths_) {
-        f->estimated_depth = depth;
+    for (size_t i = 0; i < features_.size(); ++i) {
+        auto& f = features_[i];
+        f->estimated_depth = saved_feature_depths_[i];
     }
 
     for (size_t i = 0; i < saved_lms_states_.size() && i < landmark_blocks_.size(); ++i) {

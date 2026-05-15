@@ -25,15 +25,15 @@ FeatureTracker::FeatureTracker(
       min_gradient_thres_(min_gradient) {}
 
 void FeatureTracker::addCamera(
-    std::unique_ptr<tassel_core::CameraBase> camera, int per_grid_rows, int per_grid_cols,
-    int grid_edge_rows, int grid_edge_cols, double mask_radius, int min_feature_num) {
+    Camera camera, int per_grid_rows, int per_grid_cols, int grid_edge_rows, int grid_edge_cols,
+    double mask_radius, int min_feature_num) {
     size_t camera_id = ctc_map_.size();
     CameraTrackingContext ctc;
-    if (camera == nullptr) {
+    ctc.camera = std::move(camera);
+    if (ctc.camera == nullptr) {
         throw std::invalid_argument(
             "Camera pointer cannot be null for camera " + std::to_string(camera_id));
     }
-    ctc.camera = std::move(camera);
     ctc.per_grid_rows = per_grid_rows;
     ctc.per_grid_cols = per_grid_cols;
     ctc.grid_edge_rows = grid_edge_rows;
@@ -105,7 +105,7 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::monoTracking(
     }
 
     std::unordered_map<int, FeaturePerFrame> feature_frame;
-    auto camera = ctc.camera.get();
+    auto* camera = ctc.camera.get();
     for (size_t i = 0; i < cur_ids.size(); ++i) {
         Eigen::Vector2d pt(cur_pts[i].x, cur_pts[i].y);
         Eigen::Vector2d uv = camera->undistort(pt);
@@ -141,7 +141,7 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::stereoTracking(
     std::swap(r_ctc.prev_pts, r_ctc.cur_pts);
     std::swap(r_ctc.prev_ids, r_ctc.cur_ids);
     r_ctc.prev_img = right_img;
-    auto r_camera = r_ctc.camera.get();
+    auto* r_camera = r_ctc.camera.get();
     for (size_t i = 0; i < r_ctc.prev_ids.size(); ++i) {
         auto it = feature_frame.find(r_ctc.prev_ids[i]);
         if (it != feature_frame.end()) {

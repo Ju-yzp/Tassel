@@ -39,13 +39,15 @@ public:
 
     std::vector<Feature*> collectOptimizationFeatures();
 
-    std::vector<std::pair<int, const Feature*>> collectMarginalizationFeatures() const;
+    std::vector<Feature*> collectMarginalizationFeatures();
 
     std::vector<Eigen::Vector3d> getPointCloud(
         const State& state, const Eigen::Matrix3d& ric = Eigen::Matrix3d::Identity(),
         const Eigen::Vector3d& tic = Eigen::Vector3d::Zero()) const;
 
     std::unordered_map<int, Feature>& testFeatures() { return features_; }
+
+    void removeMarginalizedFeatures();
 
 private:
     double reprojection_error_thres_;

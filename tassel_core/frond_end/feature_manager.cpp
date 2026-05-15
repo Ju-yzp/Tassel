@@ -223,15 +223,19 @@ void FeatureManager::removeOutliers(
 
 void FeatureManager::reset() { features_.clear(); }
 
-std::vector<std::pair<int, const Feature*>> FeatureManager::collectMarginalizationFeatures() const {
-    std::vector<std::pair<int, const Feature*>> result;
-    for (const auto& [id, feature] : features_) {
+std::vector<Feature*> FeatureManager::collectMarginalizationFeatures() {
+    std::vector<Feature*> result;
+    for (auto& [id, feature] : features_) {
         if (feature.start_frame_id != 0) continue;
         if (feature.estimated_depth == INVALID_DEPTH) continue;
         if (static_cast<int>(feature.observations.size()) < tracked_times_thres_) continue;
-        result.emplace_back(id, &feature);
+        result.push_back(&feature);
     }
     return result;
+}
+
+void FeatureManager::removeMarginalizedFeatures() {
+    std::erase_if(features_, [&](const auto& item) { return item.second.start_frame_id == 0; });
 }
 
 std::vector<Eigen::Vector3d> FeatureManager::getPointCloud(

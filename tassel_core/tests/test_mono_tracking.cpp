@@ -3,7 +3,7 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 
-#include "cam/camera_rad_tan.h"
+#include "cam/camera_factory.h"
 #include "frond_end/feature_tracker.h"
 #include "tassel_utils/timer.h"
 

@@ -1,24 +1,23 @@
 #ifndef TASSEL_TOOLS_PARAMETERS_PARAMS_PARSER_H_
 #define TASSEL_TOOLS_PARAMETERS_PARAMS_PARSER_H_
 
-// yaml-cpp
 #include <yaml-cpp/node/node.h>
 #include <yaml-cpp/yaml.h>
 
-// eigen
 #include <Eigen/Core>
 #include <Eigen/Dense>
 
-// opencv
 #include <opencv2/core/hal/interface.h>
 #include <opencv2/core.hpp>
 #include <opencv2/core/mat.hpp>
 
-// cpp
 #include <concepts>
 #include <cstddef>
 #include <filesystem>
+#include <string_view>
 #include <utility>
+
+#include "cam/camera_factory.h"
 
 namespace tassel_tools {
 namespace fs = std::filesystem;
@@ -30,7 +29,32 @@ concept IsMatrixType =
 template <typename T>
 concept IsStringLike = std::convertible_to<T, std::string_view>;
 
-// TODO: 必须升级到 yaml-cpp 0.7.0+ 以支持线程安全的引用计数并避免段错误。
+// ── yaml-cpp cross-version compatibility ───────────────────────────────────
+
+namespace detail {
+
+// yaml-cpp 0.6+ provides IsDefined(); 0.5.x only has IsNull().
+// operator[] in 0.5.x creates a Null node for missing keys, so IsNull()
+// catches a missing path. In 0.6+ a missing key returns an undefined node
+// that is neither defined nor null — only IsDefined() catches it.
+template <typename, typename = void>
+inline constexpr bool kHasIsDefined = false;
+template <typename T>
+inline constexpr bool
+    kHasIsDefined<T, std::void_t<decltype(std::declval<const T&>().IsDefined())>> = true;
+
+inline bool node_valid(const YAML::Node& node) {
+    if constexpr (kHasIsDefined<YAML::Node>) {
+        return node.IsDefined();
+    } else {
+        return !node.IsNull();
+    }
+}
+
+}  // namespace detail
+
+// ── ParamsParser ──────────────────────────────────────────────────────────
+
 class ParamsParser {
 public:
     explicit ParamsParser(const std::string& path_str) {
@@ -49,48 +73,41 @@ public:
             using Scalar = typename T::Scalar;
             constexpr int rows = T::RowsAtCompileTime;
             constexpr int cols = T::ColsAtCompileTime;
-            constexpr int Options = T::Options;
+            constexpr int options = T::Options;
             T matrix;
             if (node.IsSequence() && node.size() > 0 && node[0].IsSequence()) {
                 if (node.size() != rows || node[0].size() != cols) {
-                    throw std::runtime_error("Nested matrix dimension mismatch!");
+                    throw std::runtime_error("Nested matrix dimension mismatch");
                 }
-                for (int i = 0; i < rows; ++i) {
-                    for (int j = 0; j < cols; ++j) {
-                        matrix(i, j) = node[i][j].template as<Scalar>();
-                    }
-                }
+                for (int i = 0; i < rows; ++i)
+                    for (int j = 0; j < cols; ++j) matrix(i, j) = node[i][j].template as<Scalar>();
             } else if (node.IsSequence()) {
                 auto vec = node.template as<std::vector<Scalar>>();
                 if (vec.size() != static_cast<size_t>(rows * cols)) {
-                    throw std::runtime_error("Flat matrix dimension mismatch!");
+                    throw std::runtime_error("Flat matrix dimension mismatch");
                 }
-                matrix = Eigen::Map<const Eigen::Matrix<Scalar, rows, cols, Options>>(vec.data());
+                matrix = Eigen::Map<const Eigen::Matrix<Scalar, rows, cols, options>>(vec.data());
             } else {
-                throw std::runtime_error("Parameter is not a sequence!");
+                throw std::runtime_error("Parameter is not a sequence");
             }
-
             return matrix;
         } else if constexpr (std::same_as<std::decay_t<T>, cv::Mat>) {
             if (node.IsSequence() && node.size() > 0 && node[0].IsSequence()) {
                 size_t rows = node.size();
                 size_t cols = node[0].size();
                 cv::Mat mat(rows, cols, CV_64F);
-                for (size_t i = 0; i < rows; ++i) {
-                    for (size_t j = 0; j < cols; ++j) {
+                for (size_t i = 0; i < rows; ++i)
+                    for (size_t j = 0; j < cols; ++j)
                         mat.at<double>(i, j) = node[i][j].template as<double>();
-                    }
-                }
                 return mat;
             } else if (node.IsSequence()) {
                 size_t rows = node.size();
                 cv::Mat mat(rows, 1, CV_64F);
-                for (size_t i = 0; i < rows; ++i) {
+                for (size_t i = 0; i < rows; ++i)
                     mat.at<double>(i, 0) = node[i].template as<double>();
-                }
                 return mat;
             } else {
-                throw std::runtime_error("Parameter is not a sequence!");
+                throw std::runtime_error("Parameter is not a sequence");
             }
         }
     }
@@ -99,37 +116,34 @@ public:
     requires(!IsMatrixType<T>) T as(Args&&... keys)
     const { return get_node(std::forward<Args>(keys)...).template as<T>(); }
 
+    template <typename... Args>
+    requires(IsStringLike<Args>&&...) tassel_core::Camera
+        as_camera(const std::string& model, int width, int height, Args&&... keys)
+    const {
+        auto k = as<cv::Mat>(keys..., "intrinsics");
+        auto d = as<cv::Mat>(keys..., "distortion_coeffs");
+        return tassel_core::CameraFactory::create(model, k, d, width, height);
+    }
+
 private:
     template <typename... Args>
     requires(IsStringLike<Args>&&...) YAML::Node get_node(Args&&... keys)
     const {
-        // YAML::Node node = config_;
-        // YAML::Node result;
-        // return ((result = node[std::forward<Args>(keys)]), ...);
-        std::vector<YAML::Node> node_path;
-        node_path.reserve(sizeof...(keys) + 1);
-
-        node_path.push_back(config_);
-        auto traverse = [&](auto&& key) {
-            YAML::Node next_node = node_path.back()[std::forward<decltype(key)>(key)];
-
-            if (!next_node.IsDefined()) {
-                throw std::runtime_error("Key [" + std::string(key) + "] not found in hierarchy!");
+        YAML::Node node = config_;
+        auto step = [&](auto&& key) {
+            node.reset(node[std::forward<decltype(key)>(key)]);
+            if (!detail::node_valid(node)) {
+                throw std::runtime_error(
+                    "Key [" + std::string(key) + "] not found in config hierarchy");
             }
-
-            node_path.push_back(next_node);
         };
-
-        (traverse(std::forward<Args>(keys)), ...);
-
-        if (node_path.back().IsNull()) {
-            throw std::runtime_error("Final node is null!");
-        }
-
-        return node_path.back();
+        (step(std::forward<Args>(keys)), ...);
+        return node;
     }
+
     YAML::Node config_;
 };
+
 }  // namespace tassel_tools
 
 #endif  // TASSEL_TOOLS_PARAMETERS_PARAMS_PARSER_H_

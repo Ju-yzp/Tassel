@@ -12,7 +12,8 @@ add_library(tassel_tools SHARED viewer/viewer.cpp)
 
 target_link_libraries(
   tassel_tools
-  PUBLIC tassel_deps
+  PUBLIC tassel_core
+         tassel_deps
          rclcpp::rclcpp
          cv_bridge::cv_bridge
          std_msgs::std_msgs__rosidl_generator_cpp

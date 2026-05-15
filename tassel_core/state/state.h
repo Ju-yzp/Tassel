@@ -16,18 +16,15 @@ struct PoseStateWithLin {
     PoseStateWithLin()
         : pose_linearized(Sophus::SE3d()),
           linearized(false),
-          delta(Eigen::Vector<double, 6>::Zero()),
+          delta(Pose()),
           T_wc_current(Sophus::SE3d()) {}
 
     PoseStateWithLin(const Sophus::SE3d& T_wc, bool linearized = false)
-        : pose_linearized(T_wc),
-          linearized(linearized),
-          delta(Eigen::Vector<double, 6>::Zero()),
-          T_wc_current(T_wc) {}
+        : pose_linearized(T_wc), linearized(linearized), delta(Pose()), T_wc_current(T_wc) {}
 
     inline void setLinearized() {
         linearized = true;
-        if (!delta.isApproxToConstant(0)) {
+        if (delta.log().norm() > 1e-12) {
             throw std::runtime_error("delta is not zero");
         }
         T_wc_current = pose_linearized;
@@ -48,13 +45,13 @@ struct PoseStateWithLin {
             increasePose(delta, pose_linearized);
             T_wc_current = pose_linearized;
         } else {
-            this->delta += delta;
+            increasePose(delta, this->delta);
             T_wc_current = pose_linearized;
             increasePose(delta, T_wc_current);
         }
     }
 
-    Eigen::Vector<double, 6> get_delta() const { return delta; }
+    Pose get_delta() const { return delta; }
 
     inline bool isLinearized() const { return linearized; }
 
@@ -72,9 +69,9 @@ struct PoseStateWithLin {
 
     inline void reset() {
         linearized = false;
-        delta.setZero();
-        T_wc_current = Sophus::SE3d();
-        pose_linearized = Sophus::SE3d();
+        delta = Pose();
+        T_wc_current = Pose();
+        pose_linearized = Pose();
     }
 
     void init_pose(Pose init_pose) {
@@ -87,12 +84,12 @@ struct PoseStateWithLin {
 private:
     Pose pose_linearized;
     bool linearized;  // 线性化标志
-    Eigen::Vector<double, 6> delta;
+    Pose delta;
     Pose T_wc_current;
 
     // 旧状态，用于优化失败后恢复原本状态
     Pose storage_pose_linearized;
-    Eigen::Vector<double, 6> storage_delta;
+    Pose storage_delta;
     Pose storage_T_wc_current;
 };
 

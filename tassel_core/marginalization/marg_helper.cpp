@@ -16,7 +16,7 @@ void MargHelper::computeDelta(const State& state, Eigen::VectorXd& delta) {
     for (int i = 0; i < state.max_frame_count - 1; i++) {
         TASSEL_ASSERT(state.poses[i].isLinearized());
         delta.segment<tassel_utils::POSE_SIZE>(i * tassel_utils::POSE_SIZE) =
-            state.poses[i].get_delta();
+            state.poses[i].get_delta().log();
     }
 }
 
