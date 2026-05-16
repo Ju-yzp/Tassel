@@ -4,13 +4,15 @@
 #include <Eigen/Cholesky>
 #include <cmath>
 
+#include "optimizer/summary.h"
 #include "tassel_utils/macros.h"
+#include "tassel_utils/timer.h"
 
 namespace tassel_core {
 
 LMOptimizer::LMOptimizer(const LMOptions& options) : options_(options) {}
 
-OptimizerResult LMOptimizer::optimize(LinearizationAbsQR* linearization) {
+void LMOptimizer::optimize(LinearizationAbsQR* linearization) {
     double lambda = options_.lambda_initial;
     double lambda_vee = options_.initial_vee;
 
@@ -18,11 +20,18 @@ OptimizerResult LMOptimizer::optimize(LinearizationAbsQR* linearization) {
     int num_rejected = 0;
     bool converged = false;
     bool terminated = false;
+    bool first_linearization = true;
 
+    tassel_utils::Timer timer("optimizer");
+    timer.start();
     for (; num_iter < options_.max_iterations && !terminated;) {
         // ── Phase 1: linearize residuals and marginalize landmarks via QR ──
         bool numerically_valid = false;
         double error_0 = linearization->linearizeProbelm(&numerically_valid);
+        if (first_linearization) {
+            summary_.init_cost = error_0;
+            first_linearization = false;
+        }
         TASSEL_ASSERT(numerically_valid && "numerical failure during linearization");
         linearization->performQR();
 
@@ -93,14 +102,28 @@ OptimizerResult LMOptimizer::optimize(LinearizationAbsQR* linearization) {
             double relative_decrease = step_is_valid ? f_diff / l_diff : 0;
             bool step_is_successful = step_is_valid && relative_decrease > 0;
 
-            spdlog::debug(
-                "LM iter={} inner={} lambda={:.2e} err0={:.6f} err1={:.6f} "
-                "f_diff={:.6f} l_diff={:.6f} rel={:.4f} step_norminf={:.4f}",
-                num_iter, j, lambda, error_0, error_new, f_diff, l_diff, relative_decrease,
-                step_norminf);
+            PerIterationSummary pis;
+            pis.cost = error_new;
+            pis.lambda = lambda;
+            pis.step = inc.head(pose_dim);
 
+            // spdlog::debug(
+            //     "LM iter={} inner={} lambda={:.2e} err0={:.6f} err1={:.6f} "
+            //     "f_diff={:.6f} l_diff={:.6f} rel={:.4f} step_norminf={:.4f} {}",
+            //     num_iter, j, lambda, error_0, error_new, f_diff, l_diff,
+            //     relative_decrease, step_norminf,
+            //     step_is_successful ? "accepted" : "rejected");
+
+            pis.rejected = !step_is_successful;
+            summary_.summaries.push_back(pis);
             if (step_is_successful) {
-                // ── Accept ──
+                // // Absorb accumulated delta into the linearization point so the
+                // // next outer iteration linearizes Jacobians at the current
+                // // (correct) pose, rather than the frozen pre-optimization pose.
+                // for (auto& p : linearization->getState()->poses) {
+                //     p.updateLinearizationPoint();
+                // }
+
                 lambda *= std::max(1.0 / 3.0, 1.0 - std::pow(2.0 * relative_decrease - 1.0, 3));
                 lambda = std::max(options_.lambda_min, lambda);
                 lambda_vee = options_.initial_vee;
@@ -113,7 +136,6 @@ OptimizerResult LMOptimizer::optimize(LinearizationAbsQR* linearization) {
                 }
                 break;  // exit inner loop → re-linearize at next outer iteration
             } else {
-                // ── Reject ──
                 linearization->restoreState();
 
                 lambda = std::min(lambda_vee * lambda, options_.lambda_max);
@@ -131,12 +153,12 @@ OptimizerResult LMOptimizer::optimize(LinearizationAbsQR* linearization) {
     }
 
     double final_error = linearization->computeError();
-
-    spdlog::info(
-        "LM finished: it={} rejected={} err={:.6f} converged={}", num_iter, num_rejected,
-        final_error, converged);
-
-    return {num_iter, num_rejected, final_error, converged};
+    double spend_time = timer.end();
+    summary_.actual_iterations = num_iter;
+    summary_.num_rejected = num_rejected;
+    summary_.final_cost = final_error;
+    summary_.spend_time = spend_time;
+    summary_.converged = converged;
 }
 
 }  // namespace tassel_core

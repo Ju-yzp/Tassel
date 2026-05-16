@@ -22,8 +22,11 @@ include(TasselTest)
 
 find_package(GTest REQUIRED)
 find_package(Threads REQUIRED)
-find_package(depthai CONFIG REQUIRED)
-find_package(SyncTrigger REQUIRED)
+
+if(TASSEL_ENABLE_HARDWARE_TESTS)
+  find_package(depthai CONFIG REQUIRED)
+  find_package(SyncTrigger REQUIRED)
+endif()
 
 include(GoogleTest)
 enable_testing()
@@ -35,6 +38,7 @@ tassel_add_tests(
   LINK_LIBS
   tassel_core
   tassel_tools
+  HARDWARE_LIBS
   depthai::core
   INCLUDE_DIRS
   "${CMAKE_CURRENT_SOURCE_DIR}")

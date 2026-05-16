@@ -45,15 +45,15 @@ min_gradient: 20.0
 enable_statistics: true
 
 # ── feature manager ───────────────────────────────────────────────────────
-reprojection_error_thres: 0.93
-parallax_thres: 40.0
+reprojection_error_thres: 0.96
+parallax_thres: 30.0
 max_pnp_needed_num: 25
 tracked_times_thres: 3
 min_pnp_num: 8
 min_pnp_inliers_ratio: 0.85
 min_depth: 0.1
 max_depth: 3.0
-min_translation: 0.05
+min_translation: 0.10
 min_tracked_pts_num: 20
 
 # ── estimator ─────────────────────────────────────────────────────────────

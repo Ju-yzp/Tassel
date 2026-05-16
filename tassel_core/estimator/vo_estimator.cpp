@@ -1,6 +1,7 @@
 #include "vo_estimator.h"
 
 #include <spdlog/spdlog.h>
+#include <opencv2/core.hpp>
 
 #include <Eigen/Core>
 
@@ -22,7 +23,10 @@ VoEstimator::VoEstimator(
       tic_(tic),
       ric1_(ric1),
       tic1_(tic1),
+      arena_(option_.num_threads),
       init_ts_(-1) {
+    cv::setNumThreads(option_.num_threads);
+
     state_->cur_frame_count = 0;
     initializeMargPrior();
 }
@@ -84,57 +88,58 @@ void VoEstimator::processMeasurement(
 }
 
 void VoEstimator::optimize() {
-    for (int i = 0; i < state_->max_frame_count; ++i) {
-        if (!state_->poses[i].isLinearized()) {
-            state_->poses[i].setLinearized();
+    arena_.execute([&] {
+        for (int i = 0; i < state_->max_frame_count; ++i) {
+            if (!state_->poses[i].isLinearized()) {
+                state_->poses[i].setLinearized();
+            }
         }
-    }
 
-    LinearizationAbsQR linearization(
-        4, state_, feature_manager_->collectOptimizationFeatures(), option_.reprojection_loss,
-        option_.min_depth, option_.max_depth, cur_marg_lin_data_);
+        LinearizationAbsQR linearization(
+            1, state_, feature_manager_->collectOptimizationFeatures(), option_.reprojection_loss,
+            option_.min_depth, option_.max_depth, cur_marg_lin_data_);
 
-    double initial_cost = linearization.computeError();
+        double initial_cost = linearization.computeError();
 
-    LMOptions opts;
-    opts.max_iterations = option_.num_iterations;
-    opts.lambda_initial = option_.lambda_initial;
-    LMOptimizer optimizer(opts);
-    auto result = optimizer.optimize(&linearization);
-
-    spdlog::info(
-        "optimize: initial_cost={:.6f}, final_cost={:.6f}, iterations={}", initial_cost,
-        result.final_error, result.num_iterations);
+        LMOptions opts;
+        opts.max_iterations = option_.num_iterations;
+        opts.lambda_initial = option_.lambda_initial;
+        LMOptimizer optimizer(opts);
+        optimizer.optimize(&linearization);
+        optimizer.log_summary();
+    });
 }
 
 void VoEstimator::marginalizeOldestFrame() {
-    MargLinData new_mld;
+    arena_.execute([&] {
+        MargLinData new_mld;
 
-    // Build linear system. cur_marg_lin_data_ (from previous marg) is included
-    // as prior rows, accumulating over multiple marginalizations.
-    LinearizationAbsQR linearization(
-        4, state_, feature_manager_->collectMarginalizationFeatures(), option_.reprojection_loss,
-        option_.min_depth, option_.max_depth, cur_marg_lin_data_);
-    linearization.linearizeProbelm();
-    linearization.performQR();
+        // Build linear system. cur_marg_lin_data_ (from previous marg) is included
+        // as prior rows, accumulating over multiple marginalizations.
+        LinearizationAbsQR linearization(
+            1, state_, feature_manager_->collectMarginalizationFeatures(),
+            option_.reprojection_loss, option_.min_depth, option_.max_depth, cur_marg_lin_data_);
+        linearization.linearizeProbelm();
+        linearization.performQR();
 
-    Eigen::MatrixXd Q2Jp;
-    Eigen::VectorXd Q2r;
-    linearization.get_dense_Q2Jp_Q2r(Q2Jp, Q2r);
+        Eigen::MatrixXd Q2Jp;
+        Eigen::VectorXd Q2r;
+        linearization.get_dense_Q2Jp_Q2r(Q2Jp, Q2r);
 
-    int marg_size = tassel_utils::POSE_SIZE;
-    int keep_size = state_->max_frame_count * tassel_utils::POSE_SIZE - marg_size;
+        int marg_size = tassel_utils::POSE_SIZE;
+        int keep_size = state_->max_frame_count * tassel_utils::POSE_SIZE - marg_size;
 
-    Eigen::MatrixXd marg_sqrt_H;
-    Eigen::VectorXd marg_sqrt_b;
-    MargHelper::marginalizeOldest(marg_size, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+        Eigen::MatrixXd marg_sqrt_H;
+        Eigen::VectorXd marg_sqrt_b;
+        MargHelper::marginalizeOldest(marg_size, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
 
-    new_mld.H = marg_sqrt_H;
-    new_mld.b = marg_sqrt_b;
+        new_mld.H = marg_sqrt_H;
+        new_mld.b = marg_sqrt_b;
 
-    cur_marg_lin_data_ = std::make_shared<MargLinData>(std::move(new_mld));
+        cur_marg_lin_data_ = std::make_shared<MargLinData>(std::move(new_mld));
 
-    feature_manager_->removeMarginalizedFeatures();
+        feature_manager_->removeMarginalizedFeatures();
+    });
 }
 
 void VoEstimator::slideWindow() {

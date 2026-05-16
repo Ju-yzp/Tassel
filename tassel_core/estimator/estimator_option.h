@@ -9,6 +9,7 @@ struct EstimatorOption {
     // ── optimization ────────────────────────────────────────────────────────
     bool optimize_enabled = true;
     int num_iterations = 10;
+    int num_threads = 4;
     double lambda_initial = 1e-3;
 
     // ── marginalization ─────────────────────────────────────────────────────

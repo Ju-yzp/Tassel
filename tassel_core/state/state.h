@@ -8,23 +8,26 @@
 namespace tassel_core {
 using Pose = Sophus::SE3d;
 
-inline void increasePose(const Eigen::Vector<double, 6> delta, Pose& pose) {
+inline void increasePose(const Eigen::Vector<double, 6>& delta, Pose& pose) {
     pose = pose * Sophus::SE3d::exp(delta);
 }
-// vo系统（只带位姿信息）
+
 struct PoseStateWithLin {
     PoseStateWithLin()
         : pose_linearized(Sophus::SE3d()),
           linearized(false),
-          delta(Pose()),
+          delta(Eigen::Vector<double, 6>::Zero()),
           T_wc_current(Sophus::SE3d()) {}
 
     PoseStateWithLin(const Sophus::SE3d& T_wc, bool linearized = false)
-        : pose_linearized(T_wc), linearized(linearized), delta(Pose()), T_wc_current(T_wc) {}
+        : pose_linearized(T_wc),
+          linearized(linearized),
+          delta(Eigen::Vector<double, 6>::Zero()),
+          T_wc_current(T_wc) {}
 
     inline void setLinearized() {
         linearized = true;
-        if (delta.log().norm() > 1e-12) {
+        if (delta.norm() > 1e-12) {
             throw std::runtime_error("delta is not zero");
         }
         T_wc_current = pose_linearized;
@@ -36,24 +39,30 @@ struct PoseStateWithLin {
         } else {
             return pose_linearized;
         }
-    };
+    }
 
     inline Pose get_optimized_pose() const { return T_wc_current; }
 
-    inline void applyDelta(const Eigen::Vector<double, 6>& delta) {
+    inline void applyDelta(const Eigen::Vector<double, 6>& inc) {
         if (!linearized) {
-            increasePose(delta, pose_linearized);
+            increasePose(inc, pose_linearized);
             T_wc_current = pose_linearized;
         } else {
-            increasePose(delta, this->delta);
-            T_wc_current = pose_linearized;
-            increasePose(delta, T_wc_current);
+            delta += inc;
+            T_wc_current = pose_linearized * Sophus::SE3d::exp(delta);
         }
     }
 
-    Pose get_delta() const { return delta; }
+    Eigen::Vector<double, 6> get_delta() const { return delta; }
 
     inline bool isLinearized() const { return linearized; }
+
+    inline void updateLinearizationPoint() {
+        if (linearized) {
+            pose_linearized = T_wc_current;
+            delta.setZero();
+        }
+    }
 
     inline void restore() {
         delta = storage_delta;
@@ -69,7 +78,7 @@ struct PoseStateWithLin {
 
     inline void reset() {
         linearized = false;
-        delta = Pose();
+        delta = Eigen::Vector<double, 6>::Zero();
         T_wc_current = Pose();
         pose_linearized = Pose();
     }
@@ -83,13 +92,12 @@ struct PoseStateWithLin {
 
 private:
     Pose pose_linearized;
-    bool linearized;  // 线性化标志
-    Pose delta;
+    bool linearized;
+    Eigen::Vector<double, 6> delta;
     Pose T_wc_current;
 
-    // 旧状态，用于优化失败后恢复原本状态
     Pose storage_pose_linearized;
-    Pose storage_delta;
+    Eigen::Vector<double, 6> storage_delta;
     Pose storage_T_wc_current;
 };
 
@@ -97,10 +105,11 @@ struct State {
     explicit State(int max_frame_count_ = 0) : max_frame_count(max_frame_count_) {
         poses.resize(max_frame_count);
     };
-    int max_frame_count;  // 滑动窗口最大帧数
-    int cur_frame_count;  // 当前帧数
+    int max_frame_count;
+    int cur_frame_count;
     std::vector<PoseStateWithLin> poses;
 };
+
 }  // namespace tassel_core
 
 #endif  // TASSEL_CORE_STATE_H_

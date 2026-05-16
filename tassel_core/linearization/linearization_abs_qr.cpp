@@ -297,7 +297,7 @@ void LinearizationAbsQR::restoreState() {
 }
 
 void LinearizationAbsQR::applyPoseInc(const Eigen::VectorXd& inc) {
-    for (int k = 0; k < cur_state_->cur_frame_count; k++) {
+    for (int k = 1; k < cur_state_->cur_frame_count; k++) {
         Eigen::Vector<double, 6> delta = inc.segment<6>(k * tassel_utils::POSE_SIZE);
         cur_state_->poses[k].applyDelta(delta);
     }

@@ -16,7 +16,7 @@ void MargHelper::computeDelta(const State& state, Eigen::VectorXd& delta) {
     for (int i = 0; i < state.max_frame_count - 1; i++) {
         TASSEL_ASSERT(state.poses[i].isLinearized());
         delta.segment<tassel_utils::POSE_SIZE>(i * tassel_utils::POSE_SIZE) =
-            state.poses[i].get_delta().log();
+            state.poses[i].get_delta();
     }
 }
 
@@ -61,6 +61,12 @@ void MargHelper::marginalizeOldest(
     Eigen::MatrixXd& marg_sqrt_H, Eigen::VectorXd& marg_sqrt_b) {
     TASSEL_ASSERT(Eigen::Index(marg_size + keep_size) == Q2Jp.cols());
     TASSEL_ASSERT(Q2Jp.rows() == Q2r.rows());
+
+    if (Q2Jp.rows() == 0) {
+        marg_sqrt_H.resize(0, 0);
+        marg_sqrt_b.resize(0);
+        return;
+    }
 
     // 只保留强约束以及先验，弱约束由于缺秩会自动丢弃
     Eigen::Index marg_rank = 0;

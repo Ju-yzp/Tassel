@@ -1,6 +1,8 @@
 #ifndef TASSEL_CORE_ESTIMATOR_VO_ESTIMATOR_H_
 #define TASSEL_CORE_ESTIMATOR_VO_ESTIMATOR_H_
 
+#include <tbb/task_arena.h>
+
 #include <Eigen/Core>
 #include <memory>
 #include <unordered_map>
@@ -39,6 +41,7 @@ private:
     std::shared_ptr<State> state_;
     std::shared_ptr<FeatureManager> feature_manager_;
     std::shared_ptr<MargLinData> cur_marg_lin_data_;
+    tbb::task_arena arena_;
     Eigen::Matrix3d ric_;
     Eigen::Vector3d tic_;
     Eigen::Matrix3d ric1_;

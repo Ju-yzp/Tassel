@@ -10,7 +10,7 @@ class LMOptimizer : public Optimizer {
 public:
     LMOptimizer(const LMOptions& options = LMOptions());
 
-    OptimizerResult optimize(LinearizationAbsQR* linearization) override;
+    void optimize(LinearizationAbsQR* linearization) override;
 
 private:
     LMOptions options_;

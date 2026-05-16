@@ -159,9 +159,13 @@ double LandmarkBlock::linearize() {
             double scale = std::sqrt(w);
 
             error_sum += computeRho(reprojection_loss_, s);
-
-            storage_.block<2, 6>(row, start_frame_id * tassel_utils::POSE_SIZE) +=
-                scale * jacobian_H;
+            if (start_frame_id > 0) {
+                storage_.block<2, 6>(row, start_frame_id * tassel_utils::POSE_SIZE) +=
+                    scale * jacobian_H;
+            } else {
+                storage_.block<2, 6>(row, frame_id_T * tassel_utils::POSE_SIZE) =
+                    Eigen::Matrix<double, 2, 6>::Zero();
+            }
             storage_.block<2, 6>(row, frame_id_T * tassel_utils::POSE_SIZE) += scale * jacobian_T;
             storage_.block<2, 1>(row, lm_idx_) += scale * jacobian_L;
             storage_.block<2, 1>(row, res_idx_) += scale * residual;
