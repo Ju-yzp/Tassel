@@ -16,27 +16,14 @@ class CameraRadTan : public CameraBase {
 public:
     CameraRadTan(const cv::Mat& k, const cv::Mat& dist_coeffs, int width, int height)
         : CameraBase(k, dist_coeffs, width, height) {
-        bool cond1 = (k_.rows == 3 && k_.cols == 3);
-        bool cond2 = (dist_coeffs_.rows == 1 || dist_coeffs_.cols == 1);
-        bool cond3 =
-            (dist_coeffs_.rows * dist_coeffs_.cols == 4 ||
-             dist_coeffs_.rows * dist_coeffs_.cols == 5);
-        if (!(cond1 && cond2 && cond3)) {
-            throw std::invalid_argument("Invalid camera parameters");
-        }
-        k_.convertTo(k_, CV_64F);
-        dist_coeffs_.convertTo(dist_coeffs_, CV_64F);
+        validate_and_store();
+    }
 
-        // Store in OpenVINS format: [fx, fy, cx, cy, k1, k2, p1, p2]
-        camera_values = Eigen::MatrixXd::Zero(8, 1);
-        camera_values(0) = k_.at<double>(0, 0);         // fx
-        camera_values(1) = k_.at<double>(1, 1);         // fy
-        camera_values(2) = k_.at<double>(0, 2);         // cx
-        camera_values(3) = k_.at<double>(1, 2);         // cy
-        camera_values(4) = dist_coeffs_.at<double>(0);  // k1
-        camera_values(5) = dist_coeffs_.at<double>(1);  // k2
-        camera_values(6) = dist_coeffs_.at<double>(2);  // p1
-        camera_values(7) = dist_coeffs_.at<double>(3);  // p2
+    CameraRadTan(
+        const Eigen::Ref<const Eigen::Matrix3d>& K,
+        const Eigen::Ref<const Eigen::VectorXd>& dist_coeffs, int width, int height)
+        : CameraBase(K, dist_coeffs, width, height) {
+        validate_and_store();
     }
 
     Eigen::Vector2d undistort(const Eigen::Vector2d& pt) const override {
@@ -140,6 +127,29 @@ public:
     }
 
 private:
+    void validate_and_store() {
+        bool cond1 = (k_.rows == 3 && k_.cols == 3);
+        bool cond2 = (dist_coeffs_.rows == 1 || dist_coeffs_.cols == 1);
+        bool cond3 =
+            (dist_coeffs_.rows * dist_coeffs_.cols == 4 ||
+             dist_coeffs_.rows * dist_coeffs_.cols == 5);
+        if (!(cond1 && cond2 && cond3)) {
+            throw std::invalid_argument("Invalid camera parameters");
+        }
+        k_.convertTo(k_, CV_64F);
+        dist_coeffs_.convertTo(dist_coeffs_, CV_64F);
+
+        camera_values = Eigen::MatrixXd::Zero(8, 1);
+        camera_values(0) = k_.at<double>(0, 0);         // fx
+        camera_values(1) = k_.at<double>(1, 1);         // fy
+        camera_values(2) = k_.at<double>(0, 2);         // cx
+        camera_values(3) = k_.at<double>(1, 2);         // cy
+        camera_values(4) = dist_coeffs_.at<double>(0);  // k1
+        camera_values(5) = dist_coeffs_.at<double>(1);  // k2
+        camera_values(6) = dist_coeffs_.at<double>(2);  // p1
+        camera_values(7) = dist_coeffs_.at<double>(3);  // p2
+    }
+
     Eigen::MatrixXd camera_values;
 };
 
