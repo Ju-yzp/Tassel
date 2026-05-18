@@ -67,6 +67,7 @@ int main(int argc, char** argv) {
 
     viewer->createImagePublisher("stereo/image");
     viewer->createOdometryPublisher("camera", "odom/camera");
+    viewer->createPathPublisher("vo/path");
     viewer->createPointCloudPublisher("landmarks");
 
     // ── OAK pipeline — left + right mono cameras, hardware sync ────────────
@@ -166,6 +167,7 @@ int main(int argc, char** argv) {
         if (state->cur_frame_count > 0) {
             Pose pose = state->poses[state->cur_frame_count - 1].get_optimized_pose();
             viewer->publishOdometry("odom/camera", pose.translation(), pose.unit_quaternion());
+            viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion());
         }
 
         // Publish point cloud

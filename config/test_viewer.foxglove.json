@@ -17,7 +17,7 @@
                 "panelType": "Image",
                 "config": {
                   "imageMode": {
-                    "imageTopic": "/vo/image/stereo",
+                    "imageTopic": "/image/camera",
                     "synchronize": false
                   }
                 },
@@ -31,7 +31,7 @@
                 "panelType": "ThreeDee",
                 "config": {
                   "topics": {
-                    "/vo/odom": {
+                    "/odom/camera": {
                       "visible": true
                     }
                   }
@@ -49,15 +49,16 @@
           "direction": "row",
           "items": [
             {
-              "proportion": 1,
+              "proportion": 2,
               "content": {
                 "type": "panel",
                 "panelType": "ThreeDee",
                 "config": {
                   "topics": {
-                    "/vo/landmarks": {
+                    "/path/camera": {
                       "visible": true,
-                      "pointSize": 0.06
+                      "lineWidth": 0.05,
+                      "color": "#00ff88"
                     }
                   }
                 },
@@ -68,20 +69,36 @@
               "proportion": 1,
               "content": {
                 "type": "panel",
-                "panelType": "Plot",
+                "panelType": "ThreeDee",
                 "config": {
-                  "paths": [
-                    {
-                      "value": "/vo/error",
-                      "lineSize": 2,
-                      "color": "#ff6347"
+                  "topics": {
+                    "/landmarks": {
+                      "visible": true,
+                      "pointSize": 0.1
                     }
-                  ]
+                  }
                 },
                 "version": 1
               }
             }
           ]
+        }
+      },
+      {
+        "proportion": 1,
+        "content": {
+          "type": "panel",
+          "panelType": "Plot",
+          "config": {
+            "paths": [
+              {
+                "value": "/error",
+                "lineSize": 2,
+                "color": "#51b3ff"
+              }
+            ]
+          },
+          "version": 1
         }
       }
     ]

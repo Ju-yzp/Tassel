@@ -49,6 +49,7 @@ int main(int argc, char** argv) {
     auto viewer = std::make_shared<tassel_tools::Viewer>("world");
 
     viewer->createOdometryPublisher("camera", "odom/camera");
+    viewer->createPathPublisher("path/camera");
     viewer->createImagePublisher("image/camera");
     viewer->createPointCloudPublisher("landmarks");
     viewer->createErrorPublisher("error");
@@ -97,6 +98,7 @@ int main(int argc, char** argv) {
             cv::Point(20, 80), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(200, 200, 200), 2);
 
         viewer->publishOdometry("odom/camera", pos, ori, vel, ang_vel);
+        viewer->publishPath("path/camera", pos, ori);
         viewer->publishImage("image/camera", "camera", canvas);
         viewer->publishPointCloud("landmarks", {pos});
         viewer->publishError("error", static_cast<float>(dist));

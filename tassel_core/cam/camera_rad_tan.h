@@ -26,6 +26,17 @@ public:
         }
         k_.convertTo(k_, CV_64F);
         dist_coeffs_.convertTo(dist_coeffs_, CV_64F);
+
+        // Store in OpenVINS format: [fx, fy, cx, cy, k1, k2, p1, p2]
+        camera_values = Eigen::MatrixXd::Zero(8, 1);
+        camera_values(0) = k_.at<double>(0, 0);         // fx
+        camera_values(1) = k_.at<double>(1, 1);         // fy
+        camera_values(2) = k_.at<double>(0, 2);         // cx
+        camera_values(3) = k_.at<double>(1, 2);         // cy
+        camera_values(4) = dist_coeffs_.at<double>(0);  // k1
+        camera_values(5) = dist_coeffs_.at<double>(1);  // k2
+        camera_values(6) = dist_coeffs_.at<double>(2);  // p1
+        camera_values(7) = dist_coeffs_.at<double>(3);  // p2
     }
 
     Eigen::Vector2d undistort(const Eigen::Vector2d& pt) const override {
@@ -57,20 +68,19 @@ public:
         double r2 = x * x + y * y;
         double r4 = r2 * r2;
 
-        double k1 = dist_coeffs_.at<double>(0);
-        double k2 = dist_coeffs_.at<double>(1);
-        double p1 = dist_coeffs_.at<double>(2);
-        double p2 = dist_coeffs_.at<double>(3);
-        double k3 = dist_coeffs_.total() > 4 ? dist_coeffs_.at<double>(4) : 0.0;
+        double k1 = camera_values(4);
+        double k2 = camera_values(5);
+        double p1 = camera_values(6);
+        double p2 = camera_values(7);
 
-        double radial = 1 + k1 * r2 + k2 * r4 + k3 * r4 * r2;
+        double radial = 1 + k1 * r2 + k2 * r4;
         double x_dist = x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x);
         double y_dist = y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y;
 
-        double fx = k_.at<double>(0, 0);
-        double fy = k_.at<double>(1, 1);
-        double cx = k_.at<double>(0, 2);
-        double cy = k_.at<double>(1, 2);
+        double fx = camera_values(0);
+        double fy = camera_values(1);
+        double cx = camera_values(2);
+        double cy = camera_values(3);
 
         return Eigen::Vector2d(fx * x_dist + cx, fy * y_dist + cy);
     }
@@ -81,6 +91,56 @@ public:
         for (const auto& p : pts) out.emplace_back(distort(p));
         return out;
     }
+
+    void get_jacobian(
+        Eigen::Vector2d uv_norm, Eigen::MatrixXd& H_dz_dzn, Eigen::MatrixXd& H_dz_dzeta) override {
+        double x = uv_norm(0);
+        double y = uv_norm(1);
+        double x_2 = x * x;
+        double y_2 = y * y;
+        double x_y = x * y;
+        double r_2 = x_2 + y_2;
+        double r_4 = r_2 * r_2;
+
+        double fx = camera_values(0);
+        double fy = camera_values(1);
+        double k1 = camera_values(4);
+        double k2 = camera_values(5);
+        double p1 = camera_values(6);
+        double p2 = camera_values(7);
+
+        // Jacobian of distorted pixel to normalized pixel (2x2)
+        H_dz_dzn = Eigen::MatrixXd::Zero(2, 2);
+        H_dz_dzn(0, 0) = fx * ((1 + k1 * r_2 + k2 * r_4) + (2 * k1 * x_2 + 4 * k2 * x_2 * r_2) +
+                               2 * p1 * y + (2 * p2 * x + 4 * p2 * x));
+        H_dz_dzn(0, 1) = fx * (2 * k1 * x_y + 4 * k2 * x_y * r_2 + 2 * p1 * x + 2 * p2 * y);
+        H_dz_dzn(1, 0) = fy * (2 * k1 * x_y + 4 * k2 * x_y * r_2 + 2 * p1 * x + 2 * p2 * y);
+        H_dz_dzn(1, 1) = fy * ((1 + k1 * r_2 + k2 * r_4) + (2 * k1 * y_2 + 4 * k2 * y_2 * r_2) +
+                               2 * p2 * x + (2 * p1 * y + 4 * p1 * y));
+
+        // Distorted normalized coordinates (for Jacobian w.r.t. intrinsics)
+        double radial = 1 + k1 * r_2 + k2 * r_4;
+        double x1 = x * radial + 2 * p1 * x_y + p2 * (r_2 + 2 * x_2);
+        double y1 = y * radial + p1 * (r_2 + 2 * y_2) + 2 * p2 * x_y;
+
+        // Jacobian w.r.t. intrinsics [fx, fy, cx, cy, k1, k2, p1, p2] (2x8)
+        H_dz_dzeta = Eigen::MatrixXd::Zero(2, 8);
+        H_dz_dzeta(0, 0) = x1;
+        H_dz_dzeta(0, 2) = 1;
+        H_dz_dzeta(0, 4) = fx * x * r_2;
+        H_dz_dzeta(0, 5) = fx * x * r_4;
+        H_dz_dzeta(0, 6) = fx * 2 * x_y;
+        H_dz_dzeta(0, 7) = fx * (r_2 + 2 * x_2);
+        H_dz_dzeta(1, 1) = y1;
+        H_dz_dzeta(1, 3) = 1;
+        H_dz_dzeta(1, 4) = fy * y * r_2;
+        H_dz_dzeta(1, 5) = fy * y * r_4;
+        H_dz_dzeta(1, 6) = fy * (r_2 + 2 * y_2);
+        H_dz_dzeta(1, 7) = fy * 2 * x_y;
+    }
+
+private:
+    Eigen::MatrixXd camera_values;
 };
 
 }  // namespace tassel_core

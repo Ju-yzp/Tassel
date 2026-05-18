@@ -1,14 +1,15 @@
-"""Foxglove Studio launcher — bridge, HTTP server, deep-link orchestration."""
+"""Foxglove Studio launcher — bridge, layout generation, deep-link orchestration."""
 
 import json
 import os
+import random
 import signal
 import socket
+import string
 import subprocess
 import sys
-import threading
 import time
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -54,45 +55,39 @@ def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
     return False
 
 
-def _find_free_port() -> int:
-    """Return an available TCP port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
+def _foxglove_layouts_dir() -> Path:
+    """Return the Foxglove remote-layouts datastore directory."""
+    datastore = Path.home() / ".config" / "Foxglove" / "studio-datastores"
+    for child in datastore.iterdir():
+        if child.is_dir() and child.name.startswith("layouts-remote-"):
+            return child
+    suffix = "".join(random.choices(string.ascii_letters + string.digits, k=20))
+    new_dir = datastore / f"layouts-remote-{suffix}"
+    new_dir.mkdir(parents=True, exist_ok=True)
+    return new_dir
 
 
-class _QuietHTTPHandler(SimpleHTTPRequestHandler):
-    """Serves static files without logging every request."""
+def _write_foxglove_layout(layout_data: dict, name: str, layouts_dir: Path) -> str:
+    """Write a layout to Foxglove's storage and return its ID."""
+    layout_id = "lay_" + "".join(random.choices(string.ascii_letters + string.digits, k=16))
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
-    def __init__(self, *args, directory=None, **kwargs):
-        super().__init__(*args, directory=directory, **kwargs)
-
-    def log_message(self, format, *args):
-        pass
-
-
-def _start_layout_server(layout_path: Path, project_dir: Path) -> tuple[HTTPServer, int, str]:
-    """Start a throwaway HTTP server to serve the layout file.
-
-    Returns (server, port, url_path).
-    """
-    port = _find_free_port()
-    server = HTTPServer(("127.0.0.1", port),
-                        lambda *a, **kw: _QuietHTTPHandler(*a, directory=str(project_dir), **kw))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-    if not _wait_for_port("127.0.0.1", port, timeout=3.0):
-        print(f"  Warning: layout server failed to start on port {port}", file=sys.stderr)
-
-    try:
-        rel = layout_path.resolve().relative_to(project_dir.resolve())
-    except ValueError:
-        rel = layout_path.resolve().relative_to(Path.cwd())
-    url = str(rel)
-
-    print(f"  Layout server on http://127.0.0.1:{port}/{url}")
-    return server, port, url
+    entry = {
+        "id": layout_id,
+        "name": name,
+        "permission": "CREATOR_WRITE",
+        "baseline": {
+            "data": layout_data,
+            "savedAt": now,
+        },
+        "syncInfo": {
+            "status": "tracked",
+            "lastRemoteSavedAt": now,
+            "lastRemoteUpdatedAt": now,
+        },
+    }
+    (layouts_dir / layout_id).write_text(json.dumps(entry, indent=2))
+    return layout_id
 
 
 def launch(
@@ -113,8 +108,8 @@ def launch(
     env_path    : Override environment config file.
     no_studio   : Skip launching Foxglove Studio.
     no_bridge   : Skip starting foxglove_bridge.
-    project_dir : Project root (for HTTP server document root).  Defaults to
-                  the parent of the tassel_foxglove package.
+    project_dir : Project root.  Defaults to the parent of the tassel_foxglove
+                  package.
     """
     load_env(env_path)
 
@@ -143,18 +138,18 @@ def launch(
     bridge_port = port or bridge_cfg.get("port", 8765)
     grid_cols = root.get("grid_cols", load_env().get("layout", {}).get("default_grid_cols", 2))
 
-    # ── generate layout ────────────────────────────────────────────────────
-    layout = generate_layout(panels, grid_cols)
+    # ── generate layout (SDK SplitContainer format) ────────────────────────
+    layout_data = generate_layout(panels, grid_cols)
     layout_name = config_path.stem + ".foxglove.json"
     layout_path = config_path.with_suffix(".foxglove.json")
     with open(layout_path, "w") as f:
-        json.dump(layout, f, indent=2)
-    print(f"  Layout → {layout_path}  ({len(panels)} panels, {grid_cols} cols)")
+        json.dump(layout_data, f, indent=2)
+    print(f"  Layout JSON → {layout_path}  ({len(panels)} panels, {grid_cols} cols)")
 
-    # ── layout HTTP server ─────────────────────────────────────────────────
-    layout_server, layout_port, layout_rel = None, None, None
-    if not no_studio:
-        layout_server, layout_port, layout_rel = _start_layout_server(layout_path, project_dir)
+    # ── write to Foxglove storage (so it appears in Layout menu) ───────────
+    layouts_dir = _foxglove_layouts_dir()
+    layout_id = _write_foxglove_layout(layout_data, layout_name, layouts_dir)
+    print(f"  Foxglove storage → {layouts_dir / layout_id}")
 
     # ── foxglove_bridge ────────────────────────────────────────────────────
     bridge_proc = None
@@ -197,12 +192,12 @@ def launch(
         deep_link = (
             f"foxglove://open"
             f"?ds=foxglove-websocket&ds.url=ws://localhost:{bridge_port}"
-            f"&layoutUrl=http://127.0.0.1:{layout_port}/{layout_rel}"
         )
         print(f"  Opening Foxglove Studio …")
         subprocess.Popen([str(foxglove), deep_link],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1.5)
+        print(f"  → 在 Foxglove 中打开布局: Layout 菜单 → {layout_name}")
 
     # ── info ───────────────────────────────────────────────────────────────
     print()
@@ -234,8 +229,6 @@ def launch(
         pass
     finally:
         print("\n  Shutting down …")
-        if layout_server:
-            layout_server.shutdown()
         if bridge_proc:
             bridge_proc.terminate()
             try:

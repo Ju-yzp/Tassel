@@ -20,6 +20,63 @@ cv::Mat equi_D = (cv::Mat_<double>(1, 4) << 0.1, 0.01, 0.001, 0.0001);
 
 const int kWidth = 640;
 const int kHeight = 480;
+
+// ── Numerical differentiation helpers for Jacobian verification ────────────
+
+Eigen::Matrix2d numerical_dzn(
+    tassel_core::CameraBase* cam, const Eigen::Vector2d& uv_norm, double eps = 1e-6) {
+    Eigen::Matrix2d J;
+    for (int i = 0; i < 2; ++i) {
+        Eigen::Vector2d d = Eigen::Vector2d::Zero();
+        d(i) = eps;
+        J.col(i) = (cam->distort(uv_norm + d) - cam->distort(uv_norm - d)) / (2.0 * eps);
+    }
+    return J;
+}
+
+template <typename CamType>
+Eigen::Matrix<double, 2, 8> numerical_dzeta(
+    const cv::Mat& K, const cv::Mat& D, int w, int h, const Eigen::Vector2d& uv_norm,
+    double eps = 1e-6) {
+    Eigen::Matrix<double, 2, 8> J;
+    for (int p = 0; p < 8; ++p) {
+        auto eval = [&](double delta) -> Eigen::Vector2d {
+            cv::Mat Kp = K.clone();
+            cv::Mat Dp = D.clone();
+            switch (p) {
+                case 0:
+                    Kp.at<double>(0, 0) += delta;
+                    break;  // fx
+                case 1:
+                    Kp.at<double>(1, 1) += delta;
+                    break;  // fy
+                case 2:
+                    Kp.at<double>(0, 2) += delta;
+                    break;  // cx
+                case 3:
+                    Kp.at<double>(1, 2) += delta;
+                    break;  // cy
+                case 4:
+                    Dp.at<double>(0) += delta;
+                    break;  // k1
+                case 5:
+                    Dp.at<double>(1) += delta;
+                    break;  // k2
+                case 6:
+                    Dp.at<double>(2) += delta;
+                    break;  // p1/k3
+                case 7:
+                    Dp.at<double>(3) += delta;
+                    break;  // p2/k4
+            }
+            CamType cam(Kp, Dp, w, h);
+            return cam.distort(uv_norm);
+        };
+        J.col(p) = (eval(+eps) - eval(-eps)) / (2.0 * eps);
+    }
+    return J;
+}
+
 }  // namespace
 
 // ── Validation tests ───────────────────────────────────────────────────────
@@ -101,6 +158,47 @@ TEST_F(CameraRadTanTest, PixelRoundTrip) {
     }
 }
 
+TEST_F(CameraRadTanTest, JacobianDZN) {
+    const double eps = 1e-6;
+    const double tol = 1e-4;
+
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> rnd(-1.2, 1.2);
+
+    for (int k = 0; k < 20; ++k) {
+        Eigen::Vector2d uv(rnd(rng), rnd(rng));
+        Eigen::MatrixXd H_analytic, H_zeta;
+        cam_->get_jacobian(uv, H_analytic, H_zeta);
+        Eigen::Matrix2d H_num = numerical_dzn(cam_.get(), uv, eps);
+
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j)
+                EXPECT_NEAR(H_analytic(i, j), H_num(i, j), tol)
+                    << "uv=(" << uv(0) << ", " << uv(1) << ") elem(" << i << "," << j << ")";
+    }
+}
+
+TEST_F(CameraRadTanTest, JacobianDZeta) {
+    const double eps = 1e-5;
+    const double tol = 1e-4;
+
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> rnd(-1.2, 1.2);
+
+    for (int k = 0; k < 15; ++k) {
+        Eigen::Vector2d uv(rnd(rng), rnd(rng));
+        Eigen::MatrixXd H_dzn, H_analytic;
+        cam_->get_jacobian(uv, H_dzn, H_analytic);
+        Eigen::Matrix<double, 2, 8> H_num = numerical_dzeta<tassel_core::CameraRadTan>(
+            radtan_K, radtan_D, kWidth, kHeight, uv, eps);
+
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 8; ++j)
+                EXPECT_NEAR(H_analytic(i, j), H_num(i, j), tol)
+                    << "uv=(" << uv(0) << ", " << uv(1) << ") elem(" << i << "," << j << ")";
+    }
+}
+
 // ── CameraEqui ─────────────────────────────────────────────────────────────
 
 class CameraEquiTest : public ::testing::Test {
@@ -167,6 +265,49 @@ TEST_F(CameraEquiTest, ZeroDistortionRoundTrip) {
         Eigen::Vector2d uv_norm_back = normalize(uv_dist);
         EXPECT_NEAR(uv_norm(0), uv_norm_back(0), 1e-6);
         EXPECT_NEAR(uv_norm(1), uv_norm_back(1), 1e-6);
+    }
+}
+
+TEST_F(CameraEquiTest, JacobianDZN) {
+    const double eps = 1e-6;
+    const double tol = 1e-4;
+
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> rnd(-1.2, 1.2);
+
+    for (int k = 0; k < 20; ++k) {
+        Eigen::Vector2d uv(rnd(rng), rnd(rng));
+        if (uv.norm() < 0.01) continue;  // skip singularity at r=0
+        Eigen::MatrixXd H_analytic, H_zeta;
+        cam_->get_jacobian(uv, H_analytic, H_zeta);
+        Eigen::Matrix2d H_num = numerical_dzn(cam_.get(), uv, eps);
+
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j)
+                EXPECT_NEAR(H_analytic(i, j), H_num(i, j), tol)
+                    << "uv=(" << uv(0) << ", " << uv(1) << ") elem(" << i << "," << j << ")";
+    }
+}
+
+TEST_F(CameraEquiTest, JacobianDZeta) {
+    const double eps = 1e-5;
+    const double tol = 1e-4;
+
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> rnd(-1.2, 1.2);
+
+    for (int k = 0; k < 15; ++k) {
+        Eigen::Vector2d uv(rnd(rng), rnd(rng));
+        if (uv.norm() < 0.01) continue;  // skip singularity at r=0
+        Eigen::MatrixXd H_dzn, H_analytic;
+        cam_->get_jacobian(uv, H_dzn, H_analytic);
+        Eigen::Matrix<double, 2, 8> H_num =
+            numerical_dzeta<tassel_core::CameraEqui>(equi_K, equi_D, kWidth, kHeight, uv, eps);
+
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 8; ++j)
+                EXPECT_NEAR(H_analytic(i, j), H_num(i, j), tol)
+                    << "uv=(" << uv(0) << ", " << uv(1) << ") elem(" << i << "," << j << ")";
     }
 }
 

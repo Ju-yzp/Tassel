@@ -5,6 +5,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <opencv2/opencv.hpp>
 #include <rclcpp/node.hpp>
 #include <rclcpp/publisher.hpp>
@@ -57,6 +58,14 @@ public:
         const Eigen::Vector3d& linear_velocity = Eigen::Vector3d::Zero(),
         const Eigen::Vector3d& angular_velocity = Eigen::Vector3d::Zero());
 
+    // ── Path ───────────────────────────────────────────────────────────
+    void createPathPublisher(
+        const std::string& topic_name, const rclcpp::QoS& qos = rclcpp::QoS(10));
+
+    void publishPath(
+        const std::string& topic, const Eigen::Vector3d& position,
+        const Eigen::Quaterniond& orientation);
+
     // ── PointCloud ─────────────────────────────────────────────────────
     void createPointCloudPublisher(
         const std::string& topic_name, const rclcpp::QoS& qos = rclcpp::QoS(10));
@@ -82,6 +91,11 @@ private:
     std::unordered_map<std::string, rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr>
         odometry_publishers_;
     std::unordered_map<std::string, nav_msgs::msg::Odometry> odometry_;
+
+    // path
+    std::unordered_map<std::string, rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr>
+        path_publishers_;
+    std::unordered_map<std::string, nav_msgs::msg::Path> paths_;
 
     // pointcloud
     std::unordered_map<std::string, rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr>

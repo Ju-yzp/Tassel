@@ -162,6 +162,46 @@ void Viewer::publishOdometry(
     tf_broadcaster_->sendTransform(tf);
 }
 
+// ── Path ────────────────────────────────────────────────────────────────────
+
+void Viewer::createPathPublisher(const std::string& topic_name, const rclcpp::QoS& qos) {
+    if (path_publishers_.find(topic_name) != path_publishers_.end()) {
+        RCLCPP_WARN(
+            this->get_logger(), "Path topic %s already exists, skipping creation.",
+            topic_name.c_str());
+        return;
+    }
+    auto publisher = this->template create_publisher<nav_msgs::msg::Path>(topic_name, qos);
+    path_publishers_[topic_name] = publisher;
+    nav_msgs::msg::Path path;
+    path.header.frame_id = frame_id_;
+    paths_[topic_name] = path;
+}
+
+void Viewer::publishPath(
+    const std::string& topic, const Eigen::Vector3d& position,
+    const Eigen::Quaterniond& orientation) {
+    if (path_publishers_.find(topic) == path_publishers_.end()) {
+        RCLCPP_ERROR(this->get_logger(), "Path topic %s not found!", topic.c_str());
+        return;
+    }
+    auto& path = paths_[topic];
+    path.header.stamp = this->now();
+
+    geometry_msgs::msg::PoseStamped pose_stamped;
+    pose_stamped.header = path.header;
+    pose_stamped.pose.position.x = position.x();
+    pose_stamped.pose.position.y = position.y();
+    pose_stamped.pose.position.z = position.z();
+    pose_stamped.pose.orientation.x = orientation.x();
+    pose_stamped.pose.orientation.y = orientation.y();
+    pose_stamped.pose.orientation.z = orientation.z();
+    pose_stamped.pose.orientation.w = orientation.w();
+
+    path.poses.push_back(pose_stamped);
+    path_publishers_[topic]->publish(path);
+}
+
 // ── PointCloud ──────────────────────────────────────────────────────────────
 
 void Viewer::createPointCloudPublisher(const std::string& topic_name, const rclcpp::QoS& qos) {
