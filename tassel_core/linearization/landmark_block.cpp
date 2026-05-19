@@ -4,7 +4,6 @@
 #include "tassel_utils/macros.h"
 
 #include <sophus/se3.hpp>
-
 namespace tassel_core {
 Eigen::Matrix<double, 2, 3> compute_tangent_base(Eigen::Vector3d uv) {
     Eigen::Vector3d b1, b2;
@@ -154,11 +153,41 @@ double LandmarkBlock::linearize() {
         if (evaluate(start_frame_id, frame_id_T, jacobian_H, jacobian_T, jacobian_L, residual)) {
             numerically_valid = numerically_valid && jacobian_H.array().isFinite().all() &&
                                 jacobian_L.array().isFinite().all();
+
+            // FEJ: recompute residual at current (optimized) state if either frame is linearized.
+            // Jacobians remain frozen at the linearization point.
+            if (state_->poses[start_frame_id].isLinearized() ||
+                state_->poses[frame_id_T].isLinearized()) {
+                Pose T_w_h_cur = state_->poses[start_frame_id].get_optimized_pose();
+                Pose T_w_t_cur = state_->poses[frame_id_T].get_optimized_pose();
+                Eigen::Vector3d pt_in_H = feature_->observations[0].uv * feature_->estimated_depth;
+                Eigen::Vector3d pt_in_W = T_w_h_cur * pt_in_H;
+                Eigen::Vector3d pt_in_T = T_w_t_cur.inverse() * pt_in_W;
+                residual = tangent_base_vec_[frame_id_T] *
+                           (pt_in_T / pt_in_T.norm() -
+                            feature_->observations[frame_id_T - start_frame_id].uv);
+            } else {
+                Pose T_w_h_cur = state_->poses[start_frame_id].get_pose();
+                Pose T_w_t_cur = state_->poses[frame_id_T].get_pose();
+                Eigen::Vector3d pt_in_H = feature_->observations[0].uv * feature_->estimated_depth;
+                Eigen::Vector3d pt_in_W = T_w_h_cur * pt_in_H;
+                Eigen::Vector3d pt_in_T = T_w_t_cur.inverse() * pt_in_W;
+                residual = tangent_base_vec_[frame_id_T] *
+                           (pt_in_T / pt_in_T.norm() -
+                            feature_->observations[frame_id_T - start_frame_id].uv);
+            }
+
             double s = residual.norm();
             double w = computeWeight(reprojection_loss_, s);
-            double scale = std::sqrt(w);
 
-            error_sum += computeRho(reprojection_loss_, s);
+            // Depth-dependent robust weight: near points are more reliable.
+            // Far points have less parallax and are more sensitive to noise.
+            double depth = feature_->estimated_depth;
+            double w_depth = 1.0 / (1.0 + (depth * depth) / (max_depth_ * max_depth_));
+
+            double scale = std::sqrt(w) * std::sqrt(w_depth);
+
+            error_sum += w_depth * computeRho(reprojection_loss_, s);
             if (start_frame_id > 0) {
                 storage_.block<2, 6>(row, start_frame_id * tassel_utils::POSE_SIZE) +=
                     scale * jacobian_H;
@@ -357,8 +386,10 @@ void LandmarkBlock::backSubstitute(const Eigen::VectorXd& pose_inc, double& l_di
     // Note: scale only after computing model cost change
     inc *= Jl_col_scale_;
 
-    feature_->estimated_depth = 1.0 / (1.0 / feature_->estimated_depth + inc);
+    double old_depth = feature_->estimated_depth;
+    feature_->estimated_depth = 1.0 / (1.0 / old_depth + inc);
     if (feature_->estimated_depth < min_depth_ || feature_->estimated_depth > max_depth_) {
+        feature_->estimated_depth = old_depth;
         lms_ = LandmarkState::NumericalFailure;
     }
 }

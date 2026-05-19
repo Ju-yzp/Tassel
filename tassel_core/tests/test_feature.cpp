@@ -99,7 +99,7 @@ void SetupState(
     const Eigen::Vector3d& tic) {
     for (size_t i = 0; i < poses.size(); ++i) {
         Eigen::Matrix3d Rs = poses[i].R * ric.transpose();
-        state.poses[i] = PoseStateWithLin(Sophus::SE3d(Rs, poses[i].t - Rs * tic));
+        state.poses[i] = PoseVelBiasState(Sophus::SE3d(Rs, poses[i].t - Rs * tic));
     }
 }
 

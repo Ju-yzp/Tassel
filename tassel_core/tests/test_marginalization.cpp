@@ -40,7 +40,7 @@ std::shared_ptr<State> MakeTestState(int n, bool linearize) {
         Eigen::Matrix3d R =
             Eigen::AngleAxisd(i * 0.05, Eigen::Vector3d::UnitY()).toRotationMatrix();
         Eigen::Vector3d t(i * 0.1, i * 0.02, 0);
-        s->poses[i] = PoseStateWithLin(Sophus::SE3d(R, t));
+        s->poses[i] = PoseVelBiasState(Sophus::SE3d(R, t));
     }
     if (linearize) {
         for (int i = 0; i < n; ++i) {

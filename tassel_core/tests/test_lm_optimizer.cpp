@@ -95,7 +95,7 @@ protected:
 
         // initialise state with ground-truth poses (will be noised later)
         for (int i = 0; i < NUM_FRAMES; ++i) {
-            state_->poses[i] = PoseStateWithLin(gt_poses_[i]);
+            state_->poses[i] = PoseVelBiasState(gt_poses_[i]);
         }
 
         // generate world points visible in the first frame
@@ -183,7 +183,7 @@ OptimizeResult runOptimize(
     std::mt19937 rng(123);
     for (int i = 0; i < NUM_FRAMES; ++i) {
         auto T_noisy = perturbPose(gt_poses[i], pose_noise_trans, pose_noise_rot, rng);
-        state->poses[i] = PoseStateWithLin(T_noisy);
+        state->poses[i] = PoseVelBiasState(T_noisy);
     }
 
     // noise feature depths (~ ±20 %)

@@ -112,7 +112,7 @@ void FeatureManager::initPoseByPNP(
     }
 
     if (static_cast<int>(object_pts.size()) < min_pnp_pt_num_) {
-        spdlog::warn(
+        spdlog::error(
             "Not enough points for PnP. Only {} points.", static_cast<int>(object_pts.size()));
         return;
     }
@@ -147,7 +147,7 @@ void FeatureManager::initPoseByPNP(
         state.poses[frame_count].init_pose(final_pose);
         spdlog::info("PNP success");
     } else {
-        spdlog::warn(
+        spdlog::error(
             "PnP failed,inliers ratio:{}",
             static_cast<double>(inliers.size()) / static_cast<double>(object_pts.size()));
     }

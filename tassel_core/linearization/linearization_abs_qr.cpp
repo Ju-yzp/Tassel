@@ -268,7 +268,9 @@ double LinearizationAbsQR::computeError() const {
 }
 
 void LinearizationAbsQR::saveState() {
-    for (auto& p : cur_state_->poses) p.save();
+    for (auto& pvb : cur_state_->poses) {
+        pvb.save();
+    }
 
     saved_feature_depths_.resize(features_.size());
     for (size_t i = 0; i < features_.size(); ++i) {
@@ -284,7 +286,9 @@ void LinearizationAbsQR::saveState() {
 }
 
 void LinearizationAbsQR::restoreState() {
-    for (auto& p : cur_state_->poses) p.restore();
+    for (auto& pvb : cur_state_->poses) {
+        pvb.restore();
+    }
 
     for (size_t i = 0; i < features_.size(); ++i) {
         auto& f = features_[i];

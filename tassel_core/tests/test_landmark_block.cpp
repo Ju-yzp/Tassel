@@ -28,7 +28,7 @@ std::shared_ptr<State> MakeState(int n) {
         Eigen::Vector3d t(x, y, z);
         double angle = (i - 1) * 0.03;
         Eigen::Matrix3d R = Eigen::AngleAxisd(angle, Eigen::Vector3d::UnitY()).toRotationMatrix();
-        s->poses[i] = PoseStateWithLin(Sophus::SE3d(R, t));
+        s->poses[i] = PoseVelBiasState(Sophus::SE3d(R, t));
     }
     return s;
 }
@@ -236,19 +236,19 @@ TEST_F(LinearizeFixture, JpNumericalDerivative) {
         return T * Sophus::SE3d::exp(delta);
     };
 
-    state_->poses[0] = PoseStateWithLin(perturb(T0, eps));
+    state_->poses[0] = PoseVelBiasState(perturb(T0, eps));
     LandmarkBlock lb_p(MIN_DISTANCE, MAX_DISTANCE);
     lb_p.allocate(&feat_, state_.get(), TrivialLoss{});
     lb_p.linearize();
     Eigen::VectorXd r_p = lb_p.getStorage().col(rc).head(nr);
 
-    state_->poses[0] = PoseStateWithLin(perturb(T0, -eps));
+    state_->poses[0] = PoseVelBiasState(perturb(T0, -eps));
     LandmarkBlock lb_m(MIN_DISTANCE, MAX_DISTANCE);
     lb_m.allocate(&feat_, state_.get(), TrivialLoss{});
     lb_m.linearize();
     Eigen::VectorXd r_m = lb_m.getStorage().col(rc).head(nr);
 
-    state_->poses[0] = PoseStateWithLin(T0);
+    state_->poses[0] = PoseVelBiasState(T0);
 
     Eigen::VectorXd Jp_num = (r_p - r_m) / (2 * eps);
     Eigen::VectorXd Jp_ana = S_nom.col(0).head(nr);

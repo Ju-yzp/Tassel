@@ -1,9 +1,9 @@
-#include "optimizer/lm_optimizer.h"
-
 #include <spdlog/spdlog.h>
 #include <Eigen/Cholesky>
 #include <cmath>
+#include <iostream>
 
+#include "optimizer/lm_optimizer.h"
 #include "optimizer/summary.h"
 #include "tassel_utils/macros.h"
 #include "tassel_utils/timer.h"
@@ -25,7 +25,6 @@ void LMOptimizer::optimize(LinearizationAbsQR* linearization) {
     tassel_utils::Timer timer("optimizer");
     timer.start();
     for (; num_iter < options_.max_iterations && !terminated;) {
-        // ── Phase 1: linearize residuals and marginalize landmarks via QR ──
         bool numerically_valid = false;
         double error_0 = linearization->linearizeProbelm(&numerically_valid);
         if (first_linearization) {
@@ -35,14 +34,12 @@ void LMOptimizer::optimize(LinearizationAbsQR* linearization) {
         TASSEL_ASSERT(numerically_valid && "numerical failure during linearization");
         linearization->performQR();
 
-        // ── Phase 2: inner LM backtracking loop ──
         for (int j = 0; num_iter < options_.max_iterations && !terminated; j++) {
             // Build reduced camera system
             Eigen::MatrixXd H;
             Eigen::VectorXd b;
             linearization->get_dense_H_b(H, b);
 
-            // Apply LM damping and solve, retry up to 3x on non-finite result
             Eigen::VectorXd inc;
             {
                 bool inc_valid = false;
@@ -84,20 +81,17 @@ void LMOptimizer::optimize(LinearizationAbsQR* linearization) {
 
             if (terminated) break;
 
-            // Backup state, negate increment, back-substitute landmarks
             linearization->saveState();
             inc = -inc;
             int pose_dim = linearization->getPoseDim();
             double l_diff = linearization->backSubstitute(inc.head(pose_dim));
 
-            // Apply increment to poses
             linearization->applyPoseInc(inc.head(pose_dim));
             double step_norminf = inc.head(pose_dim).array().abs().maxCoeff();
 
             double error_new = linearization->computeError();
             double f_diff = error_0 - error_new;
 
-            // Step quality assessment
             bool step_is_valid = l_diff > 0;
             double relative_decrease = step_is_valid ? f_diff / l_diff : 0;
             bool step_is_successful = step_is_valid && relative_decrease > 0;
@@ -107,23 +101,9 @@ void LMOptimizer::optimize(LinearizationAbsQR* linearization) {
             pis.lambda = lambda;
             pis.step = inc.head(pose_dim);
 
-            // spdlog::debug(
-            //     "LM iter={} inner={} lambda={:.2e} err0={:.6f} err1={:.6f} "
-            //     "f_diff={:.6f} l_diff={:.6f} rel={:.4f} step_norminf={:.4f} {}",
-            //     num_iter, j, lambda, error_0, error_new, f_diff, l_diff,
-            //     relative_decrease, step_norminf,
-            //     step_is_successful ? "accepted" : "rejected");
-
             pis.rejected = !step_is_successful;
             summary_.summaries.push_back(pis);
             if (step_is_successful) {
-                // // Absorb accumulated delta into the linearization point so the
-                // // next outer iteration linearizes Jacobians at the current
-                // // (correct) pose, rather than the frozen pre-optimization pose.
-                // for (auto& p : linearization->getState()->poses) {
-                //     p.updateLinearizationPoint();
-                // }
-
                 lambda *= std::max(1.0 / 3.0, 1.0 - std::pow(2.0 * relative_decrease - 1.0, 3));
                 lambda = std::max(options_.lambda_min, lambda);
                 lambda_vee = options_.initial_vee;
@@ -134,10 +114,9 @@ void LMOptimizer::optimize(LinearizationAbsQR* linearization) {
                     converged = true;
                     terminated = true;
                 }
-                break;  // exit inner loop → re-linearize at next outer iteration
-            } else {
+                break;
+            } else {  //代价没有下降，就回退之前保存的旧状态
                 linearization->restoreState();
-
                 lambda = std::min(lambda_vee * lambda, options_.lambda_max);
                 lambda_vee *= options_.vee_factor;
 

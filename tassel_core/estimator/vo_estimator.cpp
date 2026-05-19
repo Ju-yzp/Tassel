@@ -35,11 +35,6 @@ void VoEstimator::initializeMargPrior() {
     int total_size = (state_->max_frame_count - 1) * tassel_utils::POSE_SIZE;
 
     cur_marg_lin_data_ = std::make_shared<MargLinData>();
-
-    // Weak diagonal prior on frame 0 to fix gauge freedom.
-    // H is sqrt-form: H^T * H ≈ weak prior on the first pose.
-    // topLeftCorner(total_size, total_size) in linearizeMargPrior covers frames 0..(n-2),
-    // so cols 0..5 (frame 0) receive the weak prior.
     cur_marg_lin_data_->H = Eigen::MatrixXd::Zero(tassel_utils::POSE_SIZE, total_size);
     cur_marg_lin_data_->H.diagonal().head(tassel_utils::POSE_SIZE).array() = 1e-4;
     cur_marg_lin_data_->b = Eigen::VectorXd::Zero(tassel_utils::POSE_SIZE);
@@ -99,8 +94,6 @@ void VoEstimator::optimize() {
             1, state_, feature_manager_->collectOptimizationFeatures(), option_.reprojection_loss,
             option_.min_depth, option_.max_depth, cur_marg_lin_data_);
 
-        double initial_cost = linearization.computeError();
-
         LMOptions opts;
         opts.max_iterations = option_.num_iterations;
         opts.lambda_initial = option_.lambda_initial;
@@ -113,9 +106,6 @@ void VoEstimator::optimize() {
 void VoEstimator::marginalizeOldestFrame() {
     arena_.execute([&] {
         MargLinData new_mld;
-
-        // Build linear system. cur_marg_lin_data_ (from previous marg) is included
-        // as prior rows, accumulating over multiple marginalizations.
         LinearizationAbsQR linearization(
             1, state_, feature_manager_->collectMarginalizationFeatures(),
             option_.reprojection_loss, option_.min_depth, option_.max_depth, cur_marg_lin_data_);

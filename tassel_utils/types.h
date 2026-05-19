@@ -20,16 +20,16 @@ struct IMUMeasurement {
     Eigen::Vector3d acc;
     Eigen::Vector3d gyro;
     double timestamp;
-    double get_timestamp() const { return timestamp; }
-    void set_timestamp(double ts) { timestamp = ts; }
+    inline double get_timestamp() const { return timestamp; }
+    inline void set_timestamp(double ts) { timestamp = ts; }
 };
 
 struct StereoObservation {
     cv::Mat left_img;
     cv::Mat right_img;
     double timestamp;
-    double get_timestamp() const { return timestamp; }
-    void set_timestamp(double ts) { timestamp = ts; }
+    inline double get_timestamp() const { return timestamp; }
+    inline void set_timestamp(double ts) { timestamp = ts; }
 };
 
 // Callback types for estimator output
