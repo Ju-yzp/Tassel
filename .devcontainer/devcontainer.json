@@ -1,0 +1,28 @@
+{
+  "name": "Tassel VIO Dev",
+  "image": "depthai_kalibr_ready",
+
+  "workspaceFolder": "/workspaces/Tassel",
+  "workspaceMount": "source=/home/adrewn/Tassel,target=/workspaces/Tassel,type=bind",
+
+  "mounts": [
+    "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,readonly",
+    "source=/dev/bus/usb,target=/dev/bus/usb,type=bind",
+    "source=/home/adrewn/data,target=/root/recordings,type=bind"
+  ],
+
+  "containerEnv": {
+    "DISPLAY": ":0",
+    "QT_X11_NO_MITSHM": "1"
+  },
+
+  "runArgs": [
+    "--privileged",
+    "--network=host",
+    "--ipc=host"
+  ],
+
+  "remoteEnv": {
+    "ROS_MASTER_URI": "http://localhost:11311"
+  }
+}

@@ -44,6 +44,7 @@ void Feature::stereoTriangulate(
     double condition_number = singular_values(0) / singular_values(3);
     if (condition_number < 1e6 && point_3d.z() > min_depth && point_3d.z() < max_depth) {
         estimated_depth = point_3d.z();
+        tri_source = TriangulationSource::Stereo;
         return;
     }
 }
@@ -55,20 +56,18 @@ void Feature::monoTriangulate(
         return;
     }
     if (observations.size() > 2) {
-        Pose reference_pose = state.poses[start_frame_id].get_optimized_pose();
-        Eigen::Matrix3d reference_r = reference_pose.rotationMatrix();
-        Eigen::Vector3d reference_t = reference_r * tic + reference_pose.translation();
+        Eigen::Matrix3d reference_r = state.Rs[start_frame_id];
+        Eigen::Vector3d reference_t = reference_r * tic + state.Ps[start_frame_id];
 
         int cur_frame_id = start_frame_id;
 
         std::vector<Eigen::Matrix<double, 2, 4>> conditions;
         for (auto& observation : observations) {
-            if (cur_frame_id >= static_cast<int>(state.poses.size())) {
+            if (cur_frame_id >= state.cur_frame_count) {
                 break;
             }
-            Pose cur_pose = state.poses[cur_frame_id].get_optimized_pose();
-            Eigen::Matrix3d cur_r = cur_pose.rotationMatrix() * ric;
-            Eigen::Vector3d cur_t = cur_pose.rotationMatrix() * tic + cur_pose.translation();
+            Eigen::Matrix3d cur_r = state.Rs[cur_frame_id] * ric;
+            Eigen::Vector3d cur_t = state.Rs[cur_frame_id] * tic + state.Ps[cur_frame_id];
 
             Eigen::Matrix3d dr = cur_r.transpose() * reference_r;
             Eigen::Vector3d dt = cur_r.transpose() * (reference_t - cur_t);
@@ -81,6 +80,7 @@ void Feature::monoTriangulate(
 
                 condition.row(0) = direction.x() * pose.row(2) - pose.row(0);
                 condition.row(1) = direction.y() * pose.row(2) - pose.row(1);
+                conditions.push_back(condition);
             }
             ++cur_frame_id;
         }
@@ -103,6 +103,7 @@ void Feature::monoTriangulate(
         double condition_number = singular_values(0) / singular_values(3);
         if (condition_number < 1e6 && point_3d.z() > min_depth && point_3d.z() < max_depth) {
             estimated_depth = point_3d.z();
+            tri_source = TriangulationSource::Monocular;
         }
     }
 }
@@ -121,6 +122,7 @@ void Feature::removeOldest(
                 estimated_depth = pj_in_C.z();
             } else {
                 estimated_depth = INVALID_DEPTH;
+                tri_source = TriangulationSource::None;
             }
         }
         observations.erase(observations.begin());

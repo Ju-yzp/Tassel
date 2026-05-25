@@ -37,11 +37,15 @@ public:
 
     void reset();
 
-    std::vector<Feature*> collectOptimizationFeatures();
+    std::vector<Feature*> collectOptimizedFeatures();
 
-    std::vector<Feature*> collectMarginalizationFeatures();
+    std::vector<Feature> collectMarginalizationFeatures();
 
-    std::vector<Eigen::Vector3d> getPointCloud(
+    std::vector<Eigen::Vector3d> getMonoPointCloud(
+        const State& state, const Eigen::Matrix3d& ric = Eigen::Matrix3d::Identity(),
+        const Eigen::Vector3d& tic = Eigen::Vector3d::Zero()) const;
+
+    std::vector<Eigen::Vector3d> getStereoPointCloud(
         const State& state, const Eigen::Matrix3d& ric = Eigen::Matrix3d::Identity(),
         const Eigen::Vector3d& tic = Eigen::Vector3d::Zero()) const;
 

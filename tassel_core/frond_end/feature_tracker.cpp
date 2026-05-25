@@ -173,7 +173,7 @@ void FeatureTracker::drawTrackingResult(size_t camera_id, cv::Mat& img) {
         for (size_t i = 0; i < prev_pts.size(); ++i) {
             float ratio = std::min(tracked_times[i], tracked_times_thres_) /
                           static_cast<float>(tracked_times_thres_);
-            cv::circle(img, prev_pts[i], 4, cv::Scalar(255 * (1.0 - ratio), 0, 255 * ratio), 2);
+            cv::circle(img, prev_pts[i], 6, cv::Scalar(255 * (1.0 - ratio), 0, 255 * ratio), 3);
         }
     } else {
         for (auto pt : prev_pts) {

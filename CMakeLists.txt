@@ -4,10 +4,6 @@ project(
   VERSION 1.0.0
   LANGUAGES CXX)
 
-# ── Build type ────────────────────────────────────────────────────────────
-# Debug          : -O0 -g          → 开发调试，不优化，gdb 友好 RelWithDebInfo : -O2 -g
-# -DNDEBUG → 性能分析 / VTune / perf (推荐) Release        : -O3 -DNDEBUG    →
-# 最终部署，无调试符号 MinSizeRel     : -Os -DNDEBUG    → 体积优化
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -34,17 +30,18 @@ endif()
 # ── AddressSanitizer ──────────────────────────────────────────────────────
 if(TASSEL_ENABLE_ASAN)
   message(STATUS "AddressSanitizer: ENABLED")
-  add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g -O3)
+  add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g -O)
   add_link_options(-fsanitize=address)
 endif()
 
-list(PREPEND CMAKE_PREFIX_PATH "$ENV{HOME}/.local")
+list(PREPEND CMAKE_PREFIX_PATH "/usr/local" "$ENV{HOME}/.local")
 find_package(Eigen3 REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(Sophus REQUIRED)
 find_package(TBB REQUIRED)
+find_package(Ceres REQUIRED)
 
 add_library(tassel_deps INTERFACE)
 target_link_libraries(
@@ -58,16 +55,12 @@ target_link_libraries(
             spdlog::spdlog
             yaml-cpp
             Sophus::Sophus
-            TBB::tbb)
+            TBB::tbb
+            Ceres::ceres)
 
 add_subdirectory(tassel_utils)
 add_subdirectory(tassel_core)
 add_subdirectory(tassel_tools)
-
-# ── scripts & foxglove package ───────────────────────────────────────────
-install(PROGRAMS scripts/generate_foxglove_layout.py scripts/launch_foxglove.py
-                 scripts/start_foxglove_bridge.sh
-        DESTINATION lib/${PROJECT_NAME}/scripts)
 
 install(
   DIRECTORY tassel_foxglove/

@@ -32,7 +32,7 @@ public:
             cv::Point2f(static_cast<float>(pt.x()), static_cast<float>(pt.y()))};
         std::vector<cv::Point2f> out;
         cv::Mat I = cv::Mat::eye(3, 3, CV_64F);
-        cv::fisheye::undistortPoints(pts, out, k_, dist_coeffs_, I, k_);
+        cv::fisheye::undistortPoints(pts, out, k_, dist_coeffs_, I, I);
         return Eigen::Vector2d(out[0].x, out[0].y);
     }
 

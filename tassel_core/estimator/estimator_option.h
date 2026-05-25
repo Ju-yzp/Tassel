@@ -1,25 +1,16 @@
 #ifndef TASSEL_CORE_ESTIMATOR_ESTIMATOR_OPTION_H_
 #define TASSEL_CORE_ESTIMATOR_ESTIMATOR_OPTION_H_
 
-#include "loss_fuction/loss_fuction_base.h"
-
 namespace tassel_core {
 
 struct EstimatorOption {
-    // ── optimization ────────────────────────────────────────────────────────
-    bool optimize_enabled = true;
     int num_iterations = 10;
-    int num_threads = 4;
-    double lambda_initial = 1e-3;
-
-    // ── marginalization ─────────────────────────────────────────────────────
-    bool marginalization_enabled = true;
-
-    // ── robust loss (reprojection) ──────────────────────────────────────────
-    LossVariant reprojection_loss = TrivialLoss{};
+    int num_threads = 1;
 
     double min_depth = 0.05;
     double max_depth = 10.0;
+
+    double init_time_span = 5.0;
 };
 
 }  // namespace tassel_core

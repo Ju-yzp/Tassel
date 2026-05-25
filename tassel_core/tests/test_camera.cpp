@@ -130,16 +130,15 @@ TEST_F(CameraRadTanTest, UndistortMatchesOpenCV) {
         {500, 400},
         {320, 225},
     };
-    auto uv_pixels = cam_->undistort(pixels);
+    auto uv_norm = cam_->undistort(pixels);
     for (size_t i = 0; i < pixels.size(); ++i) {
-        Eigen::Vector2d uv_norm = normalize(uv_pixels[i]);
         std::vector<cv::Point2f> cv_in = {
             cv::Point2f(static_cast<float>(pixels[i](0)), static_cast<float>(pixels[i](1)))};
         std::vector<cv::Point2f> cv_out;
         cv::Mat I = cv::Mat::eye(3, 3, CV_64F);
         cv::undistortPoints(cv_in, cv_out, radtan_K, radtan_D, I);
-        EXPECT_NEAR(uv_norm(0), cv_out[0].x, 1e-6);
-        EXPECT_NEAR(uv_norm(1), cv_out[0].y, 1e-6);
+        EXPECT_NEAR(uv_norm[i](0), cv_out[0].x, 1e-6);
+        EXPECT_NEAR(uv_norm[i](1), cv_out[0].y, 1e-6);
     }
 }
 
@@ -150,8 +149,7 @@ TEST_F(CameraRadTanTest, PixelRoundTrip) {
 
     for (int i = 0; i < 50; ++i) {
         Eigen::Vector2d pixel_raw(dx(rng), dy(rng));
-        Eigen::Vector2d pixel_undist = cam_->undistort(pixel_raw);
-        Eigen::Vector2d norm_undist = normalize(pixel_undist);
+        Eigen::Vector2d norm_undist = cam_->undistort(pixel_raw);
         Eigen::Vector2d pixel_redist = cam_->distort(norm_undist);
         EXPECT_NEAR(pixel_raw(0), pixel_redist(0), 0.5);
         EXPECT_NEAR(pixel_raw(1), pixel_redist(1), 0.5);
@@ -225,16 +223,15 @@ TEST_F(CameraEquiTest, UndistortMatchesOpenCV) {
         {500, 400},
         {320, 240},
     };
-    auto uv_pixels = cam_->undistort(pixels);
+    auto uv_norm = cam_->undistort(pixels);
     for (size_t i = 0; i < pixels.size(); ++i) {
-        Eigen::Vector2d uv_norm = normalize(uv_pixels[i]);
         std::vector<cv::Point2f> cv_in = {
             cv::Point2f(static_cast<float>(pixels[i](0)), static_cast<float>(pixels[i](1)))};
         std::vector<cv::Point2f> cv_out;
         cv::Mat I = cv::Mat::eye(3, 3, CV_64F);
         cv::fisheye::undistortPoints(cv_in, cv_out, equi_K, equi_D, I);
-        EXPECT_NEAR(uv_norm(0), cv_out[0].x, 1e-6);
-        EXPECT_NEAR(uv_norm(1), cv_out[0].y, 1e-6);
+        EXPECT_NEAR(uv_norm[i](0), cv_out[0].x, 1e-6);
+        EXPECT_NEAR(uv_norm[i](1), cv_out[0].y, 1e-6);
     }
 }
 
@@ -245,8 +242,7 @@ TEST_F(CameraEquiTest, PixelRoundTrip) {
 
     for (int i = 0; i < 50; ++i) {
         Eigen::Vector2d pixel_raw(dx(rng), dy(rng));
-        Eigen::Vector2d pixel_undist = cam_->undistort(pixel_raw);
-        Eigen::Vector2d norm_undist = normalize(pixel_undist);
+        Eigen::Vector2d norm_undist = cam_->undistort(pixel_raw);
         Eigen::Vector2d pixel_redist = cam_->distort(norm_undist);
         EXPECT_NEAR(pixel_raw(0), pixel_redist(0), 0.5);
         EXPECT_NEAR(pixel_raw(1), pixel_redist(1), 0.5);
