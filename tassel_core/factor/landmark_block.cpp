@@ -1,7 +1,6 @@
 #include "landmark_block.h"
 #include "visual_reprojection.h"
 
-#include <algorithm>
 #include <cmath>
 #include <sophus/so3.hpp>
 
@@ -34,9 +33,9 @@ double LandmarkBlock::linearize(
     double depth = feature.estimated_depth;
 
     // 深度信息矩阵权重 ∝ 1/depth
-    double weight = min_depth_ / depth;
-    weight = std::clamp(weight, 0.1, 5.0);
-    double sqrt_depth_weight = std::sqrt(weight);
+    // double weight = min_depth_ / depth;
+    // weight = std::clamp(weight, 0.1, 5.0);
+    // double sqrt_depth_weight = std::sqrt(weight);
 
     // host 位姿线性化点
     const auto& pose_arr = lin_poses[start_frame_id];
@@ -68,11 +67,11 @@ double LandmarkBlock::linearize(
             loss_->Evaluate(s, rho);
             sqrt_loss = std::sqrt(rho[1]);
         }
-        double scale = sqrt_depth_weight * sqrt_loss;
+        double scale = sqrt_loss;
         error_sum += r_raw.squaredNorm();
 
         int row = (offset - 1) * 2;
-        // storage_.block(row, start_frame_id * 6, 2, 6) = scale * J_i;
+        storage_.block(row, start_frame_id * 6, 2, 6) = scale * J_i;
         storage_.block(row, target_id * 6, 2, 6) = scale * J_j;
         storage_.block<2, 1>(row, lm_idx_) = scale * J_l;
         storage_.block<2, 1>(row, res_idx_) = scale * r_raw;

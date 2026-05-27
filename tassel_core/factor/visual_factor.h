@@ -20,6 +20,8 @@ private:
     Eigen::Matrix3d ric;
     Eigen::Vector3d tic;
     double min_depth_;
+    Eigen::Vector3d w_G_, v_G_, a_B_;
+    double dt_;
 };
 }  // namespace tassel_core
 #endif /* TASSEL_CORE_VISUAL_FACTOR_H_ */

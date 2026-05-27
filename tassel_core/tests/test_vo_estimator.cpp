@@ -8,7 +8,7 @@
 
 #include "cam/camera_factory.h"
 #include "estimator/estimator_option.h"
-#include "estimator/vo_estimator.h"
+#include "estimator/vio_estimator.h"
 #include "frond_end/feature_manager.h"
 #include "frond_end/feature_tracker.h"
 #include "parameters/parameters.h"
@@ -69,11 +69,9 @@ std::vector<tassel_core::Camera> initializeCameras(const tassel_tools::Parameter
 int main(int argc, char** argv) {
     using namespace tassel_core;
 
-    // ── Load parameters from YAML config ──────────────────────────────────
     tassel_tools::Parameters params(
         (argc >= 2) ? argv[1] : "/home/adrewn/Tassel/config/stereo_vins.yaml");
 
-    // ── ROS2 + Viewer ──────────────────────────────────────────────────────
     rclcpp::init(argc, argv);
     auto viewer = std::make_shared<tassel_tools::Viewer>("world");
 
@@ -83,27 +81,22 @@ int main(int argc, char** argv) {
     viewer->createPointCloudPublisher("landmarks/mono");
     viewer->createPointCloudPublisher("landmarks/stereo");
 
-    // ── Sync buffers ──────────────────────────────────────────────────────
     auto stereo_buffer = StereoBuf::createShared(15);
     auto imu_buffer = IMUBuf::createShared(600);
     imu_buffer->set_interpolator(imuInterpolate);
-    stereo_buffer->set_dt_delay(0.00279);
     SyncType sync(0, stereo_buffer.get(), imu_buffer.get());
 
-    // ── OAK-D Lite pipeline: left + right mono + IMU + hardware sync ─────
     dai::Pipeline pipeline;
 
     auto mono_left = pipeline.create<dai::node::MonoCamera>();
     mono_left->setCamera("left");
     mono_left->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
-    mono_left->setFps(30);
-    mono_left->initialControl.setManualExposure(20000, 800);
+    mono_left->setFps(15);
 
     auto mono_right = pipeline.create<dai::node::MonoCamera>();
     mono_right->setCamera("right");
     mono_right->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
-    mono_right->setFps(30);
-    mono_right->initialControl.setManualExposure(20000, 800);
+    mono_right->setFps(15);
 
     auto imu_node = pipeline.create<dai::node::IMU>();
     imu_node->enableIMUSensor(dai::IMUSensor::ACCELEROMETER_RAW, 400);
@@ -159,10 +152,8 @@ int main(int argc, char** argv) {
 
     std::cout << "[VO] Stereo-IMU Synchronizer running. Waiting for data..." << std::endl;
 
-    // ── Initialize cameras from Parameters ────────────────────────────────
     auto cameras = initializeCameras(params);
 
-    // ── Feature tracker — left (id=0) and right (id=1) cameras ─────────────
     FeatureTracker tracker(
         params.flow_back, params.max_square_move_dist, false, 5, params.min_gradient);
     tracker.addCamera(
@@ -183,27 +174,26 @@ int main(int argc, char** argv) {
         params.min_tracked_pts_num, params.min_pnp_num, params.min_pnp_inliers_ratio,
         params.min_translation, params.min_depth, params.max_depth);
 
-    VoEstimator vo_estimator(option, state, feature_manager, ric, tic, ric1, tic1);
+    VioEstimator vio_estimator(option, state, feature_manager, ric, tic, ric1, tic1);
 
-    // ── Register callbacks for publishing ───────────────────────────────────
-    vo_estimator.setPoseCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
+    vio_estimator.setPoseCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
         viewer->publishOdometry("odom/camera", pose.translation(), pose.unit_quaternion());
     });
-    vo_estimator.setPathCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
+    vio_estimator.setPathCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
         viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion());
     });
-    vo_estimator.setMonoCloudCallback(
+    vio_estimator.setMonoCloudCallback(
         [&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
             viewer->publishPointCloud("landmarks/mono", pts);
         });
-    vo_estimator.setStereoCloudCallback(
+    vio_estimator.setStereoCloudCallback(
         [&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
             viewer->publishPointCloud("landmarks/stereo", pts);
         });
 
     rclcpp::Rate rate(30);
 
-    while (rclcpp::ok()) {
+    while (rclcpp::ok() && !vio_estimator.isTdEstimated()) {
         SyncType::DataPackage package;
         if (sync.pop_package(package)) {
             auto& stereo_ptr = package.get<0>();
@@ -218,9 +208,8 @@ int main(int argc, char** argv) {
                     tracker.stereoTracking(0, stereo_ptr->left_img, 1, stereo_ptr->right_img);
             }
 
-            vo_estimator.processMeasurement(ts, feature_frame, imu_vec);
+            vio_estimator.processMeasurement(ts, feature_frame, imu_vec);
 
-            // ── Build stereo display image ──────────────────────────────────
             cv::Mat disp_left, disp_right;
             cv::cvtColor(stereo_ptr->left_img, disp_left, cv::COLOR_GRAY2BGR);
             tracker.drawTrackingResult(0, disp_left);
@@ -238,7 +227,6 @@ int main(int argc, char** argv) {
 
     rclcpp::shutdown();
 
-    // ── final report ──────────────────────────────────────────────────────
     std::cout << "\n[VO] done. " << state->cur_frame_count << " keyframes in window.\n";
     if (state->cur_frame_count > 0) {
         int idx = state->cur_frame_count - 1;

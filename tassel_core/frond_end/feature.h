@@ -61,6 +61,7 @@ struct Feature {
     double estimated_depth;
     TriangulationSource tri_source = TriangulationSource::None;
     std::vector<FeaturePerFrame> observations;
+    int optimized_count = 0;
 };
 }  // namespace tassel_core
 #endif  // TASSEL_CORE_FEATURE_H_

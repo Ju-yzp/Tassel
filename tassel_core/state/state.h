@@ -14,10 +14,20 @@ struct State {
         int max_frame_count_ = 10, bool use_imu_ = false,
         Eigen::Matrix3d ric_ = Eigen::Matrix3d::Identity(),
         Eigen::Vector3d tic_ = Eigen::Vector3d::Zero())
-        : max_frame_count(max_frame_count_), cur_frame_count(0), ric(ric_), tic(tic_) {
+        : max_frame_count(max_frame_count_),
+          cur_frame_count(0),
+          ric(ric_),
+          tic(tic_),
+          use_imu(use_imu_) {
         Rs.resize(max_frame_count, Eigen::Matrix3d::Identity());
         Ps.resize(max_frame_count, Eigen::Vector3d::Zero());
+        Vs.resize(max_frame_count, Eigen::Vector3d::Zero());
+        Bas.resize(max_frame_count, Eigen::Vector3d::Zero());
+        Bgs.resize(max_frame_count, Eigen::Vector3d::Zero());
         param_poses.resize(max_frame_count, std::array<double, 6>{0, 0, 0, 0, 0, 0});
+        param_speed_bias.resize(max_frame_count, std::array<double, 9>{0, 0, 0, 0, 0, 0, 0, 0, 0});
+        delay_time = 0.0;
+        param_delay_time = 0.0;
         if (max_frame_count < 1) {
             throw std::runtime_error("max_frame_count must be greater than 0");
         }
@@ -51,6 +61,12 @@ struct State {
         param_poses[idx][3] = Ps[idx].x();
         param_poses[idx][4] = Ps[idx].y();
         param_poses[idx][5] = Ps[idx].z();
+
+        for (int d = 0; d < 3; ++d) {
+            param_speed_bias[idx][d] = Vs[idx][d];
+            param_speed_bias[idx][d + 3] = Bas[idx][d];
+            param_speed_bias[idx][d + 6] = Bgs[idx][d];
+        }
     }
 
     void paramToState(int idx) {
@@ -58,32 +74,47 @@ struct State {
         Sophus::SO3d R_so3 = Sophus::SO3d::exp(phi);
         Rs[idx] = R_so3.matrix();
         Ps[idx] = Eigen::Vector3d(param_poses[idx][3], param_poses[idx][4], param_poses[idx][5]);
+
+        for (int d = 0; d < 3; ++d) {
+            Vs[idx][d] = param_speed_bias[idx][d];
+            Bas[idx][d] = param_speed_bias[idx][d + 3];
+            Bgs[idx][d] = param_speed_bias[idx][d + 6];
+        }
     }
 
     void stateToParams() {
         for (int i = 0; i < max_frame_count; ++i) {
             stateToParam(i);
         }
+        param_delay_time = delay_time;
     }
 
     void paramsToState() {
         for (int i = 0; i < max_frame_count; ++i) {
             paramToState(i);
         }
+        delay_time = param_delay_time;
     }
 
     int max_frame_count;
     int cur_frame_count;
+    bool use_imu;
 
     // 外参
     Eigen::Matrix3d ric;
     Eigen::Vector3d tic;
 
-    // 位姿
+    // 位姿 / 速度 / 偏置 / 时间延迟
     std::vector<Eigen::Matrix3d> Rs;
     std::vector<Eigen::Vector3d> Ps;
+    std::vector<Eigen::Vector3d> Vs;
+    std::vector<Eigen::Vector3d> Bas;
+    std::vector<Eigen::Vector3d> Bgs;
+    double delay_time;
 
     std::vector<std::array<double, 6>> param_poses;
+    std::vector<std::array<double, 9>> param_speed_bias;
+    double param_delay_time;
 };
 
 }  // namespace tassel_core

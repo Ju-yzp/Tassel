@@ -226,10 +226,12 @@ void FeatureManager::reset() { features_.clear(); }
 std::vector<Feature> FeatureManager::collectMarginalizationFeatures() {
     std::vector<Feature> result;
     for (auto& [id, feature] : features_) {
-        if (feature.start_frame_id != 0) continue;
-        if (feature.estimated_depth == INVALID_DEPTH) continue;
-        if (static_cast<int>(feature.observations.size()) < tracked_times_thres_) continue;
-        result.push_back(feature);
+        bool is_marginalized =
+            !((feature.start_frame_id != 0) || (feature.estimated_depth == INVALID_DEPTH) ||
+              (static_cast<int>(feature.observations.size()) < tracked_times_thres_));
+        if (is_marginalized) {
+            result.push_back(feature);
+        }
     }
     return result;
 }
@@ -242,10 +244,16 @@ std::vector<Eigen::Vector3d> FeatureManager::getMonoPointCloud(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) const {
     std::vector<Eigen::Vector3d> points;
     for (const auto& [id, feature] : features_) {
-        if (feature.tri_source != TriangulationSource::Monocular) continue;
-        if (feature.estimated_depth <= 0) continue;
+        if (feature.tri_source != TriangulationSource::Monocular) {
+            continue;
+        }
+        if (feature.estimated_depth <= 0) {
+            continue;
+        }
         int start_frame_id = feature.start_frame_id;
-        if (start_frame_id >= state.cur_frame_count) continue;
+        if (start_frame_id >= state.cur_frame_count) {
+            continue;
+        }
         Eigen::Vector3d pt_in_C = feature.observations[0].uv * feature.estimated_depth;
         Eigen::Vector3d pt_in_I = ric * pt_in_C + tic;
         Eigen::Vector3d pt_in_W = state.Rs[start_frame_id] * pt_in_I + state.Ps[start_frame_id];
@@ -258,10 +266,16 @@ std::vector<Eigen::Vector3d> FeatureManager::getStereoPointCloud(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) const {
     std::vector<Eigen::Vector3d> points;
     for (const auto& [id, feature] : features_) {
-        if (feature.tri_source != TriangulationSource::Stereo) continue;
-        if (feature.estimated_depth <= 0) continue;
+        if (feature.tri_source != TriangulationSource::Stereo) {
+            continue;
+        }
+        if (feature.estimated_depth <= 0) {
+            continue;
+        }
         int start_frame_id = feature.start_frame_id;
-        if (start_frame_id >= state.cur_frame_count) continue;
+        if (start_frame_id >= state.cur_frame_count) {
+            continue;
+        }
         Eigen::Vector3d pt_in_C = feature.observations[0].uv * feature.estimated_depth;
         Eigen::Vector3d pt_in_I = ric * pt_in_C + tic;
         Eigen::Vector3d pt_in_W = state.Rs[start_frame_id] * pt_in_I + state.Ps[start_frame_id];
@@ -277,6 +291,7 @@ std::vector<Feature*> FeatureManager::collectOptimizedFeatures() {
             static_cast<int>(feature.observations.size()) < tracked_times_thres_) {
             continue;
         }
+        ++feature.optimized_count;
         result.push_back(&feature);
     }
     return result;

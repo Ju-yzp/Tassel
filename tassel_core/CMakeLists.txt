@@ -6,9 +6,6 @@ file(
   ${CMAKE_CURRENT_SOURCE_DIR}/estimator/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/state/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cam/*.cpp)
-# Remove commented-out source files
-list(FILTER TASSEL_CORE_SRCS EXCLUDE REGEX "vio_estimator\\.cpp$")
-
 add_library(tassel_core SHARED ${TASSEL_CORE_SRCS})
 
 target_link_libraries(tassel_core PUBLIC tassel_deps tassel_utils)

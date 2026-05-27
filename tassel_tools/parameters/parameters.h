@@ -13,8 +13,6 @@ namespace tassel_tools {
 struct Parameters {
     explicit Parameters(const std::string& config_file) {
         ParamsParser parser(config_file);
-
-        // ── image / grid ───────────────────────────────────────────────
         rows = parser.as<int>("rows");
         cols = parser.as<int>("cols");
         per_grid_rows = parser.as<int>("per_grid_rows");
@@ -24,13 +22,11 @@ struct Parameters {
         mask_radius = parser.as<double>("mask_radius");
         min_feature_num = parser.as<int>("min_feature_num");
 
-        // ── optical flow ───────────────────────────────────────────────
         flow_back = parser.as<bool>("flow_back");
         max_square_move_dist = parser.as<double>("max_square_move_dist");
         min_gradient = parser.as<double>("min_gradient");
         enable_statistics = parser.as<bool>("enable_statistics");
 
-        // ── feature manager ────────────────────────────────────────────
         reprojection_error_thres = parser.as<double>("reprojection_error_thres");
         parallax_thres = parser.as<double>("parallax_thres");
         min_tracked_pts_num = parser.as<int>("min_tracked_pts_num");
@@ -41,7 +37,6 @@ struct Parameters {
         min_depth = parser.as<double>("min_depth");
         max_depth = parser.as<double>("max_depth");
 
-        // ── camera intrinsics / extrinsics ─────────────────────────────
         cam_intrinsic_map[0] = parser.as<cv::Mat>("cam0", "intrinsics");
         cam_distort_map[0] = parser.as<cv::Mat>("cam0", "distortion_coeffs");
         T_cam_imu_map[0] = parser.as<Eigen::Matrix4d>("cam0", "T_cam_imu").inverse();
@@ -49,7 +44,6 @@ struct Parameters {
         cam_distort_map[1] = parser.as<cv::Mat>("cam1", "distortion_coeffs");
         T_cam_imu_map[1] = parser.as<Eigen::Matrix4d>("cam1", "T_cam_imu").inverse();
 
-        // ── estimator ──────────────────────────────────────────────────
         use_imu = parser.as<bool>("use_imu");
         visual_sqrt_info = parser.as<double>("visual_sqrt_info");
         num_iterations = parser.as<int>("num_iterations");
@@ -60,37 +54,31 @@ struct Parameters {
         repropagate_bg_thres = parser.as<double>("repropagate_bg_thres");
         num_threads = parser.as<int>("num_threads");
 
-        // ── VO estimator ──────────────────────────────────────────────
         optimize_enabled = parser.as<bool>("optimize_enabled");
         marginalization_enabled = parser.as<bool>("marginalization_enabled");
         lambda_initial = parser.as<double>("lambda_initial");
 
-        // ── IMU noise ──────────────────────────────────────────────────
         acc_n = parser.as<double>("acc_n");
         acc_w = parser.as<double>("acc_w");
         gyr_n = parser.as<double>("gyr_n");
         gyr_w = parser.as<double>("gyr_w");
     }
 
-    // ── camera ─────────────────────────────────────────────────────────
     std::map<size_t, Eigen::Matrix4d> T_cam_imu_map;
     std::map<size_t, cv::Mat> cam_distort_map;
     std::map<size_t, cv::Mat> cam_intrinsic_map;
 
-    // ── image / grid ───────────────────────────────────────────────────
     int rows, cols;
     int per_grid_rows, per_grid_cols;
     int edge_x, edge_y;
     double mask_radius;
     int min_feature_num;
 
-    // ── optical flow ───────────────────────────────────────────────────
     bool flow_back;
     double max_square_move_dist;
     double min_gradient;
     bool enable_statistics;
 
-    // ── feature manager ────────────────────────────────────────────────
     double reprojection_error_thres;
     double parallax_thres;
     int min_tracked_pts_num;
@@ -100,7 +88,6 @@ struct Parameters {
     double min_depth;
     double max_depth;
 
-    // ── estimator ──────────────────────────────────────────────────────
     bool use_imu;
     double visual_sqrt_info;
     int num_iterations;
@@ -112,12 +99,10 @@ struct Parameters {
     double repropagate_bg_thres;
     int num_threads;
 
-    // ── VO estimator ────────────────────────────────────────────────────
     bool optimize_enabled;
     bool marginalization_enabled;
     double lambda_initial;
 
-    // ── IMU noise ──────────────────────────────────────────────────────
     double acc_n, acc_w;
     double gyr_n, gyr_w;
 };
