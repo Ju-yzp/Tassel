@@ -9,87 +9,107 @@ namespace tassel_core {
 
 VisualFactor::VisualFactor(
     const Eigen::Vector3d& uv_i_, const Eigen::Vector3d& uv_j_, const Eigen::Matrix3d& ric_,
-    const Eigen::Vector3d& tic_, double min_depth)
-    : uv_i(uv_i_), uv_j(uv_j_), ric(ric_), tic(tic_), min_depth_(min_depth) {}
+    const Eigen::Vector3d& tic_, const Eigen::Vector3d& w_i_, const Eigen::Vector3d& w_j_,
+    Eigen::Vector3d& a_i_, Eigen::Vector3d& a_j_, const double* v_i_, const double* v_j_,
+    const double* bg_i_lin_, const double* bg_j_lin_, const Eigen::Matrix2d& sqrt_info_)
+    : uv_i(uv_i_),
+      uv_j(uv_j_),
+      ric(ric_),
+      tic(tic_),
+      w_i(w_i_),
+      w_j(w_j_),
+      a_i(a_i_),
+      a_j(a_j_),
+      v_i(v_i_),
+      v_j(v_j_),
+      bg_i_lin(bg_i_lin_),
+      bg_j_lin(bg_j_lin_),
+      sqrt_info(sqrt_info_) {
+    tangent_base = computeTangentBasis(uv_j);
+}
 
 bool VisualFactor::Evaluate(
     double const* const* parameters, double* residuals, double** jacobians) const {
-    Eigen::Vector3d phi_h(parameters[0][0], parameters[0][1], parameters[0][2]);
-    Eigen::Vector3d P_h(parameters[0][3], parameters[0][4], parameters[0][5]);
-    Eigen::Matrix3d R_h = Sophus::SO3d::exp(phi_h).matrix();
+    Eigen::Vector3d phi_i(parameters[0][0], parameters[0][1], parameters[0][2]);
+    Eigen::Vector3d P_i(parameters[0][3], parameters[0][4], parameters[0][5]);
+    Eigen::Matrix3d R_i = Sophus::SO3d::exp(phi_i).matrix();
 
-    Eigen::Vector3d phi_t(parameters[1][0], parameters[1][1], parameters[1][2]);
-    Eigen::Vector3d P_t(parameters[1][3], parameters[1][4], parameters[1][5]);
-    Eigen::Matrix3d R_t = Sophus::SO3d::exp(phi_t).matrix();
+    Eigen::Vector3d phi_j(parameters[1][0], parameters[1][1], parameters[1][2]);
+    Eigen::Vector3d P_j(parameters[1][3], parameters[1][4], parameters[1][5]);
+    Eigen::Matrix3d R_j = Sophus::SO3d::exp(phi_j).matrix();
 
     double inv_depth = parameters[2][0];
+    double dt = parameters[3][0];
     double depth = 1.0 / inv_depth;
 
-    // 共享雅各比计算
-    Eigen::Matrix<double, 2, 6> J_i, J_j;
-    Eigen::Matrix<double, 2, 1> J_l;
-    Eigen::Vector2d r_raw;
-    computeVisualReprojection(
-        uv_i, uv_j, R_h, P_h, R_t, P_t, depth, ric, tic, J_i, J_j, J_l, r_raw);
+    Eigen::Vector3d V_i(v_i[0], v_i[1], v_i[2]);
+    Eigen::Vector3d V_j(v_j[0], v_j[1], v_j[2]);
+    Eigen::Vector3d bg_i(bg_i_lin[0], bg_i_lin[1], bg_i_lin[2]);
+    Eigen::Vector3d bg_j(bg_j_lin[0], bg_j_lin[1], bg_j_lin[2]);
+    Eigen::Vector3d pi_in_C = uv_i * depth;
+    Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
+    Eigen::Vector3d pi_in_G = R_i * Sophus::SO3d::exp((w_i - bg_i) * dt).matrix() * pi_in_I + P_i +
+                              V_i * dt + 0.5 * R_i * a_i * dt * dt;
+    Eigen::Vector3d pj_in_I = Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() * R_j.transpose() *
+                              (pi_in_G - (P_j + V_j * dt + 0.5 * R_j * a_j * dt * dt));
+    Eigen::Vector3d pj_in_C = ric.transpose() * (pj_in_I - tic);
 
+    double norm = pj_in_C.norm();
     Eigen::Map<Eigen::Vector2d> r(residuals);
-    r = r_raw;
+    r = tangent_base * (pj_in_C / norm - uv_j);
+
     if (jacobians) {
+        Eigen::Matrix<double, 2, 3> reduce =
+            1.0 / norm * tangent_base *
+            (Eigen::Matrix3d::Identity() - (pj_in_C * pj_in_C.transpose()) / (norm * norm));
+
         if (jacobians[0]) {
-            Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_H(jacobians[0]);
-            jacobian_H = J_i;
+            Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_pose_i(jacobians[0]);
+            jacobian_pose_i.block<2, 3>(0, 0) =
+                sqrt_info * reduce *
+                (ric.transpose() * Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() * R_j.transpose() *
+                 (-R_i *
+                      Sophus::SO3d::hat(Sophus::SO3d::exp((w_i - bg_i) * dt).matrix() * pi_in_I) -
+                  0.5 * R_i * Sophus::SO3d::hat(a_i * dt * dt)));
+            jacobian_pose_i.block<2, 3>(0, 3) = sqrt_info * reduce * ric.transpose() *
+                                                Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() *
+                                                R_j.transpose();
         }
+
         if (jacobians[1]) {
-            Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_T(jacobians[1]);
-            jacobian_T = J_j;
+            Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_pose_j(jacobians[1]);
+            jacobian_pose_j.block<2, 3>(0, 0) =
+                sqrt_info * reduce * ric.transpose() *
+                Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() *
+                Sophus::SO3d::hat(
+                    R_j.transpose() * (pi_in_G - (P_j + V_j * dt + 0.5 * R_j * a_j * dt * dt)));
+            jacobian_pose_j.block<2, 3>(0, 3) =
+                sqrt_info * reduce *
+                (-ric.transpose() * Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() *
+                 R_j.transpose());
         }
+
         if (jacobians[2]) {
-            Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_L(jacobians[2]);
-            jacobian_L = J_l;
+            Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_inv_depth(jacobians[2]);
+            jacobian_inv_depth =
+                sqrt_info * reduce *
+                (-ric.transpose() * Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() *
+                 R_j.transpose() * R_i * Sophus::SO3d::exp((w_i - bg_i) * dt).matrix() * ric *
+                 (uv_i / (inv_depth * inv_depth)));
+        }
+
+        // dt Jacobian: 仅角速度+线速度，去除加速度耦合
+        if (jacobians[3]) {
+            Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_dt(jacobians[3]);
+            Eigen::Matrix3d A_i = Sophus::SO3d::exp((w_i - bg_i) * dt).matrix();
+            Eigen::Matrix3d A_j = Sophus::SO3d::exp((bg_j - w_j) * dt).matrix();
+            jacobian_dt = sqrt_info * reduce * ric.transpose() *
+                          (Sophus::SO3d::hat(bg_j - w_j) * pj_in_I +
+                           A_j * R_j.transpose() *
+                               (R_i * Sophus::SO3d::hat(w_i - bg_i) * A_i * pi_in_I + V_i - V_j));
         }
     }
     return true;
 }
 
-// void jacobian() {
-//     Eigen::Matrix3d ric;    // 相机到imu的旋转
-//     Eigen::Matrix3d R_G_I;  // imu到全局坐标系的旋转
-//     Eigen::Vector3d w;      // 全局坐标系下的角速度
-//     Eigen::Vector3d v;      // 全局坐标系下线速度
-//     Eigen::Vector3d a;      // 体坐标系下加速度
-//     double dt;              // 时间微小量
-//     Eigen::Vector3d p_G;    // 特征点在全局坐标系中的位置
-//     Eigen::Vector3d P_G_I;  // imu在全局坐标系的位置
-
-//     Eigen::Matrix<double, 2, 3> reduce;
-//     Eigen::Vector2d jacobian_delay_t =
-//         reduce * ric.transpose() * -1.0 *
-//         (Sophus::SO3d::hat(w) * R_G_I.transpose() * p_G -
-//          Sophus::SO3d::hat(w) * R_G_I.transpose() * P_G_I +
-//          R_G_I.transpose() *
-//              (v + (R_G_I * Sophus::SO3d::exp(w * dt).matrix() * a + R_G_I * a) * dt));
-
-//     // 我们现在有两个相机和imu姿态，现在不使用特征点的全局坐标，而是host的相机坐标系下的坐标
-//     Eigen::Vector3d pt_i_C;
-//     Eigen::Vector3d pt_j_C;
-//     // imu全局位姿
-//     Eigen::Vector3d P_G_I_i, P_G_I_j;
-//     Eigen::Matrix3d R_G_I_i, R_G_I_j;
-//     Eigen::Vector3d a_i, a_j;  // 在两个时刻imu的体坐标系下加速度
-//     Eigen::Vector3d w_i, w_j;  // 在两个时刻imu的体坐标系下角速度
-//     Eigen::Vector3d v_i, v_j;  // 在两个时刻imu的全局坐标下的线速度
-//     Eigen::Matrix3d ric_;      // 外参
-//     Eigen::Vector3d tic_;      // 外参
-//     Eigen::Vector2d jacobian_delay_t_ =
-//         reduce * ric_.transpose() * -1.0 *
-//         (Sophus::SO3d::hat(w_j) * R_G_I_j.transpose() *
-//              (R_G_I_i * (ric_ * pt_i_C + tic_) + P_G_I_i) -
-//          R_G_I_j.transpose() *
-//              (R_G_I_i * Sophus::SO3d::hat(w_i) * (ric_ * pt_i_C + tic_) + v_i +
-//               (R_G_I_i * Sophus::SO3d::exp(w_i * dt).matrix() * a_i + R_G_I_i * a_i) * dt) -
-//          Sophus::SO3d::hat(w_j) * R_G_I_j.transpose() * P_G_I_j +
-//          R_G_I_j.transpose() *
-//              (v_j + (R_G_I_j * Sophus::SO3d::exp(w_j * dt).matrix() * a_j + R_G_I_j * a_j) *
-//              dt));
-// }
 }  // namespace tassel_core

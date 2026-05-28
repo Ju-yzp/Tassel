@@ -166,21 +166,21 @@ void VioEstimator::optimize() {
 
     ceres::LossFunction* loss = new ceres::HuberLoss(0.005);
     std::set<int> involved_indices;
-    for (size_t k = 0; k < features.size(); ++k) {
-        Feature* f = features[k];
-        int host_id = f->start_frame_id;
-        involved_indices.insert(host_id);
-        for (size_t obs_idx = 1; obs_idx < f->observations.size(); ++obs_idx) {
-            int target_id = host_id + static_cast<int>(obs_idx);
-            involved_indices.insert(target_id);
-            auto* cost = new VisualFactor(
-                f->observations[0].uv, f->observations[obs_idx].uv, Eigen::Matrix3d::Identity(),
-                Eigen::Vector3d::Zero(), option_.min_depth);
-            problem.AddResidualBlock(
-                cost, loss, state_->param_poses[host_id].data(),
-                state_->param_poses[target_id].data(), &inv_depth_params[k]);
-        }
-    }
+    // for (size_t k = 0; k < features.size(); ++k) {
+    //     Feature* f = features[k];
+    //     int host_id = f->start_frame_id;
+    //     involved_indices.insert(host_id);
+    //     for (size_t obs_idx = 1; obs_idx < f->observations.size(); ++obs_idx) {
+    //         int target_id = host_id + static_cast<int>(obs_idx);
+    //         involved_indices.insert(target_id);
+    //         auto* cost = new VisualFactor(
+    //             f->observations[0].uv, f->observations[obs_idx].uv, Eigen::Matrix3d::Identity(),
+    //             Eigen::Vector3d::Zero(), option_.min_depth);
+    //         problem.AddResidualBlock(
+    //             cost, loss, state_->param_poses[host_id].data(),
+    //             state_->param_poses[target_id].data(), &inv_depth_params[k]);
+    //     }
+    // }
     if (static_cast<int>(involved_indices.size()) == state_->max_frame_count) {
         spdlog::info(
             "Optimized features cover all {} frames in the sliding window",
@@ -316,8 +316,7 @@ void VioEstimator::initializeImu(
     Eigen::Vector3d g_world = tassel_utils::G.normalized();
 
     Eigen::Matrix3d R_w_i = Eigen::Quaterniond::FromTwoVectors(g_imu, g_world).toRotationMatrix();
-    Eigen::Matrix3d R_w_c0 = R_w_i;
-    Eigen::Quaterniond q = Eigen::Quaterniond(R_w_c0);
+    Eigen::Quaterniond q(R_w_i);
     q.normalize();
     state_->Rs[0] = q.matrix();
     state_->Ps[0] = Eigen::Vector3d::Zero();

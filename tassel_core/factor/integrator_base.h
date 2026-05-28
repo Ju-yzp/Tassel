@@ -50,6 +50,16 @@ public:
         }
     }
 
+    inline Eigen::Matrix3d get_dq_dbg() { return jacobian.template block<3, 3>(3, 12); }
+
+    inline Eigen::Matrix3d get_dp_dbg() { return jacobian.template block<3, 3>(0, 12); }
+
+    inline Eigen::Matrix3d get_dp_dba() { return jacobian.template block<3, 3>(0, 9); }
+
+    inline Eigen::Matrix3d get_dv_dbg() { return jacobian.template block<3, 3>(6, 12); }
+
+    inline Eigen::Matrix3d get_dv_dba() { return jacobian.template block<3, 3>(6, 9); }
+
     std::vector<tassel_utils::IMUMeasurement> buffer;
 
     // 偏置线性化点
