@@ -7,10 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "delay_time_estimator.h"
 #include "estimator/estimator_option.h"
-#include "factor/integrator_manager.h"
-#include "factor/marg_linearized_data.h"
+#include "factor/marginlization_sqrt.h"
 #include "frond_end/feature_manager.h"
 #include "state/state.h"
 #include "tassel_utils/types.h"
@@ -47,13 +45,6 @@ public:
         stereo_cloud_callback_ = std::move(cb);
     }
 
-    std::shared_ptr<State> getState() const { return state_; }
-    std::shared_ptr<FeatureManager> getFeatureManager() const { return feature_manager_; }
-    const std::vector<double>& getCamTimestamps() const { return cam_timestamps_; }
-    bool isTdEstimated() const { return td_estimated_; }
-
-    void dumpToFile(const std::string& path) const;
-
 private:
     void optimize();
     void marginalize();
@@ -67,9 +58,6 @@ private:
     std::shared_ptr<FeatureManager> feature_manager_;
     std::unique_ptr<MargLinData> marg_lin_data_;
     std::vector<std::array<double, 6>> marg_poses_linearized_;
-
-    std::shared_ptr<IntegratorManager> imu_manager_;
-    std::unique_ptr<DelayTimeEstimator> delay_time_estimator_;
 
     Eigen::Matrix3d ric_;
     Eigen::Vector3d tic_;
@@ -93,9 +81,6 @@ private:
     double last_ts_ = -1;
     Eigen::Vector3d last_imu_acc_;
     Eigen::Vector3d last_imu_gyro_;
-
-    // 滑窗内各帧的相机时间戳，供时间延迟估计器使用
-    std::vector<double> cam_timestamps_;
 };
 
 }  // namespace tassel_core

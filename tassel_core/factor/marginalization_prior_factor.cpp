@@ -5,7 +5,7 @@
 
 namespace tassel_core {
 
-MarginalizationPrior::MarginalizationPrior(
+MarginalizationPriorFactor::MarginalizationPriorFactor(
     const Eigen::MatrixXd& H, const Eigen::VectorXd& b,
     std::vector<std::array<double, 6>> linearization_poses)
     : H_(H), b_(b), lin_poses_(std::move(linearization_poses)) {
@@ -16,7 +16,7 @@ MarginalizationPrior::MarginalizationPrior(
     }
 }
 
-bool MarginalizationPrior::Evaluate(
+bool MarginalizationPriorFactor::Evaluate(
     double const* const* parameters, double* residuals, double** jacobians) const {
     int num_kept = static_cast<int>(lin_poses_.size());
 

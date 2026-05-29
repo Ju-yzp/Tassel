@@ -10,9 +10,9 @@
 namespace tassel_core {
 
 // Ceres CostFunction：将 sqrt 先验 H*(x - x_lin) + b 加入优化
-class MarginalizationPrior : public ceres::CostFunction {
+class MarginalizationPriorFactor : public ceres::CostFunction {
 public:
-    MarginalizationPrior(
+    MarginalizationPriorFactor(
         const Eigen::MatrixXd& H, const Eigen::VectorXd& b,
         std::vector<std::array<double, 6>> linearization_poses);
 

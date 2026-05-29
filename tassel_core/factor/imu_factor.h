@@ -3,6 +3,7 @@
 
 #include <ceres/sized_cost_function.h>
 #include <memory>
+
 #include "factor/integrator_base.h"
 
 namespace tassel_core {
@@ -101,9 +102,6 @@ class IMUFactor : ceres::SizedCostFunction<15, 6, 9, 6, 9> {
 
         return true;
     }
-
-    void get_dense_Jp_b(Eigen::MatrixXd& Jp, Eigen::VectorXd& b, int start_row) {}
-
     std::shared_ptr<IntegratorBase<Derived>> integrator;
 };
 }  // namespace tassel_core

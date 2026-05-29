@@ -2,8 +2,6 @@
 #define TASSEL_CORE_FACTOR_LANDMARK_BLOCK_H_
 
 #include <Eigen/Core>
-#include <array>
-#include <vector>
 
 #include <ceres/loss_function.h>
 #include "frond_end/feature.h"
@@ -14,29 +12,39 @@ using MatrixRowMajor = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eig
 
 class LandmarkBlock {
 public:
-    LandmarkBlock(double min_depth, ceres::LossFunction* loss);
+    LandmarkBlock(int dim = 6, ceres::LossFunction* loss = nullptr);
 
-    void allocate(int num_frames, int num_obs);
+    void allocate(int num_frames, int num_obs, int dim);
 
-    double linearize(
-        const Feature& feature, const std::vector<std::array<double, 6>>& lin_poses,
-        const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
+    void linearize(
+        const Feature& feature, const State& state, const Eigen::Matrix3d& ric,
+        const Eigen::Vector3d& tic);
 
     void performQR();
 
     void get_dense_Q2Jp_Q2r(Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r, int start_row) const;
 
     int numRows() const { return num_rows_; }
+
     int keptRows() const { return num_rows_ - 1; }
+
     int paddingIdx() const { return padding_idx_; }
+
+    int landmarkIdx() const { return lm_idx_; }
+
+    int residualIdx() const { return res_idx_; }
+
+    MatrixRowMajor& mutableStorage() { return storage_; }
+
+    const MatrixRowMajor& storage() const { return storage_; }
 
 private:
     MatrixRowMajor storage_;
-    int lm_idx_ = 0;
-    int res_idx_ = 0;
-    int padding_idx_ = 0;
-    int num_rows_ = 0;
-    double min_depth_;
+    int lm_idx_;
+    int res_idx_;
+    int padding_idx_;
+    int num_rows_;
+    int dim_;
     ceres::LossFunction* loss_;
 };
 

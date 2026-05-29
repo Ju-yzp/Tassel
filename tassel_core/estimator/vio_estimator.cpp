@@ -35,12 +35,6 @@ VioEstimator::VioEstimator(
       init_ts_(-1) {
     cv::setNumThreads(option_.num_threads);
     noise_ = initNoise();
-    imu_manager_ = std::make_shared<IntegratorManager>();
-    for (int i = 0; i < state_->max_frame_count; ++i) {
-        imu_manager_->addIntegrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise_);
-    }
-    delay_time_estimator_ =
-        std::make_unique<DelayTimeEstimator>(imu_manager_, feature_manager_, ric_, tic_);
     state_->cur_frame_count = 0;
     state_->ric = ric_;
     state_->tic = tic_;
@@ -72,25 +66,23 @@ void VioEstimator::processMeasurement(
         Eigen::Vector3d& P = state_->Ps[frame_count];
         Eigen::Vector3d& V = state_->Vs[frame_count];
 
-        auto* integrator = imu_manager_->getIntegrator(frame_count - 1);
-        Eigen::Vector3d Ba = integrator->ba_linearized;
-        Eigen::Vector3d Bg = integrator->bg_linearized;
-        for (const auto& imu : imu_measurements) {
-            double dt = imu.timestamp - last_ts_;
-            Eigen::Vector3d acc_0 = R * (last_imu_acc_ - Ba) - tassel_utils::G;
-            Eigen::Vector3d gyr = 0.5 * (last_imu_gyro_ + imu.gyro) - Bg;
-            R = R * Sophus::SO3d::exp(gyr * dt).matrix();
-            Eigen::Vector3d acc_1 = R * (imu.acc - Ba) - tassel_utils::G;
-            Eigen::Vector3d acc = 0.5 * (acc_0 + acc_1);
-            P += V * dt + 0.5 * acc * dt * dt;
-            V += acc * dt;
-            if (pose_callback_) pose_callback_(imu.timestamp, Sophus::SE3d(R, P));
-            if (path_callback_) path_callback_(imu.timestamp, Sophus::SE3d(R, P));
-            integrator->update(imu);
-            last_ts_ = imu.timestamp;
-            last_imu_gyro_ = imu.gyro;
-            last_imu_acc_ = imu.acc;
-        }
+        // Eigen::Vector3d Ba = integrator->ba_linearized;
+        // Eigen::Vector3d Bg = integrator->bg_linearized;
+        // for (const auto& imu : imu_measurements) {
+        //     double dt = imu.timestamp - last_ts_;
+        //     Eigen::Vector3d acc_0 = R * (last_imu_acc_ - Ba) - tassel_utils::G;
+        //     Eigen::Vector3d gyr = 0.5 * (last_imu_gyro_ + imu.gyro) - Bg;
+        //     R = R * Sophus::SO3d::exp(gyr * dt).matrix();
+        //     Eigen::Vector3d acc_1 = R * (imu.acc - Ba) - tassel_utils::G;
+        //     Eigen::Vector3d acc = 0.5 * (acc_0 + acc_1);
+        //     P += V * dt + 0.5 * acc * dt * dt;
+        //     V += acc * dt;
+        //     if (pose_callback_) pose_callback_(imu.timestamp, Sophus::SE3d(R, P));
+        //     if (path_callback_) path_callback_(imu.timestamp, Sophus::SE3d(R, P));
+        //     last_ts_ = imu.timestamp;
+        //     last_imu_gyro_ = imu.gyro;
+        //     last_imu_acc_ = imu.acc;
+        // }
 
         Eigen::Quaterniond q(R);
         q.normalize();
@@ -98,16 +90,7 @@ void VioEstimator::processMeasurement(
     }
     if (is_keyframe) {
         feature_manager_->triangulate(*state_, ric_, tic_, ric1_, tic1_);
-        cam_timestamps_.push_back(ts);
         if (frame_count == state_->max_frame_count - 1) {
-            if (!td_estimated_) {
-                double td =
-                    delay_time_estimator_->estimate(*state_, cam_timestamps_, state_->delay_time);
-                state_->delay_time = td;
-                td_estimated_ = true;
-                spdlog::info("time delay estimated: {:.6f} s", td);
-                dumpToFile("/tmp/vio_output");
-            }
             slideWindow();
         } else {
             ++frame_count;
@@ -116,10 +99,6 @@ void VioEstimator::processMeasurement(
             state_->Vs[frame_count] = state_->Vs[frame_count - 1];
             state_->Bas[frame_count] = state_->Bas[frame_count - 1];
             state_->Bgs[frame_count] = state_->Bgs[frame_count - 1];
-
-            auto* prev_integrator = imu_manager_->getIntegrator(frame_count - 1);
-            imu_manager_->getIntegrator(frame_count)
-                ->reset(prev_integrator->ba_linearized, prev_integrator->bg_linearized, noise_);
         }
     } else {
         feature_manager_->removeNewest(frame_count);
@@ -189,8 +168,8 @@ void VioEstimator::optimize() {
 
     // 添加边缘化先验
     if (marg_lin_data_ && marg_lin_data_->H.rows() > 0) {
-        auto* prior =
-            new MarginalizationPrior(marg_lin_data_->H, marg_lin_data_->b, marg_poses_linearized_);
+        auto* prior = new MarginalizationPriorFactor(
+            marg_lin_data_->H, marg_lin_data_->b, marg_poses_linearized_);
         int num_kept = static_cast<int>(marg_poses_linearized_.size());
         std::vector<double*> param_blocks;
         for (int i = 0; i < num_kept; ++i) {
@@ -235,70 +214,70 @@ void VioEstimator::optimize() {
 }
 
 void VioEstimator::marginalize() {
-    int num_frames = state_->max_frame_count;
+    // int num_frames = state_->max_frame_count;
 
-    // 收集当前窗口所有帧的线性化点
-    std::vector<std::array<double, 6>> poses_linearized;
-    for (int i = 0; i < num_frames; ++i) {
-        poses_linearized.push_back(state_->param_poses[i]);
-    }
+    // // 收集当前窗口所有帧的线性化点
+    // std::vector<std::array<double, 6>> poses_linearized;
+    // for (int i = 0; i < num_frames; ++i) {
+    //     poses_linearized.push_back(state_->param_poses[i]);
+    // }
 
-    // 收集需要边缘化的特征
-    auto marg_features = feature_manager_->collectMarginalizationFeatures();
+    // // 收集需要边缘化的特征
+    // auto marg_features = feature_manager_->collectMarginalizationFeatures();
 
-    int marg_size = 6;
-    int keep_size = (num_frames - 1) * 6;
+    // int marg_size = 6;
+    // int keep_size = (num_frames - 1) * 6;
 
-    ceres::LossFunction* loss = new ceres::HuberLoss(0.005);
-    std::vector<LandmarkBlock> blocks;
-    int total_new_rows = 0;
-    for (const auto& feature : marg_features) {
-        int num_obs = static_cast<int>(feature.observations.size()) - 1;
-        LandmarkBlock lb(option_.min_depth, loss);
-        lb.allocate(num_frames, num_obs);
-        lb.linearize(
-            feature, poses_linearized, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
-        lb.performQR();
-        total_new_rows += lb.keptRows();
-        blocks.push_back(std::move(lb));
-    }
+    // ceres::LossFunction* loss = new ceres::HuberLoss(0.005);
+    // std::vector<LandmarkBlock> blocks;
+    // int total_new_rows = 0;
+    // for (const auto& feature : marg_features) {
+    //     int num_obs = static_cast<int>(feature.observations.size()) - 1;
+    //     LandmarkBlock lb(option_.min_depth, loss);
+    //     lb.allocate(num_frames, num_obs);
+    //     lb.linearize(
+    //         feature, poses_linearized, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+    //     lb.performQR();
+    //     total_new_rows += lb.keptRows();
+    //     blocks.push_back(std::move(lb));
+    // }
 
-    int prev_rows = (marg_lin_data_ && marg_lin_data_->H.rows() > 0) ? marg_lin_data_->H.rows() : 0;
-    int all_rows = total_new_rows + prev_rows;
+    // int prev_rows = (marg_lin_data_ && marg_lin_data_->H.rows() > 0) ? marg_lin_data_->H.rows() :
+    // 0; int all_rows = total_new_rows + prev_rows;
 
-    Eigen::MatrixXd Q2Jp(all_rows, marg_size + keep_size);
-    Eigen::VectorXd Q2r(all_rows);
-    Q2Jp.setZero();
-    Q2r.setZero();
+    // Eigen::MatrixXd Q2Jp(all_rows, marg_size + keep_size);
+    // Eigen::VectorXd Q2r(all_rows);
+    // Q2Jp.setZero();
+    // Q2r.setZero();
 
-    int offset = 0;
-    for (const auto& lb : blocks) {
-        lb.get_dense_Q2Jp_Q2r(Q2Jp, Q2r, offset);
-        offset += lb.keptRows();
-    }
+    // int offset = 0;
+    // for (const auto& lb : blocks) {
+    //     lb.get_dense_Q2Jp_Q2r(Q2Jp, Q2r, offset);
+    //     offset += lb.keptRows();
+    // }
 
-    if (prev_rows > 0) {
-        Q2Jp.block(total_new_rows, 0, prev_rows, marg_lin_data_->H.cols()) = marg_lin_data_->H;
-        Q2r.segment(total_new_rows, prev_rows) = marg_lin_data_->b;
-    }
+    // if (prev_rows > 0) {
+    //     Q2Jp.block(total_new_rows, 0, prev_rows, marg_lin_data_->H.cols()) = marg_lin_data_->H;
+    //     Q2r.segment(total_new_rows, prev_rows) = marg_lin_data_->b;
+    // }
 
-    Eigen::MatrixXd H_new;
-    Eigen::VectorXd b_new;
-    MargHelper::marginalizeSqrtToSqrt(marg_size, keep_size, Q2Jp, Q2r, H_new, b_new);
+    // Eigen::MatrixXd H_new;
+    // Eigen::VectorXd b_new;
+    // MargHelper::marginalizeSqrtToSqrt(marg_size, keep_size, Q2Jp, Q2r, H_new, b_new);
 
-    if (!marg_lin_data_) {
-        marg_lin_data_ = std::make_unique<MargLinData>();
-    }
-    marg_lin_data_->H = H_new;
-    marg_lin_data_->b = b_new;
+    // if (!marg_lin_data_) {
+    //     marg_lin_data_ = std::make_unique<MargLinData>();
+    // }
+    // marg_lin_data_->H = H_new;
+    // marg_lin_data_->b = b_new;
 
-    marg_poses_linearized_.clear();
-    for (int i = 1; i < num_frames; ++i) {
-        marg_poses_linearized_.push_back(poses_linearized[i]);
-    }
+    // marg_poses_linearized_.clear();
+    // for (int i = 1; i < num_frames; ++i) {
+    //     marg_poses_linearized_.push_back(poses_linearized[i]);
+    // }
 
-    feature_manager_->removeMarginalizedFeatures();
-    delete loss;
+    // feature_manager_->removeMarginalizedFeatures();
+    // delete loss;
 }
 
 void VioEstimator::initializeImu(
@@ -323,9 +302,6 @@ void VioEstimator::initializeImu(
     state_->Vs[0] = Eigen::Vector3d::Zero();
     state_->Bas[0] = avg_acc - R_w_i.transpose() * tassel_utils::G;
     state_->Bgs[0] = avg_gyro;
-    imu_manager_->getIntegrator(0)->ba_linearized = state_->Bas[0];
-    imu_manager_->getIntegrator(0)->bg_linearized = state_->Bgs[0];
-    cam_timestamps_.push_back(init_ts_);
     last_ts_ = imu_measurements.back().timestamp;
     last_imu_acc_ = imu_measurements.back().acc;
     last_imu_gyro_ = imu_measurements.back().gyro;
@@ -345,86 +321,6 @@ void VioEstimator::slideWindow() {
     Eigen::Quaterniond q(state_->Rs[n - 2]);
     q.normalize();
     state_->Rs[n - 2] = q.matrix();
-    cam_timestamps_.erase(cam_timestamps_.begin());
-    imu_manager_->removeOldest();
-    imu_manager_->addIntegrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise_);
-}
-
-void VioEstimator::dumpToFile(const std::string& path) const {
-    // 状态: 每帧位姿/速度/偏置
-    {
-        std::ofstream ofs(path + "_state.txt");
-        if (!ofs) {
-            spdlog::error("dumpToFile: cannot open {}", path + "_state.txt");
-            return;
-        }
-        ofs << "# ts R(9) P(3) V(3) Ba(3) Bg(3)\n";
-        int n = std::min(static_cast<int>(cam_timestamps_.size()), state_->max_frame_count);
-        for (int i = 0; i < n; ++i) {
-            ofs << std::fixed << cam_timestamps_[i];
-            const auto& R = state_->Rs[i];
-            for (int r = 0; r < 3; ++r) {
-                for (int c = 0; c < 3; ++c) {
-                    ofs << ' ' << R(r, c);
-                }
-            }
-            const auto& P = state_->Ps[i];
-            ofs << ' ' << P.x() << ' ' << P.y() << ' ' << P.z();
-            const auto& V = state_->Vs[i];
-            ofs << ' ' << V.x() << ' ' << V.y() << ' ' << V.z();
-            const auto& Ba = state_->Bas[i];
-            ofs << ' ' << Ba.x() << ' ' << Ba.y() << ' ' << Ba.z();
-            const auto& Bg = state_->Bgs[i];
-            ofs << ' ' << Bg.x() << ' ' << Bg.y() << ' ' << Bg.z();
-            ofs << '\n';
-        }
-        spdlog::info("dumped {} frames to {}", n, path + "_state.txt");
-    }
-
-    // 特征点: 每帧观测
-    {
-        std::ofstream ofs(path + "_features.txt");
-        if (!ofs) {
-            spdlog::error("dumpToFile: cannot open {}", path + "_features.txt");
-            return;
-        }
-        ofs << "# feat_id start_frame depth tri_src num_obs\n";
-        ofs << "#   frame_id u v [u_r v_r is_stereo]\n";
-        const auto& features = feature_manager_->testFeatures();
-        for (const auto& [feat_id, f] : features) {
-            ofs << feat_id << ' ' << f.start_frame_id << ' ' << f.estimated_depth << ' '
-                << static_cast<int>(f.tri_source) << ' ' << f.observations.size() << '\n';
-            for (size_t k = 0; k < f.observations.size(); ++k) {
-                int frame_id = static_cast<int>(f.start_frame_id) + static_cast<int>(k);
-                const auto& obs = f.observations[k];
-                ofs << "  " << frame_id << ' ' << obs.uv.x() << ' ' << obs.uv.y() << ' '
-                    << obs.uv_r.x() << ' ' << obs.uv_r.y() << ' ' << static_cast<int>(obs.is_stereo)
-                    << '\n';
-            }
-        }
-        spdlog::info("dumped {} features to {}", features.size(), path + "_features.txt");
-    }
-
-    // IMU 数据
-    {
-        std::ofstream ofs(path + "_imu.txt");
-        if (!ofs) {
-            spdlog::error("dumpToFile: cannot open {}", path + "_imu.txt");
-            return;
-        }
-        ofs << "# ts acc_x acc_y acc_z gyro_x gyro_y gyro_z\n";
-        size_t total = 0;
-        for (int i = 0; i < imu_manager_->numIntegrators(); ++i) {
-            const auto& buf = imu_manager_->getIntegrator(i)->buffer;
-            for (const auto& m : buf) {
-                ofs << std::fixed << m.timestamp << ' ' << m.acc.x() << ' ' << m.acc.y() << ' '
-                    << m.acc.z() << ' ' << m.gyro.x() << ' ' << m.gyro.y() << ' ' << m.gyro.z()
-                    << '\n';
-                ++total;
-            }
-        }
-        spdlog::info("dumped {} IMU measurements to {}", total, path + "_imu.txt");
-    }
 }
 
 Eigen::Matrix<double, 18, 18> VioEstimator::initNoise() const {

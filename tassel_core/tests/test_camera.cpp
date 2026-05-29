@@ -79,8 +79,6 @@ Eigen::Matrix<double, 2, 8> numerical_dzeta(
 
 }  // namespace
 
-// ── Validation tests ───────────────────────────────────────────────────────
-
 TEST(CameraRadTan, ThrowsOnInvalidIntrinsicsSize) {
     cv::Mat bad_K(2, 2, CV_64F);
     EXPECT_THROW(

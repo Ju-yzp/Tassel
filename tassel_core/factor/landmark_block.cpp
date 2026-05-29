@@ -1,16 +1,17 @@
 #include "landmark_block.h"
-#include "visual_reprojection.h"
+#include "factor/visual_factor.h"
 
 #include <cmath>
 #include <sophus/so3.hpp>
+#include <vector>
 
 namespace tassel_core {
 
-LandmarkBlock::LandmarkBlock(double min_depth, ceres::LossFunction* loss)
-    : min_depth_(min_depth), loss_(loss) {}
+LandmarkBlock::LandmarkBlock(int dim, ceres::LossFunction* loss)
+    : lm_idx_(0), res_idx_(0), padding_idx_(0), num_rows_(0), dim_(dim), loss_(loss) {}
 
-void LandmarkBlock::allocate(int num_frames, int num_obs) {
-    padding_idx_ = num_frames * 6;
+void LandmarkBlock::allocate(int num_frames, int num_obs, int dim) {
+    padding_idx_ = num_frames * dim;
     num_rows_ = num_obs * 2;
 
     int padding_size = padding_idx_ % 4;
@@ -22,61 +23,59 @@ void LandmarkBlock::allocate(int num_frames, int num_obs) {
     storage_.setZero();
 }
 
-double LandmarkBlock::linearize(
-    const Feature& feature, const std::vector<std::array<double, 6>>& lin_poses,
-    const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
+void LandmarkBlock::linearize(
+    const Feature& feature, const State& state, const Eigen::Matrix3d& ric,
+    const Eigen::Vector3d& tic) {
     storage_.setZero();
 
     const std::vector<FeaturePerFrame>& observations = feature.observations;
     Eigen::Vector3d uv_i = observations[0].uv;
     int start_frame_id = feature.start_frame_id;
     double depth = feature.estimated_depth;
+    double inv_depth = 1.0 / depth;
 
-    // 深度信息矩阵权重 ∝ 1/depth
-    // double weight = min_depth_ / depth;
-    // weight = std::clamp(weight, 0.1, 5.0);
-    // double sqrt_depth_weight = std::sqrt(weight);
+    Eigen::Matrix<double, 2, 6> jacobian_pose_i, jacobian_pose_j;
+    Eigen::Matrix<double, 2, 1> jacobian_landmark;
+    Eigen::Matrix<double, 2, 1> residual;
 
-    // host 位姿线性化点
-    const auto& pose_arr = lin_poses[start_frame_id];
-    Eigen::Vector3d phi_i(pose_arr[0], pose_arr[1], pose_arr[2]);
-    Eigen::Vector3d P_i(pose_arr[3], pose_arr[4], pose_arr[5]);
-    Eigen::Matrix3d R_i = Sophus::SO3d::exp(phi_i).matrix();
-
-    int num_frames = static_cast<int>(lin_poses.size());
     double error_sum = 0.0;
     for (int offset = 1; offset < static_cast<int>(observations.size()); ++offset) {
         int target_id = start_frame_id + offset;
-        const auto& pose_arr_j = lin_poses[target_id];
-        Eigen::Vector3d phi_j(pose_arr_j[0], pose_arr_j[1], pose_arr_j[2]);
-        Eigen::Vector3d P_j(pose_arr_j[3], pose_arr_j[4], pose_arr_j[5]);
-        Eigen::Matrix3d R_j = Sophus::SO3d::exp(phi_j).matrix();
+        Eigen::Vector3d uv_j = observations[offset].uv;
+        auto visual_factor = VisualFactor(
+            uv_i, uv_j, ric, tic, state.gyro_vec[start_frame_id], state.gyro_vec[target_id],
+            state.acc_vec[start_frame_id], state.acc_vec[target_id],
+            state.param_speed_bias[start_frame_id].data(), state.param_speed_bias[target_id].data(),
+            state.param_speed_bias[start_frame_id].data() + 6,
+            state.param_speed_bias[target_id].data() + 6, state.visual_sqrt_info);
 
-        Eigen::Matrix<double, 2, 6> J_i, J_j;
-        Eigen::Matrix<double, 2, 1> J_l;
-        Eigen::Vector2d r_raw;
-        computeVisualReprojection(
-            uv_i, observations[offset].uv, R_i, P_i, R_j, P_j, depth, ric, tic, J_i, J_j, J_l,
-            r_raw);
+        std::vector<double*> jacobians;
+        jacobians.push_back(jacobian_pose_i.data());
+        jacobians.push_back(jacobian_pose_j.data());
+        jacobians.push_back(jacobian_landmark.data());
 
-        // IRLS：组合深度权重和鲁棒核函数权重
+        std::vector<double const*> parameters;
+        parameters.push_back(state.param_poses[start_frame_id].data());
+        parameters.push_back(state.param_poses[target_id].data());
+        parameters.push_back(&inv_depth);
+        parameters.push_back(&state.param_delay_time);
+
+        visual_factor.Evaluate(parameters.data(), residual.data(), jacobians.data());
+
         double sqrt_loss = 1.0;
         if (loss_) {
-            double s = r_raw.squaredNorm();
+            double s = residual.squaredNorm();
             double rho[3];
             loss_->Evaluate(s, rho);
             sqrt_loss = std::sqrt(rho[1]);
         }
         double scale = sqrt_loss;
-        error_sum += r_raw.squaredNorm();
-
         int row = (offset - 1) * 2;
-        storage_.block(row, start_frame_id * 6, 2, 6) = scale * J_i;
-        storage_.block(row, target_id * 6, 2, 6) = scale * J_j;
-        storage_.block<2, 1>(row, lm_idx_) = scale * J_l;
-        storage_.block<2, 1>(row, res_idx_) = scale * r_raw;
-    }
-    return error_sum;
+        storage_.block<2, 6>(row, start_frame_id * dim_) = scale * jacobian_pose_i;
+        storage_.block<2, 6>(row, target_id * dim_) = scale * jacobian_pose_j;
+        storage_.block<2, 1>(row, lm_idx_) = scale * jacobian_landmark;
+        storage_.block<2, 1>(row, res_idx_) = scale * residual;
+    };
 }
 
 void LandmarkBlock::performQR() {

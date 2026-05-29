@@ -3,6 +3,7 @@
 #include <Eigen/SVD>
 
 // cpp
+#include <cmath>
 #include <set>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "feature.h"
 #include "feature_manager.h"
 #include "state/state.h"
+#include "tassel_utils/types.h"
 
 #include <spdlog/spdlog.h>
 
@@ -75,10 +77,25 @@ void FeatureManager::triangulate(
     const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1) {
     int frame_count = state.cur_frame_count;
     bool mono_triangulate = frame_count > 0;
+
+    State temp_state = state;
+    for (int i = 0; i < state.cur_frame_count; ++i) {
+        Eigen::Matrix3d real_q =
+            state.Rs[i] *
+            Sophus::SO3d::exp((state.gyro_vec[i] - state.Bgs[i]) * state.delay_time).matrix();
+
+        Eigen::Vector3d real_p =
+            state.Ps[i] + state.Vs[i] * state.delay_time +
+            0.5 * (state.Rs[i] * (state.acc_vec[i] - state.Bas[i]) - tassel_utils::G) *
+                state.delay_time * state.delay_time;
+
+        temp_state.Rs[i] = real_q;
+        temp_state.Ps[i] = real_p;
+    }
     for (auto& [id, feature] : features_) {
         feature.stereoTriangulate(ric, tic, ric1, tic1, min_depth_, max_depth_);
         if (mono_triangulate) {
-            feature.monoTriangulate(state, ric, tic, min_translation_, min_depth_, max_depth_);
+            feature.monoTriangulate(temp_state, ric, tic, min_translation_, min_depth_, max_depth_);
         }
     }
 }
@@ -223,14 +240,14 @@ void FeatureManager::removeOutliers(
 
 void FeatureManager::reset() { features_.clear(); }
 
-std::vector<Feature> FeatureManager::collectMarginalizationFeatures() {
-    std::vector<Feature> result;
+std::vector<Feature*> FeatureManager::collectMarginalizationFeatures() {
+    std::vector<Feature*> result;
     for (auto& [id, feature] : features_) {
         bool is_marginalized =
             !((feature.start_frame_id != 0) || (feature.estimated_depth == INVALID_DEPTH) ||
               (static_cast<int>(feature.observations.size()) < tracked_times_thres_));
         if (is_marginalized) {
-            result.push_back(feature);
+            result.push_back(&feature);
         }
     }
     return result;

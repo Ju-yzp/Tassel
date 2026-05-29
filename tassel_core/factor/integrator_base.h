@@ -5,10 +5,12 @@
 #include <sophus/so3.hpp>
 #include <utility>
 #include <vector>
+
 #include "tassel_utils/types.h"
 
 namespace tassel_core {
 
+// 用户可以自行实现积分方法:欧拉法、中值法、龙格-库塔法等，同时设计可以避免频繁调用积分方法时的虚函数调用开销问题
 template <typename Derived>
 class IntegratorBase {
 public:

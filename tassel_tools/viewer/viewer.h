@@ -32,14 +32,12 @@ class Viewer : public rclcpp::Node {
 public:
     explicit Viewer(const std::string& frame_id = "world");
 
-    // ── Image ──────────────────────────────────────────────────────────
     void createImagePublisher(
         const std::string& topic_name, const rclcpp::QoS qos = rclcpp::QoS(10));
 
     void publishImage(
         const std::string& topic_name, const std::string& frame_id, const cv::Mat& image);
 
-    // ── CompressedImage ────────────────────────────────────────────────
     void createCompressedImagePublisher(
         const std::string& topic_name, const rclcpp::QoS qos = rclcpp::QoS(10));
 
@@ -47,7 +45,6 @@ public:
         const std::string& topic, const std::string& frame_id, const cv::Mat& image,
         const std::string& format = "jpeg");
 
-    // ── Odometry (+ TF) ────────────────────────────────────────────────
     void createOdometryPublisher(
         const std::string& child_frame_id, const std::string& topic_name,
         const rclcpp::QoS& qos = rclcpp::QoS(10));
@@ -58,7 +55,6 @@ public:
         const Eigen::Vector3d& linear_velocity = Eigen::Vector3d::Zero(),
         const Eigen::Vector3d& angular_velocity = Eigen::Vector3d::Zero());
 
-    // ── Path ───────────────────────────────────────────────────────────
     void createPathPublisher(
         const std::string& topic_name, const rclcpp::QoS& qos = rclcpp::QoS(10));
 
@@ -66,13 +62,11 @@ public:
         const std::string& topic, const Eigen::Vector3d& position,
         const Eigen::Quaterniond& orientation);
 
-    // ── PointCloud ─────────────────────────────────────────────────────
     void createPointCloudPublisher(
         const std::string& topic_name, const rclcpp::QoS& qos = rclcpp::QoS(10));
 
     void publishPointCloud(const std::string& topic, const std::vector<Eigen::Vector3d>& points);
 
-    // ── Error ──────────────────────────────────────────────────────────
     void createErrorPublisher(
         const std::string& topic_name, const rclcpp::QoS& qos = rclcpp::QoS(10));
 

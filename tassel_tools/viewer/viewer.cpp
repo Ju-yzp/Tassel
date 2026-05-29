@@ -5,8 +5,6 @@ Viewer::Viewer(const std::string& frame_id) : Node("viewer"), frame_id_(frame_id
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 }
 
-// ── Image ──────────────────────────────────────────────────────────────────
-
 void Viewer::createImagePublisher(const std::string& topic_name, const rclcpp::QoS qos) {
     if (image_publishers_.find(topic_name) != image_publishers_.end()) {
         RCLCPP_WARN(
@@ -59,8 +57,6 @@ void Viewer::publishImage(
     image_publishers_[topic]->publish(*cv_bridge_msg.toImageMsg());
 }
 
-// ── CompressedImage ──────────────────────────────────────────────────────────
-
 void Viewer::createCompressedImagePublisher(const std::string& topic_name, const rclcpp::QoS qos) {
     if (compressed_image_publishers_.find(topic_name) != compressed_image_publishers_.end()) {
         RCLCPP_WARN(
@@ -103,8 +99,6 @@ void Viewer::publishCompressedImage(
 
     compressed_image_publishers_[topic]->publish(msg);
 }
-
-// ── Odometry + TF ──────────────────────────────────────────────────────────
 
 void Viewer::createOdometryPublisher(
     const std::string& child_frame_id, const std::string& topic_name, const rclcpp::QoS& qos) {
@@ -162,8 +156,6 @@ void Viewer::publishOdometry(
     tf_broadcaster_->sendTransform(tf);
 }
 
-// ── Path ────────────────────────────────────────────────────────────────────
-
 void Viewer::createPathPublisher(const std::string& topic_name, const rclcpp::QoS& qos) {
     if (path_publishers_.find(topic_name) != path_publishers_.end()) {
         RCLCPP_WARN(
@@ -201,8 +193,6 @@ void Viewer::publishPath(
     path.poses.push_back(pose_stamped);
     path_publishers_[topic]->publish(path);
 }
-
-// ── PointCloud ──────────────────────────────────────────────────────────────
 
 void Viewer::createPointCloudPublisher(const std::string& topic_name, const rclcpp::QoS& qos) {
     if (pointcloud_publishers_.find(topic_name) != pointcloud_publishers_.end()) {
@@ -259,8 +249,6 @@ void Viewer::publishPointCloud(
 
     pointcloud_publishers_[topic]->publish(cloud);
 }
-
-// ── Error ──────────────────────────────────────────────────────────────────
 
 void Viewer::createErrorPublisher(const std::string& topic_name, const rclcpp::QoS& qos) {
     if (error_publishers_.find(topic_name) != error_publishers_.end()) {

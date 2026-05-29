@@ -1,5 +1,4 @@
 #include "visual_factor.h"
-#include "visual_reprojection.h"
 
 #include <Eigen/Geometry>
 #include <cmath>
@@ -10,8 +9,9 @@ namespace tassel_core {
 VisualFactor::VisualFactor(
     const Eigen::Vector3d& uv_i_, const Eigen::Vector3d& uv_j_, const Eigen::Matrix3d& ric_,
     const Eigen::Vector3d& tic_, const Eigen::Vector3d& w_i_, const Eigen::Vector3d& w_j_,
-    Eigen::Vector3d& a_i_, Eigen::Vector3d& a_j_, const double* v_i_, const double* v_j_,
-    const double* bg_i_lin_, const double* bg_j_lin_, const Eigen::Matrix2d& sqrt_info_)
+    const Eigen::Vector3d& a_i_, const Eigen::Vector3d& a_j_, const double* v_i_,
+    const double* v_j_, const double* bg_i_lin_, const double* bg_j_lin_,
+    const Eigen::Matrix2d& sqrt_info_)
     : uv_i(uv_i_),
       uv_j(uv_j_),
       ric(ric_),

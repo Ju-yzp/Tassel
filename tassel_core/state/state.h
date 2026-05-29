@@ -112,9 +112,17 @@ struct State {
     std::vector<Eigen::Vector3d> Bgs;
     double delay_time;
 
+    // 保存imu(t)时刻采样的imu体坐标系下的加速度和角速度
+    std::vector<Eigen::Vector3d> acc_vec;
+    std::vector<Eigen::Vector3d> gyro_vec;
+
+    // 状态变量转换后的ceres优化变量
     std::vector<std::array<double, 6>> param_poses;
-    std::vector<std::array<double, 9>> param_speed_bias;
+    std::vector<std::array<double, 9>> param_speed_bias;  // 线速度 / 加速度偏置 / 角速度偏置
     double param_delay_time;
+
+    //  视觉因子信息矩阵
+    Eigen::Matrix2d visual_sqrt_info;
 };
 
 }  // namespace tassel_core
