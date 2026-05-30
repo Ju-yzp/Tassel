@@ -1,8 +1,8 @@
 #include "visual_factor.h"
-
 #include <Eigen/Geometry>
 #include <cmath>
 #include <sophus/so3.hpp>
+#include "tassel_utils/constants.h"
 
 namespace tassel_core {
 
@@ -49,9 +49,10 @@ bool VisualFactor::Evaluate(
     Eigen::Vector3d pi_in_C = uv_i * depth;
     Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
     Eigen::Vector3d pi_in_G = R_i * Sophus::SO3d::exp((w_i - bg_i) * dt).matrix() * pi_in_I + P_i +
-                              V_i * dt + 0.5 * R_i * a_i * dt * dt;
-    Eigen::Vector3d pj_in_I = Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() * R_j.transpose() *
-                              (pi_in_G - (P_j + V_j * dt + 0.5 * R_j * a_j * dt * dt));
+                              V_i * dt + 0.5 * (R_i * a_i - tassel_utils::G) * dt * dt;
+    Eigen::Vector3d pj_in_I =
+        Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() * R_j.transpose() *
+        (pi_in_G - (P_j + V_j * dt + 0.5 * (R_j * a_j - tassel_utils::G) * dt * dt));
     Eigen::Vector3d pj_in_C = ric.transpose() * (pj_in_I - tic);
 
     double norm = pj_in_C.norm();

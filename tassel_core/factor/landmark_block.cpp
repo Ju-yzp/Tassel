@@ -23,9 +23,7 @@ void LandmarkBlock::allocate(int num_frames, int num_obs, int dim) {
     storage_.setZero();
 }
 
-void LandmarkBlock::linearize(
-    const Feature& feature, const State& state, const Eigen::Matrix3d& ric,
-    const Eigen::Vector3d& tic) {
+void LandmarkBlock::linearize(const Feature& feature, const State& state) {
     storage_.setZero();
 
     const std::vector<FeaturePerFrame>& observations = feature.observations;
@@ -34,6 +32,8 @@ void LandmarkBlock::linearize(
     double depth = feature.estimated_depth;
     double inv_depth = 1.0 / depth;
 
+    Eigen::Matrix3d ric = state.ric;
+    Eigen::Vector3d tic = state.tic;
     Eigen::Matrix<double, 2, 6> jacobian_pose_i, jacobian_pose_j;
     Eigen::Matrix<double, 2, 1> jacobian_landmark;
     Eigen::Matrix<double, 2, 1> residual;
@@ -45,9 +45,10 @@ void LandmarkBlock::linearize(
         auto visual_factor = VisualFactor(
             uv_i, uv_j, ric, tic, state.gyro_vec[start_frame_id], state.gyro_vec[target_id],
             state.acc_vec[start_frame_id], state.acc_vec[target_id],
-            state.param_speed_bias[start_frame_id].data(), state.param_speed_bias[target_id].data(),
-            state.param_speed_bias[start_frame_id].data() + 6,
-            state.param_speed_bias[target_id].data() + 6, state.visual_sqrt_info);
+            state.params_speed_bias[start_frame_id].data(),
+            state.params_speed_bias[target_id].data(),
+            state.params_speed_bias[start_frame_id].data() + 6,
+            state.params_speed_bias[target_id].data() + 6, state.visual_sqrt_info);
 
         std::vector<double*> jacobians;
         jacobians.push_back(jacobian_pose_i.data());
@@ -55,8 +56,8 @@ void LandmarkBlock::linearize(
         jacobians.push_back(jacobian_landmark.data());
 
         std::vector<double const*> parameters;
-        parameters.push_back(state.param_poses[start_frame_id].data());
-        parameters.push_back(state.param_poses[target_id].data());
+        parameters.push_back(state.params_pose[start_frame_id].data());
+        parameters.push_back(state.params_pose[target_id].data());
         parameters.push_back(&inv_depth);
         parameters.push_back(&state.param_delay_time);
 

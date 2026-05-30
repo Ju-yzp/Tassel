@@ -40,7 +40,7 @@ min_gradient: 10.0
 enable_statistics: true
 
 reprojection_error_thres: 0.995
-parallax_thres: 90.0
+parallax_thres: 30.0
 max_pnp_needed_num: 25
 tracked_times_thres: 3
 min_pnp_num: 8
@@ -51,18 +51,8 @@ min_translation: 0.16
 min_tracked_pts_num: 20
 
 use_imu: true
-visual_sqrt_info: 340.0
 num_iterations: 10
-solve_time: 0.05
 max_frame_count: 10
-spand_time: 1.0
-repropagate_ba_thres: 0.05
-repropagate_bg_thres: 0.01
-num_threads: 4
-
-optimize_enabled: true
-marginalization_enabled: true
-lambda_initial: 1.0e-3
 
 acc_n: 1.9291286492253038e-02
 acc_w: 8.0363303593887979e-04

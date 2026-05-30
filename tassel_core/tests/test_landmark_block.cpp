@@ -24,27 +24,27 @@ TEST_F(LandmarkBlockTest, AllocateSetsDimensions) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(3, 2, 6);
 
-    EXPECT_EQ(lb.numRows(), 4);
-    EXPECT_EQ(lb.keptRows(), 3);
-    EXPECT_EQ(lb.paddingIdx(), 18);
+    EXPECT_EQ(lb.get_num_rows(), 4);
+    EXPECT_EQ(lb.get_kept_rows(), 3);
+    EXPECT_EQ(lb.get_padding_index(), 18);
 }
 
 TEST_F(LandmarkBlockTest, AllocateSingleFrame) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(1, 1, 6);
 
-    EXPECT_EQ(lb.numRows(), 2);
-    EXPECT_EQ(lb.keptRows(), 1);
-    EXPECT_EQ(lb.paddingIdx(), 6);
+    EXPECT_EQ(lb.get_num_rows(), 2);
+    EXPECT_EQ(lb.get_kept_rows(), 1);
+    EXPECT_EQ(lb.get_padding_index(), 6);
 }
 
 TEST_F(LandmarkBlockTest, AllocateWithDifferentDim) {
     LandmarkBlock lb(15, nullptr);
     lb.allocate(2, 3, 15);
 
-    EXPECT_EQ(lb.numRows(), 6);
-    EXPECT_EQ(lb.keptRows(), 5);
-    EXPECT_EQ(lb.paddingIdx(), 30);
+    EXPECT_EQ(lb.get_num_rows(), 6);
+    EXPECT_EQ(lb.get_kept_rows(), 5);
+    EXPECT_EQ(lb.get_padding_index(), 30);
 }
 
 // Verify storage size is correct
@@ -52,9 +52,9 @@ TEST_F(LandmarkBlockTest, AllocateStorageSize) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(5, 2, 6);
 
-    const auto& s = lb.storage();
+    const auto& s = lb.get_storage();
     EXPECT_EQ(s.rows(), 4);
-    EXPECT_EQ(s.cols(), lb.residualIdx() + 1);
+    EXPECT_EQ(s.cols(), lb.get_residual_index() + 1);
 }
 
 // ── QR: landmark column zeroed below row 0 ─────────────────────────────
@@ -63,20 +63,20 @@ TEST_F(LandmarkBlockTest, QRZerosLandmarkColumn) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(3, 3, 6);
 
-    auto& s = lb.mutableStorage();
+    auto& s = lb.get_mutable_storage();
     std::normal_distribution<double> dist(0.0, 1.0);
     for (int r = 0; r < s.rows(); ++r) {
         for (int c = 0; c < s.cols(); ++c) {
             s(r, c) = dist(rng_);
         }
     }
-    s.col(lb.landmarkIdx()).setRandom();
-    s(0, lb.landmarkIdx()) = 1.0;
+    s.col(lb.get_landmark_index()).setRandom();
+    s(0, lb.get_landmark_index()) = 1.0;
 
     lb.performQR();
 
-    int lm = lb.landmarkIdx();
-    for (int r = 1; r < lb.numRows(); ++r) {
+    int lm = lb.get_landmark_index();
+    for (int r = 1; r < lb.get_num_rows(); ++r) {
         EXPECT_NEAR(s(r, lm), 0.0, kQrTol) << "lm column not zeroed at row " << r;
     }
     EXPECT_NE(std::abs(s(0, lm)), 0.0) << "pivot should be non-zero";
@@ -86,7 +86,7 @@ TEST_F(LandmarkBlockTest, QRFrobeniusNormPreserved) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(2, 4, 6);
 
-    auto& s = lb.mutableStorage();
+    auto& s = lb.get_mutable_storage();
     s.setRandom();
 
     double norm_before = s.norm();
@@ -100,14 +100,14 @@ TEST_F(LandmarkBlockTest, QRZeroLandmarkColumnSkipsAllZeros) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(1, 3, 6);
 
-    auto& s = lb.mutableStorage();
+    auto& s = lb.get_mutable_storage();
     s.setRandom();
-    s.col(lb.landmarkIdx()).setZero();
+    s.col(lb.get_landmark_index()).setZero();
 
     lb.performQR();
 
-    for (int r = 0; r < lb.numRows(); ++r) {
-        EXPECT_NEAR(s(r, lb.landmarkIdx()), 0.0, kQrTol);
+    for (int r = 0; r < lb.get_num_rows(); ++r) {
+        EXPECT_NEAR(s(r, lb.get_landmark_index()), 0.0, kQrTol);
     }
 }
 
@@ -117,12 +117,12 @@ TEST_F(LandmarkBlockTest, QRSingleObservation) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(2, 1, 6);
 
-    auto& s = lb.mutableStorage();
+    auto& s = lb.get_mutable_storage();
     s.setRandom();
 
     lb.performQR();
 
-    EXPECT_NEAR(s(1, lb.landmarkIdx()), 0.0, kQrTol);
+    EXPECT_NEAR(s(1, lb.get_landmark_index()), 0.0, kQrTol);
 }
 
 // ── QR: verify the Givens rotation is correct on a known 2-row case ────
@@ -131,14 +131,14 @@ TEST_F(LandmarkBlockTest, QRGivensRotationExact) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(2, 1, 6);
 
-    auto& s = lb.mutableStorage();
+    auto& s = lb.get_mutable_storage();
     s.setZero();
 
     // Set up known values: row0 = [1,2,3], row1 = [4,5,6]
     // landmark column is at lm_idx (after padding)
-    int lm = lb.landmarkIdx();
-    int res = lb.residualIdx();
-    int pad = lb.paddingIdx();
+    int lm = lb.get_landmark_index();
+    int res = lb.get_residual_index();
+    int pad = lb.get_padding_index();
 
     s(0, 0) = 1;
     s(0, lm) = 2;
@@ -173,9 +173,9 @@ TEST_F(LandmarkBlockTest, QRThreeRowCase) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(2, 2, 6);
 
-    auto& s = lb.mutableStorage();
+    auto& s = lb.get_mutable_storage();
     s.setZero();
-    int lm = lb.landmarkIdx();
+    int lm = lb.get_landmark_index();
 
     s(0, lm) = 1;
     s(1, lm) = 3;
@@ -184,7 +184,7 @@ TEST_F(LandmarkBlockTest, QRThreeRowCase) {
 
     lb.performQR();
 
-    for (int r = 1; r < lb.numRows(); ++r) {
+    for (int r = 1; r < lb.get_num_rows(); ++r) {
         EXPECT_NEAR(s(r, lm), 0.0, kQrTol);
     }
     EXPECT_NE(std::abs(s(0, lm)), 0.0);
@@ -196,13 +196,13 @@ TEST_F(LandmarkBlockTest, GetDenseExtractsCorrectRows) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(2, 3, 6);
 
-    auto& s = lb.mutableStorage();
+    auto& s = lb.get_mutable_storage();
     s.setRandom();
 
     lb.performQR();
 
-    int kept = lb.keptRows();
-    int pad = lb.paddingIdx();
+    int kept = lb.get_kept_rows();
+    int pad = lb.get_padding_index();
 
     Eigen::MatrixXd Q2Jp(kept, pad);
     Eigen::VectorXd Q2r(kept);
@@ -212,7 +212,7 @@ TEST_F(LandmarkBlockTest, GetDenseExtractsCorrectRows) {
         for (int c = 0; c < pad; ++c) {
             EXPECT_DOUBLE_EQ(Q2Jp(r, c), s(r + 1, c));
         }
-        EXPECT_DOUBLE_EQ(Q2r(r), s(r + 1, lb.residualIdx()));
+        EXPECT_DOUBLE_EQ(Q2r(r), s(r + 1, lb.get_residual_index()));
     }
 }
 
@@ -220,13 +220,13 @@ TEST_F(LandmarkBlockTest, GetDenseWithOffsetPreservesPrefix) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(1, 2, 6);
 
-    auto& s = lb.mutableStorage();
+    auto& s = lb.get_mutable_storage();
     s.setRandom();
 
     lb.performQR();
 
-    int kept = lb.keptRows();
-    int pad = lb.paddingIdx();
+    int kept = lb.get_kept_rows();
+    int pad = lb.get_padding_index();
     int offset = 3;
 
     Eigen::MatrixXd Q2Jp(offset + kept, pad);
@@ -245,7 +245,7 @@ TEST_F(LandmarkBlockTest, GetDenseWithOffsetPreservesPrefix) {
         for (int c = 0; c < pad; ++c) {
             EXPECT_DOUBLE_EQ(Q2Jp(offset + r, c), s(r + 1, c));
         }
-        EXPECT_DOUBLE_EQ(Q2r(offset + r), s(r + 1, lb.residualIdx()));
+        EXPECT_DOUBLE_EQ(Q2r(offset + r), s(r + 1, lb.get_residual_index()));
     }
 }
 
@@ -263,21 +263,21 @@ TEST_F(LandmarkBlockTest, MarginalizedSystemConsistency) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(2, 3, 6);
 
-    auto& s = lb.mutableStorage();
-    int pad = lb.paddingIdx();
-    int lm = lb.landmarkIdx();
-    int res = lb.residualIdx();
+    auto& s = lb.get_mutable_storage();
+    int pad = lb.get_padding_index();
+    int lm = lb.get_landmark_index();
+    int res = lb.get_residual_index();
 
     // Construct a consistent system: r = Jp * dx_true + Jl * dl_true
     Eigen::VectorXd dx_true = Eigen::VectorXd::Random(pad);
     double dl_true = 2.5;
     s.setRandom();
-    s.col(res) = s.block(0, 0, lb.numRows(), pad) * dx_true + s.col(lm) * dl_true;
+    s.col(res) = s.block(0, 0, lb.get_num_rows(), pad) * dx_true + s.col(lm) * dl_true;
 
     lb.performQR();
 
     // The true state must satisfy the marginalized constraints (rows 1+)
-    for (int r = 1; r < lb.numRows(); ++r) {
+    for (int r = 1; r < lb.get_num_rows(); ++r) {
         double pred = (s.block(r, 0, 1, pad) * dx_true).value();
         double obs = s(r, res);
         EXPECT_NEAR(pred, obs, 1e-12) << "True state violated marginalized constraint at row " << r;
@@ -289,7 +289,7 @@ TEST_F(LandmarkBlockTest, MarginalizedSystemConsistency) {
     EXPECT_NEAR(row0_residual, 0.0, 1e-12);
 
     // Verify landmark column is zeroed below row 0
-    for (int r = 1; r < lb.numRows(); ++r) {
+    for (int r = 1; r < lb.get_num_rows(); ++r) {
         EXPECT_NEAR(s(r, lm), 0.0, 1e-12);
     }
 }
@@ -301,7 +301,7 @@ TEST_F(LandmarkBlockTest, QRStressTest) {
     int num_obs = 20;
     lb.allocate(5, num_obs, 6);
 
-    auto& s = lb.mutableStorage();
+    auto& s = lb.get_mutable_storage();
     std::normal_distribution<double> dist(0.0, 10.0);
     for (int r = 0; r < s.rows(); ++r) {
         for (int c = 0; c < s.cols(); ++c) {
@@ -312,8 +312,8 @@ TEST_F(LandmarkBlockTest, QRStressTest) {
     double norm_before = s.norm();
     lb.performQR();
 
-    int lm = lb.landmarkIdx();
-    for (int r = 1; r < lb.numRows(); ++r) {
+    int lm = lb.get_landmark_index();
+    for (int r = 1; r < lb.get_num_rows(); ++r) {
         EXPECT_NEAR(s(r, lm), 0.0, kQrTol);
     }
     EXPECT_NEAR(s.norm(), norm_before, 1e-9);

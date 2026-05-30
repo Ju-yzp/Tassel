@@ -8,13 +8,11 @@
 #include <opencv2/core.hpp>
 #include <vector>
 
+#include "tassel_utils/constants.h"
+
 namespace tassel_utils {
-const int O_P = 0;
-const int O_R = 3;
-const int O_V = 6;
-const int O_BA = 9;
-const int O_BG = 12;
-const Eigen::Vector3d G{0.0, 0.0, 9.8};
+
+using MatrixRowMajor = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 
 struct IMUMeasurement {
     Eigen::Vector3d acc;

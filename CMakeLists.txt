@@ -1,14 +1,13 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.22)
 project(
   tassel
   VERSION 1.0.0
   LANGUAGES CXX)
 
 if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Debug)
+  set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# ── Build options ─────────────────────────────────────────────────────────
 option(TASSEL_ENABLE_ASAN
        "Enable AddressSanitizer (leak / OOB / UAF detection)" OFF)
 option(TASSEL_ENABLE_PROFILING
@@ -21,13 +20,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# ── Profiling flags (VTune / perf) ────────────────────────────────────────
 if(TASSEL_ENABLE_PROFILING)
   message(STATUS "Profiling support: ENABLED  (-fno-omit-frame-pointer -g)")
   add_compile_options(-fno-omit-frame-pointer -g)
 endif()
 
-# ── AddressSanitizer ──────────────────────────────────────────────────────
 if(TASSEL_ENABLE_ASAN)
   message(STATUS "AddressSanitizer: ENABLED")
   add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g -O)
@@ -42,6 +39,7 @@ find_package(yaml-cpp REQUIRED)
 find_package(Sophus REQUIRED)
 find_package(TBB REQUIRED)
 find_package(Ceres REQUIRED)
+find_package(fastcdr REQUIRED)
 
 add_library(tassel_deps INTERFACE)
 target_link_libraries(
@@ -57,6 +55,8 @@ target_link_libraries(
             Sophus::Sophus
             TBB::tbb
             Ceres::ceres)
+
+enable_testing()
 
 add_subdirectory(tassel_utils)
 add_subdirectory(tassel_core)

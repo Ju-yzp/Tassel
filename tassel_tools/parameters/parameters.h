@@ -45,18 +45,8 @@ struct Parameters {
         T_cam_imu_map[1] = parser.as<Eigen::Matrix4d>("cam1", "T_cam_imu").inverse();
 
         use_imu = parser.as<bool>("use_imu");
-        visual_sqrt_info = parser.as<double>("visual_sqrt_info");
         num_iterations = parser.as<int>("num_iterations");
-        solve_time = parser.as<double>("solve_time");
         max_frame_count = parser.as<size_t>("max_frame_count");
-        spand_time = parser.as<double>("spand_time");
-        repropagate_ba_thres = parser.as<double>("repropagate_ba_thres");
-        repropagate_bg_thres = parser.as<double>("repropagate_bg_thres");
-        num_threads = parser.as<int>("num_threads");
-
-        optimize_enabled = parser.as<bool>("optimize_enabled");
-        marginalization_enabled = parser.as<bool>("marginalization_enabled");
-        lambda_initial = parser.as<double>("lambda_initial");
 
         acc_n = parser.as<double>("acc_n");
         acc_w = parser.as<double>("acc_w");
@@ -89,19 +79,9 @@ struct Parameters {
     double max_depth;
 
     bool use_imu;
-    double visual_sqrt_info;
     int num_iterations;
-    double solve_time;
     int tracked_times_thres;
     size_t max_frame_count;
-    double spand_time;
-    double repropagate_ba_thres;
-    double repropagate_bg_thres;
-    int num_threads;
-
-    bool optimize_enabled;
-    bool marginalization_enabled;
-    double lambda_initial;
 
     double acc_n, acc_w;
     double gyr_n, gyr_w;

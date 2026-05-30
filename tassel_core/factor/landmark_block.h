@@ -5,10 +5,9 @@
 
 #include <ceres/loss_function.h>
 #include "frond_end/feature.h"
+#include "tassel_utils/types.h"
 
 namespace tassel_core {
-
-using MatrixRowMajor = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 
 class LandmarkBlock {
 public:
@@ -16,30 +15,28 @@ public:
 
     void allocate(int num_frames, int num_obs, int dim);
 
-    void linearize(
-        const Feature& feature, const State& state, const Eigen::Matrix3d& ric,
-        const Eigen::Vector3d& tic);
+    void linearize(const Feature& feature, const State& state);
 
     void performQR();
 
     void get_dense_Q2Jp_Q2r(Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r, int start_row) const;
 
-    int numRows() const { return num_rows_; }
+    inline int get_num_rows() const { return num_rows_; }
 
-    int keptRows() const { return num_rows_ - 1; }
+    inline int get_kept_rows() const { return num_rows_ - 1; }
 
-    int paddingIdx() const { return padding_idx_; }
+    inline int get_padding_index() const { return padding_idx_; }
 
-    int landmarkIdx() const { return lm_idx_; }
+    inline int get_landmark_index() const { return lm_idx_; }
 
-    int residualIdx() const { return res_idx_; }
+    inline int get_residual_index() const { return res_idx_; }
 
-    MatrixRowMajor& mutableStorage() { return storage_; }
+    tassel_utils::MatrixRowMajor& get_mutable_storage() { return storage_; }
 
-    const MatrixRowMajor& storage() const { return storage_; }
+    const tassel_utils::MatrixRowMajor& get_storage() const { return storage_; }
 
 private:
-    MatrixRowMajor storage_;
+    tassel_utils::MatrixRowMajor storage_;
     int lm_idx_;
     int res_idx_;
     int padding_idx_;

@@ -22,18 +22,17 @@ public:
         size_t frame_count, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
 
     void triangulate(
-        const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
-        const Eigen::Matrix3d& ric1 = Eigen::Matrix3d::Identity(),
+        const State& state, const Eigen::Matrix3d& ric1 = Eigen::Matrix3d::Identity(),
         const Eigen::Vector3d& tic1 = Eigen::Vector3d::Zero());
 
     // 仅适用于 VO 模式
-    void initPoseByPNP(State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
+    void initPoseByPNP(State& state);
 
-    void removeOldest(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
+    void removeOldest(const State& state);
 
     void removeNewest(size_t frame_count);
 
-    void removeOutliers(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
+    void removeOutliers(const State& state);
 
     void reset();
 
@@ -41,13 +40,9 @@ public:
 
     std::vector<Feature*> collectMarginalizationFeatures();
 
-    std::vector<Eigen::Vector3d> getMonoPointCloud(
-        const State& state, const Eigen::Matrix3d& ric = Eigen::Matrix3d::Identity(),
-        const Eigen::Vector3d& tic = Eigen::Vector3d::Zero()) const;
+    std::vector<Eigen::Vector3d> getMonoPointCloud(const State& state) const;
 
-    std::vector<Eigen::Vector3d> getStereoPointCloud(
-        const State& state, const Eigen::Matrix3d& ric = Eigen::Matrix3d::Identity(),
-        const Eigen::Vector3d& tic = Eigen::Vector3d::Zero()) const;
+    std::vector<Eigen::Vector3d> getStereoPointCloud(const State& state) const;
 
     std::unordered_map<int, Feature>& testFeatures() { return features_; }
 

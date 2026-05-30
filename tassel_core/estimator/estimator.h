@@ -1,5 +1,5 @@
-#ifndef TASSEL_CORE_ESTIMATOR_VIO_ESTIMATOR_H_
-#define TASSEL_CORE_ESTIMATOR_VIO_ESTIMATOR_H_
+#ifndef TASSEL_CORE_ESTIMATOR_ESTIMATOR_H_
+#define TASSEL_CORE_ESTIMATOR_ESTIMATOR_H_
 
 #include <Eigen/Core>
 #include <functional>
@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "estimator/estimator_option.h"
-#include "factor/marginlization_sqrt.h"
+#include "factor/integrator_base.h"
 #include "frond_end/feature_manager.h"
 #include "state/state.h"
 #include "tassel_utils/types.h"
@@ -17,9 +17,9 @@
 
 namespace tassel_core {
 
-class VioEstimator {
+class Estimator {
 public:
-    VioEstimator(
+    Estimator(
         const EstimatorOption& option, std::shared_ptr<State> state,
         std::shared_ptr<FeatureManager> fm,
         const Eigen::Matrix3d& ric = Eigen::Matrix3d::Identity(),
@@ -34,9 +34,6 @@ public:
     void setPoseCallback(std::function<void(double, const Sophus::SE3d&)> cb) {
         pose_callback_ = std::move(cb);
     }
-    void setPathCallback(std::function<void(double, const Sophus::SE3d&)> cb) {
-        path_callback_ = std::move(cb);
-    }
     void setMonoCloudCallback(std::function<void(double, const std::vector<Eigen::Vector3d>&)> cb) {
         mono_cloud_callback_ = std::move(cb);
     }
@@ -45,9 +42,9 @@ public:
         stereo_cloud_callback_ = std::move(cb);
     }
 
-private:
     void optimize();
-    void marginalize();
+
+private:
     void slideWindow();
     void initializeImu(const std::vector<tassel_utils::IMUMeasurement>& imu_measurements);
 
@@ -56,8 +53,6 @@ private:
     EstimatorOption option_;
     std::shared_ptr<State> state_;
     std::shared_ptr<FeatureManager> feature_manager_;
-    std::unique_ptr<MargLinData> marg_lin_data_;
-    std::vector<std::array<double, 6>> marg_poses_linearized_;
 
     Eigen::Matrix3d ric_;
     Eigen::Vector3d tic_;
@@ -66,18 +61,15 @@ private:
 
     Eigen::Matrix<double, 18, 18> noise_;
 
-    // IMU gravity initialization
     bool imu_initialized_ = false;
-    bool td_estimated_ = false;
     double init_ts_ = -1;
     std::vector<tassel_utils::IMUMeasurement> imu_init_buf_;
 
-    // callbacks
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
-    std::function<void(double, const Sophus::SE3d&)> path_callback_;
     std::function<void(double, const std::vector<Eigen::Vector3d>&)> mono_cloud_callback_;
     std::function<void(double, const std::vector<Eigen::Vector3d>&)> stereo_cloud_callback_;
 
+    std::vector<MidPointIntegrator> preintegrators_;
     double last_ts_ = -1;
     Eigen::Vector3d last_imu_acc_;
     Eigen::Vector3d last_imu_gyro_;

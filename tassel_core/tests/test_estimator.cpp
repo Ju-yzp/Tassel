@@ -1,5 +1,3 @@
-#include <depthai/depthai.hpp>
-
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -7,8 +5,8 @@
 #include <memory>
 
 #include "cam/camera_factory.h"
+#include "estimator/estimator.h"
 #include "estimator/estimator_option.h"
-#include "estimator/vio_estimator.h"
 #include "frond_end/feature_manager.h"
 #include "frond_end/feature_tracker.h"
 #include "parameters/parameters.h"
@@ -18,6 +16,8 @@
 
 #include <buffer.h>
 #include <synchronizer.h>
+
+#include <depthai/depthai.hpp>
 
 Eigen::Matrix3d ric, ric1;
 Eigen::Vector3d tic, tic1;
@@ -167,33 +167,34 @@ int main(int argc, char** argv) {
     option.num_iterations = params.num_iterations;
     option.min_depth = params.min_depth;
     option.max_depth = params.max_depth;
-
+    option.acc_n = params.acc_n;
+    option.acc_w = params.acc_w;
+    option.gyr_n = params.gyr_n;
+    option.gyr_w = params.gyr_w;
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count));
     auto feature_manager = std::make_shared<FeatureManager>(
         params.reprojection_error_thres, params.parallax_thres, params.tracked_times_thres,
         params.min_tracked_pts_num, params.min_pnp_num, params.min_pnp_inliers_ratio,
         params.min_translation, params.min_depth, params.max_depth);
 
-    VioEstimator vio_estimator(option, state, feature_manager, ric, tic, ric1, tic1);
+    Estimator estimator(option, state, feature_manager, ric, tic, ric1, tic1);
 
-    vio_estimator.setPoseCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
+    estimator.setPoseCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
         viewer->publishOdometry("odom/camera", pose.translation(), pose.unit_quaternion());
-    });
-    vio_estimator.setPathCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
         viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion());
     });
-    vio_estimator.setMonoCloudCallback(
+    estimator.setMonoCloudCallback(
         [&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
             viewer->publishPointCloud("landmarks/mono", pts);
         });
-    vio_estimator.setStereoCloudCallback(
+    estimator.setStereoCloudCallback(
         [&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
             viewer->publishPointCloud("landmarks/stereo", pts);
         });
 
     rclcpp::Rate rate(30);
 
-    while (rclcpp::ok() && !vio_estimator.isTdEstimated()) {
+    while (rclcpp::ok()) {
         SyncType::DataPackage package;
         if (sync.pop_package(package)) {
             auto& stereo_ptr = package.get<0>();
@@ -208,7 +209,7 @@ int main(int argc, char** argv) {
                     tracker.stereoTracking(0, stereo_ptr->left_img, 1, stereo_ptr->right_img);
             }
 
-            vio_estimator.processMeasurement(ts, feature_frame, imu_vec);
+            estimator.processMeasurement(ts, feature_frame, imu_vec);
 
             cv::Mat disp_left, disp_right;
             cv::cvtColor(stereo_ptr->left_img, disp_left, cv::COLOR_GRAY2BGR);

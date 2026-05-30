@@ -10,6 +10,7 @@
 #include "factor/integrator_base.h"
 #include "factor/landmark_block.h"
 #include "frond_end/feature_manager.h"
+#include "imu_block.h"
 #include "tassel_utils/macros.h"
 
 namespace tassel_core {
@@ -50,14 +51,30 @@ public:
                 static_cast<int>(marg_features[idx]->observations.size()) - 1,
                 preintegrators_.empty() ? 6 : 15);
         }
+        imu_blocks_.resize(preintegrators_.size());
+        for (size_t idx = 0; idx < preintegrators_.size(); ++idx) {
+            imu_blocks_[idx].allocate(preintegrators_[idx]);
+        }
     }
 
     void linearize() {
         const std::vector<Feature*> marg_features =
             feature_manager_->collectMarginalizationFeatures();
+
+        for (size_t idx = 0; idx < marg_features.size(); ++idx) {
+            auto& lmb = landmark_blocks_[idx];
+            lmb.linearize(*marg_features[idx], *state_);
+        }
+
+        // for () {
+        // }
     }
 
-    void get_dense_Jp_b(Eigen::MatrixXd Jp, Eigen::VectorXd b) {}
+    void get_dense_Jp_b(Eigen::MatrixXd Jp, Eigen::VectorXd b) {
+        // for () {
+
+        // }
+    }
 
 private:
     std::shared_ptr<FeatureManager> feature_manager_;
@@ -66,7 +83,7 @@ private:
     std::shared_ptr<State> state_;
 
     std::vector<LandmarkBlock> landmark_blocks_;
-
+    std::vector<IMUBlock<Derived>> imu_blocks_;
     std::vector<IntegratorBase<Derived>*> preintegrators_;
 };
 }  // namespace tassel_core

@@ -31,6 +31,7 @@ public:
     void reset(
         Eigen::Vector3d ba_lin, Eigen::Vector3d bg_lin, Eigen::Matrix<double, 18, 18> init_noise) {
         buffer.clear();
+        sum_dt = 0.0;
         ba_linearized = ba_lin;
         bg_linearized = bg_lin;
         final_delta_p = Eigen::Vector3d::Zero();
@@ -63,6 +64,8 @@ public:
     inline Eigen::Matrix3d get_dv_dba() { return jacobian.template block<3, 3>(6, 9); }
 
     std::vector<tassel_utils::IMUMeasurement> buffer;
+
+    double sum_dt;
 
     // 偏置线性化点
     Eigen::Vector3d ba_linearized;
@@ -136,6 +139,7 @@ public:
         final_delta_q = temp_delta_q;
         final_delta_p = temp_delta_p;
         final_delta_v = temp_delta_v;
+        sum_dt += dt;
     }
 };
 

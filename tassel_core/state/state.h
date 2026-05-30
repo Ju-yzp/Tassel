@@ -24,8 +24,8 @@ struct State {
         Vs.resize(max_frame_count, Eigen::Vector3d::Zero());
         Bas.resize(max_frame_count, Eigen::Vector3d::Zero());
         Bgs.resize(max_frame_count, Eigen::Vector3d::Zero());
-        param_poses.resize(max_frame_count, std::array<double, 6>{0, 0, 0, 0, 0, 0});
-        param_speed_bias.resize(max_frame_count, std::array<double, 9>{0, 0, 0, 0, 0, 0, 0, 0, 0});
+        params_pose.resize(max_frame_count, std::array<double, 6>{0, 0, 0, 0, 0, 0});
+        params_speed_bias.resize(max_frame_count, std::array<double, 9>{0, 0, 0, 0, 0, 0, 0, 0, 0});
         delay_time = 0.0;
         param_delay_time = 0.0;
         if (max_frame_count < 1) {
@@ -55,30 +55,30 @@ struct State {
             phi = Sophus::SO3d::vee(R - R.transpose()) * (theta / (2.0 * sin_theta));
         }
 
-        param_poses[idx][0] = phi.x();
-        param_poses[idx][1] = phi.y();
-        param_poses[idx][2] = phi.z();
-        param_poses[idx][3] = Ps[idx].x();
-        param_poses[idx][4] = Ps[idx].y();
-        param_poses[idx][5] = Ps[idx].z();
+        params_pose[idx][0] = phi.x();
+        params_pose[idx][1] = phi.y();
+        params_pose[idx][2] = phi.z();
+        params_pose[idx][3] = Ps[idx].x();
+        params_pose[idx][4] = Ps[idx].y();
+        params_pose[idx][5] = Ps[idx].z();
 
         for (int d = 0; d < 3; ++d) {
-            param_speed_bias[idx][d] = Vs[idx][d];
-            param_speed_bias[idx][d + 3] = Bas[idx][d];
-            param_speed_bias[idx][d + 6] = Bgs[idx][d];
+            params_speed_bias[idx][d] = Vs[idx][d];
+            params_speed_bias[idx][d + 3] = Bas[idx][d];
+            params_speed_bias[idx][d + 6] = Bgs[idx][d];
         }
     }
 
     void paramToState(int idx) {
-        Eigen::Vector3d phi(param_poses[idx][0], param_poses[idx][1], param_poses[idx][2]);
+        Eigen::Vector3d phi(params_pose[idx][0], params_pose[idx][1], params_pose[idx][2]);
         Sophus::SO3d R_so3 = Sophus::SO3d::exp(phi);
         Rs[idx] = R_so3.matrix();
-        Ps[idx] = Eigen::Vector3d(param_poses[idx][3], param_poses[idx][4], param_poses[idx][5]);
+        Ps[idx] = Eigen::Vector3d(params_pose[idx][3], params_pose[idx][4], params_pose[idx][5]);
 
         for (int d = 0; d < 3; ++d) {
-            Vs[idx][d] = param_speed_bias[idx][d];
-            Bas[idx][d] = param_speed_bias[idx][d + 3];
-            Bgs[idx][d] = param_speed_bias[idx][d + 6];
+            Vs[idx][d] = params_speed_bias[idx][d];
+            Bas[idx][d] = params_speed_bias[idx][d + 3];
+            Bgs[idx][d] = params_speed_bias[idx][d + 6];
         }
     }
 
@@ -94,6 +94,11 @@ struct State {
             paramToState(i);
         }
         delay_time = param_delay_time;
+    }
+
+    void saveStateWithLinearized() {
+        storage_poses_lin = params_pose;
+        storage_speed_bias_lin = params_speed_bias;
     }
 
     int max_frame_count;
@@ -117,12 +122,16 @@ struct State {
     std::vector<Eigen::Vector3d> gyro_vec;
 
     // 状态变量转换后的ceres优化变量
-    std::vector<std::array<double, 6>> param_poses;
-    std::vector<std::array<double, 9>> param_speed_bias;  // 线速度 / 加速度偏置 / 角速度偏置
+    std::vector<std::array<double, 6>> params_pose;
+    std::vector<std::array<double, 9>> params_speed_bias;  // 线速度 / 加速度偏置 / 角速度偏置
     double param_delay_time;
 
     //  视觉因子信息矩阵
     Eigen::Matrix2d visual_sqrt_info;
+
+    // 旧状态(线性化点)
+    std::vector<std::array<double, 6>> storage_poses_lin;
+    std::vector<std::array<double, 9>> storage_speed_bias_lin;
 };
 
 }  // namespace tassel_core
