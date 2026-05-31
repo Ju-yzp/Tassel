@@ -16,7 +16,7 @@
 #include "feature.h"
 #include "feature_manager.h"
 #include "state/state.h"
-#include "tassel_utils/types.h"
+#include "tassel_utils/constants.h"
 
 #include <spdlog/spdlog.h>
 
@@ -199,6 +199,7 @@ void FeatureManager::removeNewest(size_t frame_count) {
 }
 
 void FeatureManager::removeOutliers(const State& state) {
+    double td = state.delay_time;
     std::set<int> removed_ids;
     for (auto& [id, feature] : features_) {
         double depth = feature.estimated_depth;
@@ -209,18 +210,31 @@ void FeatureManager::removeOutliers(const State& state) {
         }
 
         int start_frame_id = feature.start_frame_id;
-        Eigen::Matrix3d R_i = state.Rs[start_frame_id];
-        Eigen::Vector3d P_i = state.Ps[start_frame_id];
+        Eigen::Vector3d w_i = state.gyro_vec[start_frame_id];
+        Eigen::Vector3d a_i = state.acc_vec[start_frame_id];
+        Eigen::Vector3d Bg_i = state.Bgs[start_frame_id];
+        Eigen::Vector3d V_i = state.Vs[start_frame_id];
+        Eigen::Matrix3d R_i_td =
+            state.Rs[start_frame_id] * Sophus::SO3d::exp((w_i - Bg_i) * td).matrix();
+        Eigen::Vector3d P_i_td =
+            state.Ps[start_frame_id] + V_i * td + 0.5 * state.Rs[start_frame_id] * a_i * td * td;
+
         Eigen::Vector3d pi_in_C = depth * observations[0].uv;
         Eigen::Vector3d pi_in_I = state.ric * pi_in_C + state.tic;
-        Eigen::Vector3d pi_in_W = R_i * pi_in_I + P_i;
+        Eigen::Vector3d pi_in_W = R_i_td * pi_in_I + P_i_td;
 
         double cosine_sum = 0.0;
         for (size_t k = 1; k < observations.size(); ++k) {
             int j = start_frame_id + static_cast<int>(k);
-            Eigen::Matrix3d R_j = state.Rs[j];
-            Eigen::Vector3d P_j = state.Ps[j];
-            Eigen::Vector3d pj_in_I = R_j.transpose() * (pi_in_W - P_j);
+            Eigen::Vector3d w_j = state.gyro_vec[j];
+            Eigen::Vector3d a_j = state.acc_vec[j];
+            Eigen::Vector3d Bg_j = state.Bgs[j];
+            Eigen::Vector3d V_j = state.Vs[j];
+            Eigen::Matrix3d R_j_td_inv =
+                Sophus::SO3d::exp((Bg_j - w_j) * td).matrix() * state.Rs[j].transpose();
+            Eigen::Vector3d P_j_td = state.Ps[j] + V_j * td + 0.5 * state.Rs[j] * a_j * td * td;
+
+            Eigen::Vector3d pj_in_I = R_j_td_inv * (pi_in_W - P_j_td);
             Eigen::Vector3d pj_in_C = state.ric.transpose() * (pj_in_I - state.tic);
             double cos_angle = pj_in_C.normalized().dot(observations[k].uv.normalized());
             cosine_sum += cos_angle;

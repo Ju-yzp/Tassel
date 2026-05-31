@@ -55,12 +55,12 @@ struct State {
             phi = Sophus::SO3d::vee(R - R.transpose()) * (theta / (2.0 * sin_theta));
         }
 
-        params_pose[idx][0] = phi.x();
-        params_pose[idx][1] = phi.y();
-        params_pose[idx][2] = phi.z();
-        params_pose[idx][3] = Ps[idx].x();
-        params_pose[idx][4] = Ps[idx].y();
-        params_pose[idx][5] = Ps[idx].z();
+        params_pose[idx][0] = Ps[idx].x();
+        params_pose[idx][1] = Ps[idx].y();
+        params_pose[idx][2] = Ps[idx].z();
+        params_pose[idx][3] = phi.x();
+        params_pose[idx][4] = phi.y();
+        params_pose[idx][5] = phi.z();
 
         for (int d = 0; d < 3; ++d) {
             params_speed_bias[idx][d] = Vs[idx][d];
@@ -70,10 +70,10 @@ struct State {
     }
 
     void paramToState(int idx) {
-        Eigen::Vector3d phi(params_pose[idx][0], params_pose[idx][1], params_pose[idx][2]);
+        Ps[idx] = Eigen::Vector3d(params_pose[idx][0], params_pose[idx][1], params_pose[idx][2]);
+        Eigen::Vector3d phi(params_pose[idx][3], params_pose[idx][4], params_pose[idx][5]);
         Sophus::SO3d R_so3 = Sophus::SO3d::exp(phi);
         Rs[idx] = R_so3.matrix();
-        Ps[idx] = Eigen::Vector3d(params_pose[idx][3], params_pose[idx][4], params_pose[idx][5]);
 
         for (int d = 0; d < 3; ++d) {
             Vs[idx][d] = params_speed_bias[idx][d];

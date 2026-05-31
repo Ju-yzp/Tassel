@@ -5,6 +5,7 @@
 #include <Eigen/Core>
 #include <cstddef>
 #include <memory>
+#include <sophus/so3.hpp>
 #include <vector>
 
 #include "factor/integrator_base.h"
@@ -60,20 +61,46 @@ public:
     void linearize() {
         const std::vector<Feature*> marg_features =
             feature_manager_->collectMarginalizationFeatures();
-
+        num_cols = state_->max_frame_count * 15;
+        num_rows = 0;
         for (size_t idx = 0; idx < marg_features.size(); ++idx) {
             auto& lmb = landmark_blocks_[idx];
             lmb.linearize(*marg_features[idx], *state_);
+            num_rows += lmb.get_kept_rows();
         }
 
-        // for () {
-        // }
+        for (size_t i = 0; i < imu_blocks_.size(); ++i) {
+            auto& imu_block = imu_blocks_[i];
+            Eigen::Vector3d Q_i = Sophus::SO3d(state_->Rs[i]).log();
+            Eigen::Vector3d Q_j = Sophus::SO3d(state_->Rs[i + 1]).log();
+            imu_block.linearize(
+                state_->Vs[i], state_->Vs[i + 1], state_->Ps[i], state_->Ps[i + 1], Q_i, Q_j,
+                state_->Bas[i], state_->Bas[i + 1], state_->Bgs[i], state_->Bgs[i + 1]);
+            num_rows += 15;
+        }
     }
 
-    void get_dense_Jp_b(Eigen::MatrixXd Jp, Eigen::VectorXd b) {
-        // for () {
+    void performQRAll() {
+        for (auto& lmb : landmark_blocks_) {
+            lmb.performQR();
+        }
+    }
 
-        // }
+    void get_dense_Jp_b(Eigen::MatrixXd& Jp, Eigen::VectorXd& b) {
+        Jp = Eigen::MatrixXd::Zero(num_rows, num_cols);
+        b = Eigen::VectorXd::Zero(num_rows);
+        int rows = 0;
+        for (size_t idx = 0; idx < landmark_blocks_.size(); ++idx) {
+            auto& lmb = landmark_blocks_[idx];
+            lmb.get_dense_Q2Jp_Q2r(Jp, b, rows);
+            rows += lmb.get_kept_rows();
+        }
+
+        for (size_t i = 0; i < imu_blocks_.size(); ++i) {
+            auto& imu_block = imu_blocks_[i];
+            imu_block.get_dense_Jp_b(Jp, b, rows, i * 15);
+            rows += 15;
+        }
     }
 
 private:
@@ -85,6 +112,8 @@ private:
     std::vector<LandmarkBlock> landmark_blocks_;
     std::vector<IMUBlock<Derived>> imu_blocks_;
     std::vector<IntegratorBase<Derived>*> preintegrators_;
+    int num_rows;
+    int num_cols;
 };
 }  // namespace tassel_core
 

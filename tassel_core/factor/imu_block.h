@@ -15,7 +15,9 @@ class IMUBlock {
 public:
     void allocate(IntegratorBase<Derived>* integrator) {
         TASSEL_ASSERT(integrator != nullptr);
-        imu_factor_ = std::make_unique<IMUFactor<Derived>>(integrator);
+        auto pint_ptr =
+            std::shared_ptr<IntegratorBase<Derived>>(integrator, [](IntegratorBase<Derived>*) {});
+        imu_factor_ = std::make_unique<IMUFactor<Derived>>(pint_ptr);
     }
 
     void linearize(
@@ -24,10 +26,10 @@ public:
         Eigen::Vector3d Bg_i, Eigen::Vector3d Bg_j) {
         std::array<double, 6> param_pose_i, param_pose_j;
         std::array<double, 9> param_speed_bias_i, param_speed_bias_j;
-        param_pose_i = {Q_i.x(), Q_i.y(), Q_i.z(), P_i.x(), P_i.y(), P_i.z()};
+        param_pose_i = {P_i.x(), P_i.y(), P_i.z(), Q_i.x(), Q_i.y(), Q_i.z()};
         param_speed_bias_i = {V_i.x(),  V_i.y(),  V_i.z(),  Ba_i.x(), Ba_i.y(),
                               Ba_i.z(), Bg_i.x(), Bg_i.y(), Bg_i.z()};
-        param_pose_j = {Q_i.x(), Q_i.y(), Q_i.z(), P_i.x(), P_i.y(), P_i.z()};
+        param_pose_j = {P_j.x(), P_j.y(), P_j.z(), Q_j.x(), Q_j.y(), Q_j.z()};
         param_speed_bias_j = {V_j.x(),  V_j.y(),  V_j.z(),  Ba_j.x(), Ba_j.y(),
                               Ba_j.z(), Bg_j.x(), Bg_j.y(), Bg_j.z()};
 
@@ -52,8 +54,8 @@ public:
         b_ = residual;
         Jp_.template block<15, 6>(0, 0) = jacobian_pose_i;
         Jp_.template block<15, 9>(0, 6) = jacobian_speed_bias_i;
-        Jp_.template block<15, 6>(0, 21) = jacobian_pose_j;
-        Jp_.template block<15, 9>(0, 27) = jacobian_speed_bias_j;
+        Jp_.template block<15, 6>(0, 15) = jacobian_pose_j;
+        Jp_.template block<15, 9>(0, 21) = jacobian_speed_bias_j;
     }
 
     void get_dense_Jp_b(Eigen::MatrixXd& Jp, Eigen::VectorXd& b, int start_row, int start_col) {

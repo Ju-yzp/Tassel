@@ -130,8 +130,8 @@ public:
         V.block<3, 3>(6, 3) = 0.5 * -temp_delta_q * R_a_1_x * dt * 0.5 * dt;
         V.block<3, 3>(6, 6) = 0.5 * temp_delta_q * dt;
         V.block<3, 3>(6, 9) = V.block<3, 3>(6, 3);
-        V.block<3, 3>(9, 12) = Eigen::MatrixXd::Identity(3, 3) * dt;
-        V.block<3, 3>(12, 15) = Eigen::MatrixXd::Identity(3, 3) * dt;
+        V.block<3, 3>(9, 12) = Eigen::MatrixXd::Identity(3, 3);
+        V.block<3, 3>(12, 15) = Eigen::MatrixXd::Identity(3, 3);
 
         jacobian = F * jacobian;
         covariance = F * covariance * F.transpose() + V * noise * V.transpose();

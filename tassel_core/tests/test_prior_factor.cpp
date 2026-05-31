@@ -161,7 +161,7 @@ TEST(MarginalizationPriorTest, ResidualMatchesDirect) {
     std::array<double, 6> lin0 = {0, 0, 0, 0, 0, 0};
     std::array<double, 6> lin1 = {0, 0, 0, 0, 0, 0};
 
-    MarginalizationPriorFactor factor(H, b, {lin0, lin1});
+    MarginalizationPriorFactor factor(H, b, {lin0, lin1}, {});
 
     // Random optimized pose
     double pose0[6], pose1[6];
@@ -196,7 +196,7 @@ TEST(MarginalizationPriorTest, JacobiansMatchFiniteDiff) {
     std::array<double, 6> lin0 = {0, 0, 0, 0, 0, 0};
     std::array<double, 6> lin1 = {0, 0, 0, 0, 0, 0};
 
-    MarginalizationPriorFactor factor(H, b, {lin0, lin1});
+    MarginalizationPriorFactor factor(H, b, {lin0, lin1}, {});
 
     double pose0[6], pose1[6];
     for (int i = 0; i < 6; ++i) {
@@ -250,7 +250,7 @@ TEST(MarginalizationPriorTest, JacobianIsConstantH) {
     Eigen::VectorXd b = Eigen::VectorXd::Random(6);
 
     std::array<double, 6> lin0 = {0, 0, 0, 0, 0, 0};
-    MarginalizationPriorFactor factor(H, b, {lin0});
+    MarginalizationPriorFactor factor(H, b, {lin0}, {});
 
     // Jacobian should equal H regardless of evaluation point
     for (int trial = 0; trial < 3; ++trial) {
@@ -289,7 +289,7 @@ TEST(MarginalizationPriorTest, CeresConvergesWithPrior) {
         lin1[i] = 0.0;
     }
 
-    auto* factor = new MarginalizationPriorFactor(H, b, {lin0, lin1});
+    auto* factor = new MarginalizationPriorFactor(H, b, {lin0, lin1}, {});
 
     // 扰动的初值
     double pose0[6], pose1[6];

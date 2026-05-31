@@ -45,7 +45,8 @@ public:
     void optimize();
 
 private:
-    void slideWindow();
+    void buildPrior();
+    void slideWindow(bool is_keyframe);
     void initializeImu(const std::vector<tassel_utils::IMUMeasurement>& imu_measurements);
 
     Eigen::Matrix<double, 18, 18> initNoise() const;
@@ -73,6 +74,14 @@ private:
     double last_ts_ = -1;
     Eigen::Vector3d last_imu_acc_;
     Eigen::Vector3d last_imu_gyro_;
+
+    // marginalization prior
+    bool is_first_optimization_ = true;
+    bool has_prior_ = false;
+    Eigen::MatrixXd prior_H_;
+    Eigen::VectorXd prior_b_;
+    std::vector<std::array<double, 6>> prior_lin_poses_;
+    std::vector<std::array<double, 9>> prior_lin_speed_bias_;
 };
 
 }  // namespace tassel_core

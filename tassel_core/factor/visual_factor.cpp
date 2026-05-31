@@ -2,7 +2,6 @@
 #include <Eigen/Geometry>
 #include <cmath>
 #include <sophus/so3.hpp>
-#include "tassel_utils/constants.h"
 
 namespace tassel_core {
 
@@ -30,12 +29,12 @@ VisualFactor::VisualFactor(
 
 bool VisualFactor::Evaluate(
     double const* const* parameters, double* residuals, double** jacobians) const {
-    Eigen::Vector3d phi_i(parameters[0][0], parameters[0][1], parameters[0][2]);
-    Eigen::Vector3d P_i(parameters[0][3], parameters[0][4], parameters[0][5]);
+    Eigen::Vector3d P_i(parameters[0][0], parameters[0][1], parameters[0][2]);
+    Eigen::Vector3d phi_i(parameters[0][3], parameters[0][4], parameters[0][5]);
     Eigen::Matrix3d R_i = Sophus::SO3d::exp(phi_i).matrix();
 
-    Eigen::Vector3d phi_j(parameters[1][0], parameters[1][1], parameters[1][2]);
-    Eigen::Vector3d P_j(parameters[1][3], parameters[1][4], parameters[1][5]);
+    Eigen::Vector3d P_j(parameters[1][0], parameters[1][1], parameters[1][2]);
+    Eigen::Vector3d phi_j(parameters[1][3], parameters[1][4], parameters[1][5]);
     Eigen::Matrix3d R_j = Sophus::SO3d::exp(phi_j).matrix();
 
     double inv_depth = parameters[2][0];
@@ -49,15 +48,14 @@ bool VisualFactor::Evaluate(
     Eigen::Vector3d pi_in_C = uv_i * depth;
     Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
     Eigen::Vector3d pi_in_G = R_i * Sophus::SO3d::exp((w_i - bg_i) * dt).matrix() * pi_in_I + P_i +
-                              V_i * dt + 0.5 * (R_i * a_i - tassel_utils::G) * dt * dt;
-    Eigen::Vector3d pj_in_I =
-        Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() * R_j.transpose() *
-        (pi_in_G - (P_j + V_j * dt + 0.5 * (R_j * a_j - tassel_utils::G) * dt * dt));
+                              V_i * dt + 0.5 * R_i * a_i * dt * dt;
+    Eigen::Vector3d pj_in_I = Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() * R_j.transpose() *
+                              (pi_in_G - (P_j + V_j * dt + 0.5 * R_j * a_j * dt * dt));
     Eigen::Vector3d pj_in_C = ric.transpose() * (pj_in_I - tic);
 
     double norm = pj_in_C.norm();
     Eigen::Map<Eigen::Vector2d> r(residuals);
-    r = tangent_base * (pj_in_C / norm - uv_j);
+    r = sqrt_info * tangent_base * (pj_in_C / norm - uv_j);
 
     if (jacobians) {
         Eigen::Matrix<double, 2, 3> reduce =
@@ -66,25 +64,25 @@ bool VisualFactor::Evaluate(
 
         if (jacobians[0]) {
             Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_pose_i(jacobians[0]);
-            jacobian_pose_i.block<2, 3>(0, 0) =
+            jacobian_pose_i.block<2, 3>(0, 3) =
                 sqrt_info * reduce *
                 (ric.transpose() * Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() * R_j.transpose() *
                  (-R_i *
                       Sophus::SO3d::hat(Sophus::SO3d::exp((w_i - bg_i) * dt).matrix() * pi_in_I) -
                   0.5 * R_i * Sophus::SO3d::hat(a_i * dt * dt)));
-            jacobian_pose_i.block<2, 3>(0, 3) = sqrt_info * reduce * ric.transpose() *
+            jacobian_pose_i.block<2, 3>(0, 0) = sqrt_info * reduce * ric.transpose() *
                                                 Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() *
                                                 R_j.transpose();
         }
 
         if (jacobians[1]) {
             Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_pose_j(jacobians[1]);
-            jacobian_pose_j.block<2, 3>(0, 0) =
+            jacobian_pose_j.block<2, 3>(0, 3) =
                 sqrt_info * reduce * ric.transpose() *
                 Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() *
                 Sophus::SO3d::hat(
                     R_j.transpose() * (pi_in_G - (P_j + V_j * dt + 0.5 * R_j * a_j * dt * dt)));
-            jacobian_pose_j.block<2, 3>(0, 3) =
+            jacobian_pose_j.block<2, 3>(0, 0) =
                 sqrt_info * reduce *
                 (-ric.transpose() * Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() *
                  R_j.transpose());

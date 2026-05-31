@@ -1,6 +1,7 @@
 #include "landmark_block.h"
 #include "factor/visual_factor.h"
 
+#include <Eigen/Core>
 #include <cmath>
 #include <sophus/so3.hpp>
 #include <vector>
@@ -35,25 +36,27 @@ void LandmarkBlock::linearize(const Feature& feature, const State& state) {
     Eigen::Matrix3d ric = state.ric;
     Eigen::Vector3d tic = state.tic;
     Eigen::Matrix<double, 2, 6> jacobian_pose_i, jacobian_pose_j;
-    Eigen::Matrix<double, 2, 1> jacobian_landmark;
+    Eigen::Matrix<double, 2, 1> jacobian_landmark, jacobian_dt;
     Eigen::Matrix<double, 2, 1> residual;
 
+    Eigen::Matrix2d sqrt_info = Eigen::Matrix2d::Identity() * 320;
     double error_sum = 0.0;
     for (int offset = 1; offset < static_cast<int>(observations.size()); ++offset) {
         int target_id = start_frame_id + offset;
         Eigen::Vector3d uv_j = observations[offset].uv;
-        auto visual_factor = VisualFactor(
+        auto visual_factor = new VisualFactor(
             uv_i, uv_j, ric, tic, state.gyro_vec[start_frame_id], state.gyro_vec[target_id],
             state.acc_vec[start_frame_id], state.acc_vec[target_id],
             state.params_speed_bias[start_frame_id].data(),
             state.params_speed_bias[target_id].data(),
             state.params_speed_bias[start_frame_id].data() + 6,
-            state.params_speed_bias[target_id].data() + 6, state.visual_sqrt_info);
+            state.params_speed_bias[target_id].data() + 6, sqrt_info);
 
         std::vector<double*> jacobians;
         jacobians.push_back(jacobian_pose_i.data());
         jacobians.push_back(jacobian_pose_j.data());
         jacobians.push_back(jacobian_landmark.data());
+        jacobians.push_back(jacobian_dt.data());
 
         std::vector<double const*> parameters;
         parameters.push_back(state.params_pose[start_frame_id].data());
@@ -61,7 +64,8 @@ void LandmarkBlock::linearize(const Feature& feature, const State& state) {
         parameters.push_back(&inv_depth);
         parameters.push_back(&state.param_delay_time);
 
-        visual_factor.Evaluate(parameters.data(), residual.data(), jacobians.data());
+        visual_factor->Evaluate(parameters.data(), residual.data(), jacobians.data());
+        delete visual_factor;
 
         double sqrt_loss = 1.0;
         if (loss_) {
