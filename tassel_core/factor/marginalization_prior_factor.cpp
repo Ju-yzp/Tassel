@@ -5,14 +5,11 @@
 
 namespace tassel_core {
 
-MarginalizationPriorFactor::MarginalizationPriorFactor(
-    const Eigen::MatrixXd& H, const Eigen::VectorXd& b,
-    std::vector<std::array<double, 6>> linearization_poses,
-    std::vector<std::array<double, 9>> linearization_speed_bias)
-    : H_(H),
-      b_(b),
-      lin_poses_(std::move(linearization_poses)),
-      lin_speed_bias_(std::move(linearization_speed_bias)) {
+MarginalizationPriorFactor::MarginalizationPriorFactor(const MargLinData& data)
+    : H_(data.H),
+      b_(data.b),
+      lin_poses_(data.linearization_poses),
+      lin_speed_bias_(data.linearization_speed_bias) {
     num_kept_ = static_cast<int>(lin_poses_.size());
     int const cols_per_frame = static_cast<int>(H_.cols()) / num_kept_;
     set_num_residuals(static_cast<int>(b_.size()));

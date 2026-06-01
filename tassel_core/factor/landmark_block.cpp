@@ -39,7 +39,7 @@ void LandmarkBlock::linearize(const Feature& feature, const State& state) {
     Eigen::Matrix<double, 2, 1> jacobian_landmark, jacobian_dt;
     Eigen::Matrix<double, 2, 1> residual;
 
-    Eigen::Matrix2d sqrt_info = Eigen::Matrix2d::Identity() * 320;
+    Eigen::Matrix2d sqrt_info = state.visual_sqrt_info;
     double error_sum = 0.0;
     for (int offset = 1; offset < static_cast<int>(observations.size()); ++offset) {
         int target_id = start_frame_id + offset;

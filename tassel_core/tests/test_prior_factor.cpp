@@ -6,6 +6,7 @@
 #include <random>
 
 #include "factor/marg_helper.h"
+#include "factor/marg_lin_data.h"
 #include "factor/marginalization_prior_factor.h"
 #include "factor/se3_right_manifold.h"
 
@@ -161,7 +162,11 @@ TEST(MarginalizationPriorTest, ResidualMatchesDirect) {
     std::array<double, 6> lin0 = {0, 0, 0, 0, 0, 0};
     std::array<double, 6> lin1 = {0, 0, 0, 0, 0, 0};
 
-    MarginalizationPriorFactor factor(H, b, {lin0, lin1}, {});
+    MargLinData data;
+    data.H = H;
+    data.b = b;
+    data.linearization_poses = {lin0, lin1};
+    MarginalizationPriorFactor factor(data);
 
     // Random optimized pose
     double pose0[6], pose1[6];
@@ -196,7 +201,11 @@ TEST(MarginalizationPriorTest, JacobiansMatchFiniteDiff) {
     std::array<double, 6> lin0 = {0, 0, 0, 0, 0, 0};
     std::array<double, 6> lin1 = {0, 0, 0, 0, 0, 0};
 
-    MarginalizationPriorFactor factor(H, b, {lin0, lin1}, {});
+    MargLinData data;
+    data.H = H;
+    data.b = b;
+    data.linearization_poses = {lin0, lin1};
+    MarginalizationPriorFactor factor(data);
 
     double pose0[6], pose1[6];
     for (int i = 0; i < 6; ++i) {
@@ -250,7 +259,11 @@ TEST(MarginalizationPriorTest, JacobianIsConstantH) {
     Eigen::VectorXd b = Eigen::VectorXd::Random(6);
 
     std::array<double, 6> lin0 = {0, 0, 0, 0, 0, 0};
-    MarginalizationPriorFactor factor(H, b, {lin0}, {});
+    MargLinData data;
+    data.H = H;
+    data.b = b;
+    data.linearization_poses = {lin0};
+    MarginalizationPriorFactor factor(data);
 
     // Jacobian should equal H regardless of evaluation point
     for (int trial = 0; trial < 3; ++trial) {
@@ -289,7 +302,11 @@ TEST(MarginalizationPriorTest, CeresConvergesWithPrior) {
         lin1[i] = 0.0;
     }
 
-    auto* factor = new MarginalizationPriorFactor(H, b, {lin0, lin1}, {});
+    MargLinData marg_data;
+    marg_data.H = H;
+    marg_data.b = b;
+    marg_data.linearization_poses = {lin0, lin1};
+    auto* factor = new MarginalizationPriorFactor(marg_data);
 
     // 扰动的初值
     double pose0[6], pose1[6];

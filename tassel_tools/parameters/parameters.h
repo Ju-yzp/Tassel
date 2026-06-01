@@ -48,6 +48,10 @@ struct Parameters {
         num_iterations = parser.as<int>("num_iterations");
         max_frame_count = parser.as<size_t>("max_frame_count");
 
+        initial_exposure_time_us = parser.as<int>("initial_exposure_time_us");
+
+        visual_factor_weight = parser.as<double>("visual_factor_weight");
+
         acc_n = parser.as<double>("acc_n");
         acc_w = parser.as<double>("acc_w");
         gyr_n = parser.as<double>("gyr_n");
@@ -82,6 +86,10 @@ struct Parameters {
     int num_iterations;
     int tracked_times_thres;
     size_t max_frame_count;
+
+    int initial_exposure_time_us;
+
+    double visual_factor_weight;
 
     double acc_n, acc_w;
     double gyr_n, gyr_w;

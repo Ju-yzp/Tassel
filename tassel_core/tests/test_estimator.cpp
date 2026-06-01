@@ -92,11 +92,13 @@ int main(int argc, char** argv) {
     mono_left->setCamera("left");
     mono_left->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
     mono_left->setFps(15);
+    mono_left->initialControl.setManualExposure(params.initial_exposure_time_us, 1200);
 
     auto mono_right = pipeline.create<dai::node::MonoCamera>();
     mono_right->setCamera("right");
     mono_right->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
     mono_right->setFps(15);
+    mono_right->initialControl.setManualExposure(params.initial_exposure_time_us, 1200);
 
     auto imu_node = pipeline.create<dai::node::IMU>();
     imu_node->enableIMUSensor(dai::IMUSensor::ACCELEROMETER_RAW, 400);
@@ -172,6 +174,7 @@ int main(int argc, char** argv) {
     option.gyr_n = params.gyr_n;
     option.gyr_w = params.gyr_w;
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count));
+    state->visual_sqrt_info = Eigen::Matrix2d::Identity() * params.visual_factor_weight;
     auto feature_manager = std::make_shared<FeatureManager>(
         params.reprojection_error_thres, params.parallax_thres, params.tracked_times_thres,
         params.min_tracked_pts_num, params.min_pnp_num, params.min_pnp_inliers_ratio,

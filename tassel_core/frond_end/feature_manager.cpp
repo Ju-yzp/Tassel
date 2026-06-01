@@ -101,14 +101,12 @@ void FeatureManager::triangulate(
 }
 
 void FeatureManager::initPoseByPNP(State& state) {
-    const int frame_count = state.cur_frame_count;
-
-    if (frame_count <= 0) {
+    if (state.cur_frame_count <= 0) {
         return;
     }
 
-    state.Rs[frame_count] = state.Rs[frame_count - 1];
-    state.Ps[frame_count] = state.Ps[frame_count - 1];
+    state.Rs[state.cur_frame_count] = state.Rs[state.cur_frame_count - 1];
+    state.Ps[state.cur_frame_count] = state.Ps[state.cur_frame_count - 1];
     std::vector<cv::Point3f> object_pts;
     std::vector<cv::Point2f> normalize_pts;
     std::vector<size_t> candidate_ids;
@@ -116,10 +114,10 @@ void FeatureManager::initPoseByPNP(State& state) {
         int start_frame_id = feature.start_frame_id;
         int observation_num = static_cast<int>(feature.observations.size());
         double depth = feature.estimated_depth;
-        int obs_idx = frame_count - start_frame_id;
+        int obs_idx = state.cur_frame_count - start_frame_id;
         if (obs_idx >= 0 && obs_idx < observation_num && depth != INVALID_DEPTH) {
-            Eigen::Vector3d p_in_I = state.ric * feature.observations[0].uv * depth + state.tic;
-            Eigen::Vector3d p_in_W = state.Rs[start_frame_id] * p_in_I + state.Ps[start_frame_id];
+            Eigen::Vector3d p_in_C = feature.observations[0].uv * depth;
+            Eigen::Vector3d p_in_W = state.Rs[start_frame_id] * p_in_C + state.Ps[start_frame_id];
             object_pts.push_back(cv::Point3f(p_in_W(0), p_in_W(1), p_in_W(2)));
             Eigen::Vector3d uv = feature.observations[obs_idx].uv;
             normalize_pts.push_back(cv::Point2f(uv(0), uv(1)));
@@ -133,8 +131,9 @@ void FeatureManager::initPoseByPNP(State& state) {
         return;
     }
 
-    Eigen::Matrix3d guess_R = state.Rs[frame_count - 1] * state.ric;
-    Eigen::Vector3d guess_P = state.Rs[frame_count - 1] * state.tic + state.Ps[frame_count - 1];
+    Eigen::Matrix3d guess_R = state.Rs[state.cur_frame_count - 1] * state.ric;
+    Eigen::Vector3d guess_P =
+        state.Rs[state.cur_frame_count - 1] * state.tic + state.Ps[state.cur_frame_count - 1];
 
     cv::Mat R_cv, rvec, tvec;
     guess_R.transposeInPlace();
@@ -158,11 +157,10 @@ void FeatureManager::initPoseByPNP(State& state) {
         guess_R.transposeInPlace();
         guess_P = (-guess_R * guess_P).eval();
 
-        Eigen::Matrix3d R_candidate = guess_R * state.ric.transpose();
-        Eigen::JacobiSVD<Eigen::Matrix3d> svd(
-            R_candidate, Eigen::ComputeFullU | Eigen::ComputeFullV);
-        state.Rs[frame_count] = svd.matrixU() * svd.matrixV().transpose();
-        state.Ps[frame_count] = guess_P - guess_R * state.tic;
+        Eigen::Quaterniond q_opt(guess_R);
+        q_opt.normalize();
+        state.Rs[state.cur_frame_count] = q_opt.toRotationMatrix();
+        state.Ps[state.cur_frame_count] = guess_P - guess_R * state.tic;
         spdlog::info("PNP success");
     } else {
         spdlog::error(

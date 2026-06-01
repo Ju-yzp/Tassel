@@ -499,5 +499,82 @@ TEST_F(ImuFactorTest, TdOptimizationRegression) {
     EXPECT_NEAR(td_param_, td_, 0.001) << "td should converge to ~5ms";
 }
 
+// =============================================================================
+// 测试 5: 固定位姿+速度, 仅优化偏置 — 验证 IMU 因子的 ∂r/∂Ba, ∂r/∂Bg
+// =============================================================================
+
+TEST_F(ImuFactorTest, BiasOnlyRecoveryWithTrueVelocity) {
+    // 1. 设置偏置为真值 (确保 ground truth 处残差为零)
+    for (int f = 0; f < num_frames_; ++f) {
+        for (int d = 0; d < 3; ++d) {
+            params_sb_[f][d + 3] = Ba_true_[f][d];
+            params_sb_[f][d + 6] = Bg_true_[f][d];
+        }
+    }
+    td_param_ = td_;
+
+    // 2. 固定所有位姿
+    ceres::Problem problem;
+    for (int f = 0; f < num_frames_; ++f) {
+        problem.AddParameterBlock(params_pose_[f].data(), 6, new SE3RightManifold());
+        problem.SetParameterBlockConstant(params_pose_[f].data());
+
+        problem.AddParameterBlock(params_sb_[f].data(), 9);
+    }
+
+    // 3. IMU 因子
+    for (int f = 0; f < num_frames_ - 1; ++f) {
+        auto* imu = new IMUFactor<MidPointIntegrator>(preints_[f]);
+        problem.AddResidualBlock(
+            imu, nullptr, params_pose_[f].data(), params_sb_[f].data(), params_pose_[f + 1].data(),
+            params_sb_[f + 1].data());
+    }
+
+    // 4. 极紧速度先验 — 把 V 钉在真值上
+    double sigma_tight = 1e-8;
+    for (int f = 0; f < num_frames_; ++f) {
+        auto* vp = new VelocityPrior(frames_V_[f], sigma_tight);
+        problem.AddResidualBlock(vp, nullptr, params_sb_[f].data());
+    }
+
+    // 5. 偏置回退到 base (错误初始值)
+    for (int f = 0; f < num_frames_; ++f) {
+        for (int d = 0; d < 3; ++d) {
+            params_sb_[f][d + 3] = Ba_base_[d];
+            params_sb_[f][d + 6] = Bg_base_[d];
+        }
+    }
+
+    ceres::Solver::Options opts;
+    opts.linear_solver_type = ceres::DENSE_SCHUR;
+    opts.max_num_iterations = 100;
+    opts.minimizer_progress_to_stdout = false;
+    opts.num_threads = 1;
+
+    ceres::Solver::Summary summary;
+    ceres::Solve(opts, &problem, &summary);
+    std::cout << "Bias-only recovery: " << summary.BriefReport() << "\n";
+
+    // 诊断
+    double avg_dBa = 0, avg_dBg = 0;
+    for (int f = 0; f < num_frames_; ++f) {
+        double dBa =
+            (Eigen::Vector3d(params_sb_[f][3], params_sb_[f][4], params_sb_[f][5]) - Ba_true_[f])
+                .norm();
+        double dBg =
+            (Eigen::Vector3d(params_sb_[f][6], params_sb_[f][7], params_sb_[f][8]) - Bg_true_[f])
+                .norm();
+        avg_dBa += dBa;
+        avg_dBg += dBg;
+        std::cout << "f[" << f << "] dBa=" << dBa << " dBg=" << dBg << "\n";
+    }
+    avg_dBa /= num_frames_;
+    avg_dBg /= num_frames_;
+    std::cout << "Avg: dBa=" << avg_dBa << " dBg=" << avg_dBg << "\n";
+
+    EXPECT_LT(avg_dBa, 0.001) << "Ba should converge to truth with true velocity";
+    EXPECT_LT(avg_dBg, 0.001) << "Bg should converge to truth with true velocity";
+}
+
 }  // namespace
 }  // namespace tassel_core

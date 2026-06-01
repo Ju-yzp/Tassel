@@ -54,6 +54,10 @@ use_imu: true
 num_iterations: 10
 max_frame_count: 10
 
+initial_exposure_time_us: 12000
+
+visual_factor_weight: 320.0
+
 acc_n: 1.9291286492253038e-02
 acc_w: 8.0363303593887979e-04
 gyr_n: 2.6401761065710893e-03

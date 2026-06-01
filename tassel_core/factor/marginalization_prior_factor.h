@@ -7,14 +7,13 @@
 #include <array>
 #include <vector>
 
+#include "factor/marg_lin_data.h"
+
 namespace tassel_core {
 
 class MarginalizationPriorFactor : public ceres::CostFunction {
 public:
-    MarginalizationPriorFactor(
-        const Eigen::MatrixXd& H, const Eigen::VectorXd& b,
-        std::vector<std::array<double, 6>> linearization_poses,
-        std::vector<std::array<double, 9>> linearization_speed_bias);
+    explicit MarginalizationPriorFactor(const MargLinData& data);
 
     bool Evaluate(
         double const* const* parameters, double* residuals, double** jacobians) const override;

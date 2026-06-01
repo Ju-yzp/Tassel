@@ -10,17 +10,12 @@
 
 #include "factor/integrator_base.h"
 #include "factor/landmark_block.h"
+#include "factor/marg_lin_data.h"
 #include "frond_end/feature_manager.h"
 #include "imu_block.h"
 #include "tassel_utils/macros.h"
 
 namespace tassel_core {
-
-struct MargLinData {
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-    Eigen::MatrixXd H;
-    Eigen::VectorXd b;
-};
 
 // TODO:
 // 用户在进行边缘化的sqrt操作时，需要保证预积分器使用最近的线性化点进行了更新，使用新的线性化点
@@ -30,7 +25,8 @@ public:
     MarginlizationSqrt(
         std::shared_ptr<FeatureManager> feature_manager,
         std::unique_ptr<ceres::LossFunction> loss_function, std::shared_ptr<State> state,
-        std::vector<IntegratorBase<Derived>*>& preintegrators) {
+        std::vector<IntegratorBase<Derived>*>& preintegrators, const MargLinData* prior = nullptr)
+        : prior_(prior) {
         feature_manager_ = feature_manager;
         loss_function_ = std::move(loss_function);
         state_ = state;
@@ -87,8 +83,15 @@ public:
     }
 
     void get_dense_Jp_b(Eigen::MatrixXd& Jp, Eigen::VectorXd& b) {
-        Jp = Eigen::MatrixXd::Zero(num_rows, num_cols);
-        b = Eigen::VectorXd::Zero(num_rows);
+        int total_rows = num_rows;
+        int prior_rows = 0;
+        if (prior_) {
+            prior_rows = static_cast<int>(prior_->b.size());
+            total_rows += prior_rows;
+        }
+
+        Jp = Eigen::MatrixXd::Zero(total_rows, num_cols);
+        b = Eigen::VectorXd::Zero(total_rows);
         int rows = 0;
         for (size_t idx = 0; idx < landmark_blocks_.size(); ++idx) {
             auto& lmb = landmark_blocks_[idx];
@@ -101,6 +104,12 @@ public:
             imu_block.get_dense_Jp_b(Jp, b, rows, i * 15);
             rows += 15;
         }
+
+        if (prior_) {
+            int prior_cols = static_cast<int>(prior_->H.cols());
+            Jp.block(rows, 0, prior_rows, prior_cols) = prior_->H;
+            b.segment(rows, prior_rows) = prior_->b;
+        }
     }
 
 private:
@@ -112,6 +121,8 @@ private:
     std::vector<LandmarkBlock> landmark_blocks_;
     std::vector<IMUBlock<Derived>> imu_blocks_;
     std::vector<IntegratorBase<Derived>*> preintegrators_;
+
+    const MargLinData* prior_ = nullptr;
     int num_rows;
     int num_cols;
 };

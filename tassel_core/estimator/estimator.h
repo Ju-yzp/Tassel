@@ -9,6 +9,7 @@
 
 #include "estimator/estimator_option.h"
 #include "factor/integrator_base.h"
+#include "factor/marg_lin_data.h"
 #include "frond_end/feature_manager.h"
 #include "state/state.h"
 #include "tassel_utils/types.h"
@@ -46,8 +47,11 @@ public:
 
 private:
     void buildPrior();
-    void slideWindow(bool is_keyframe);
+    void slideWindow();
+    void solveGyroBias();
     void initializeImu(const std::vector<tassel_utils::IMUMeasurement>& imu_measurements);
+    bool linearAlignment(Eigen::Vector3d& G_body);
+    void refineGravity(Eigen::Vector3d& G_body);
 
     Eigen::Matrix<double, 18, 18> initNoise() const;
 
@@ -62,9 +66,7 @@ private:
 
     Eigen::Matrix<double, 18, 18> noise_;
 
-    bool imu_initialized_ = false;
-    double init_ts_ = -1;
-    std::vector<tassel_utils::IMUMeasurement> imu_init_buf_;
+    bool gravity_initialized_ = false;
 
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
     std::function<void(double, const std::vector<Eigen::Vector3d>&)> mono_cloud_callback_;
@@ -75,13 +77,18 @@ private:
     Eigen::Vector3d last_imu_acc_;
     Eigen::Vector3d last_imu_gyro_;
 
+    // static IMU initialization
+    bool imu_initialized_ = false;
+    double init_ts_ = -1;
+    std::vector<tassel_utils::IMUMeasurement> imu_init_buf_;
+
     // marginalization prior
     bool is_first_optimization_ = true;
-    bool has_prior_ = false;
-    Eigen::MatrixXd prior_H_;
-    Eigen::VectorXd prior_b_;
-    std::vector<std::array<double, 6>> prior_lin_poses_;
-    std::vector<std::array<double, 9>> prior_lin_speed_bias_;
+    std::unique_ptr<MargLinData> marg_data_;
+
+    // Pnp解算获取imu的位姿
+    std::vector<Eigen::Matrix3d> Rs_;
+    std::vector<Eigen::Vector3d> Ps_;
 };
 
 }  // namespace tassel_core

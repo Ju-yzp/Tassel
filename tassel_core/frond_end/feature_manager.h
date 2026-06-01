@@ -2,7 +2,9 @@
 #define TASSEL_CORE_FEATURE_MANAGER_H_
 
 // cpp
+#include <Eigen/Core>
 #include <unordered_map>
+#include <vector>
 
 // tassel
 #include "feature.h"
@@ -25,7 +27,6 @@ public:
         const State& state, const Eigen::Matrix3d& ric1 = Eigen::Matrix3d::Identity(),
         const Eigen::Vector3d& tic1 = Eigen::Vector3d::Zero());
 
-    // 仅适用于 VO 模式
     void initPoseByPNP(State& state);
 
     void removeOldest(const State& state);
