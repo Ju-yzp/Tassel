@@ -8,6 +8,8 @@
 #include <sophus/se3.hpp>
 #include <vector>
 
+#include "tassel_utils/constants.h"
+
 namespace tassel_core {
 struct State {
     State(
@@ -94,6 +96,18 @@ struct State {
             paramToState(i);
         }
         delay_time = param_delay_time;
+    }
+
+    State get_compensated_state() const {
+        State compensated = *this;
+        for (int i = 0; i < cur_frame_count; ++i) {
+            compensated.Rs[i] =
+                Rs[i] * Sophus::SO3d::exp((gyro_vec[i] - Bgs[i]) * delay_time).matrix();
+            compensated.Ps[i] =
+                Ps[i] + Vs[i] * delay_time +
+                0.5 * (Rs[i] * (acc_vec[i] - Bas[i]) - tassel_utils::G) * delay_time * delay_time;
+        }
+        return compensated;
     }
 
     void saveStateWithLinearized() {

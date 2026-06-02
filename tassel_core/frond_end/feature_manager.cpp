@@ -74,29 +74,14 @@ bool FeatureManager::checkKeyFrameByParallax(
 
 void FeatureManager::triangulate(
     const State& state, const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1) {
-    int frame_count = state.cur_frame_count;
-    bool mono_triangulate = frame_count > 0;
-
-    State temp_state = state;
-    for (int i = 0; i < state.cur_frame_count; ++i) {
-        Eigen::Matrix3d real_q =
-            state.Rs[i] *
-            Sophus::SO3d::exp((state.gyro_vec[i] - state.Bgs[i]) * state.delay_time).matrix();
-
-        Eigen::Vector3d real_p =
-            state.Ps[i] + state.Vs[i] * state.delay_time +
-            0.5 * (state.Rs[i] * (state.acc_vec[i] - state.Bas[i]) - tassel_utils::G) *
-                state.delay_time * state.delay_time;
-
-        temp_state.Rs[i] = real_q;
-        temp_state.Ps[i] = real_p;
-    }
+    bool mono_triangulate = state.cur_frame_count > 0;
+    auto cs = state.get_compensated_state();
     for (auto& [id, feature] : features_) {
         feature.stereoTriangulate(state.ric, state.tic, ric1, tic1, min_depth_, max_depth_);
-        if (mono_triangulate) {
-            feature.monoTriangulate(
-                temp_state, state.ric, state.tic, min_translation_, min_depth_, max_depth_);
-        }
+        // if (mono_triangulate) {
+        //     feature.monoTriangulate(
+        //         cs, state.ric, state.tic, min_translation_, min_depth_, max_depth_);
+        // }
     }
 }
 
@@ -171,16 +156,12 @@ void FeatureManager::initPoseByPNP(State& state) {
 
 void FeatureManager::removeOldest(const State& state) {
     if (state.cur_frame_count > 1) {
-        Eigen::Matrix3d prev_r = state.Rs[0];
-        Eigen::Vector3d prev_t = state.Ps[0];
-        Eigen::Matrix3d cur_r = state.Rs[1];
-        Eigen::Vector3d cur_t = state.Ps[1];
-
+        auto cs = state.get_compensated_state();
         std::erase_if(features_, [&](const auto& item) {
             return item.second.start_frame_id == 0 && item.second.observations.size() == 1;
         });
         for (auto& [id, feature] : features_) {
-            feature.removeOldest(prev_r, prev_t, cur_r, cur_t, state.ric, state.tic);
+            feature.removeOldest(cs.Rs[0], cs.Ps[0], cs.Rs[1], cs.Ps[1], cs.ric, cs.tic);
         }
 
         std::erase_if(
@@ -197,7 +178,7 @@ void FeatureManager::removeNewest(size_t frame_count) {
 }
 
 void FeatureManager::removeOutliers(const State& state) {
-    double td = state.delay_time;
+    auto cs = state.get_compensated_state();
     std::set<int> removed_ids;
     for (auto& [id, feature] : features_) {
         double depth = feature.estimated_depth;
@@ -208,32 +189,15 @@ void FeatureManager::removeOutliers(const State& state) {
         }
 
         int start_frame_id = feature.start_frame_id;
-        Eigen::Vector3d w_i = state.gyro_vec[start_frame_id];
-        Eigen::Vector3d a_i = state.acc_vec[start_frame_id];
-        Eigen::Vector3d Bg_i = state.Bgs[start_frame_id];
-        Eigen::Vector3d V_i = state.Vs[start_frame_id];
-        Eigen::Matrix3d R_i_td =
-            state.Rs[start_frame_id] * Sophus::SO3d::exp((w_i - Bg_i) * td).matrix();
-        Eigen::Vector3d P_i_td =
-            state.Ps[start_frame_id] + V_i * td + 0.5 * state.Rs[start_frame_id] * a_i * td * td;
-
         Eigen::Vector3d pi_in_C = depth * observations[0].uv;
-        Eigen::Vector3d pi_in_I = state.ric * pi_in_C + state.tic;
-        Eigen::Vector3d pi_in_W = R_i_td * pi_in_I + P_i_td;
+        Eigen::Vector3d pi_in_I = cs.ric * pi_in_C + cs.tic;
+        Eigen::Vector3d pi_in_W = cs.Rs[start_frame_id] * pi_in_I + cs.Ps[start_frame_id];
 
         double cosine_sum = 0.0;
         for (size_t k = 1; k < observations.size(); ++k) {
             int j = start_frame_id + static_cast<int>(k);
-            Eigen::Vector3d w_j = state.gyro_vec[j];
-            Eigen::Vector3d a_j = state.acc_vec[j];
-            Eigen::Vector3d Bg_j = state.Bgs[j];
-            Eigen::Vector3d V_j = state.Vs[j];
-            Eigen::Matrix3d R_j_td_inv =
-                Sophus::SO3d::exp((Bg_j - w_j) * td).matrix() * state.Rs[j].transpose();
-            Eigen::Vector3d P_j_td = state.Ps[j] + V_j * td + 0.5 * state.Rs[j] * a_j * td * td;
-
-            Eigen::Vector3d pj_in_I = R_j_td_inv * (pi_in_W - P_j_td);
-            Eigen::Vector3d pj_in_C = state.ric.transpose() * (pj_in_I - state.tic);
+            Eigen::Vector3d pj_in_I = cs.Rs[j].transpose() * (pi_in_W - cs.Ps[j]);
+            Eigen::Vector3d pj_in_C = cs.ric.transpose() * (pj_in_I - cs.tic);
             double cos_angle = pj_in_C.normalized().dot(observations[k].uv.normalized());
             cosine_sum += cos_angle;
         }
@@ -249,14 +213,19 @@ void FeatureManager::removeOutliers(const State& state) {
 
 void FeatureManager::reset() { features_.clear(); }
 
-std::vector<Feature*> FeatureManager::collectMarginalizationFeatures() {
+std::vector<Feature*> FeatureManager::collectMarginalizationFeatures(int& max_obs_len) {
     std::vector<Feature*> result;
+    max_obs_len = 0;
     for (auto& [id, feature] : features_) {
         bool is_marginalized =
             !((feature.start_frame_id != 0) || (feature.estimated_depth == INVALID_DEPTH) ||
               (static_cast<int>(feature.observations.size()) < tracked_times_thres_));
         if (is_marginalized) {
             result.push_back(&feature);
+            int obs_len = static_cast<int>(feature.observations.size());
+            if (obs_len > max_obs_len) {
+                max_obs_len = obs_len;
+            }
         }
     }
     return result;
@@ -266,43 +235,20 @@ void FeatureManager::removeMarginalizedFeatures() {
     std::erase_if(features_, [&](const auto& item) { return item.second.start_frame_id == 0; });
 }
 
-std::vector<Eigen::Vector3d> FeatureManager::getMonoPointCloud(const State& state) const {
+std::vector<Eigen::Vector3d> FeatureManager::getPointCloud(const State& state) const {
+    auto cs = state.get_compensated_state();
     std::vector<Eigen::Vector3d> points;
     for (const auto& [id, feature] : features_) {
-        if (feature.tri_source != TriangulationSource::Monocular) {
-            continue;
-        }
         if (feature.estimated_depth <= 0) {
             continue;
         }
         int start_frame_id = feature.start_frame_id;
-        if (start_frame_id >= state.cur_frame_count) {
+        if (start_frame_id >= cs.cur_frame_count) {
             continue;
         }
         Eigen::Vector3d pt_in_C = feature.observations[0].uv * feature.estimated_depth;
-        Eigen::Vector3d pt_in_I = state.ric * pt_in_C + state.tic;
-        Eigen::Vector3d pt_in_W = state.Rs[start_frame_id] * pt_in_I + state.Ps[start_frame_id];
-        points.push_back(pt_in_W);
-    }
-    return points;
-}
-
-std::vector<Eigen::Vector3d> FeatureManager::getStereoPointCloud(const State& state) const {
-    std::vector<Eigen::Vector3d> points;
-    for (const auto& [id, feature] : features_) {
-        if (feature.tri_source != TriangulationSource::Stereo) {
-            continue;
-        }
-        if (feature.estimated_depth <= 0) {
-            continue;
-        }
-        int start_frame_id = feature.start_frame_id;
-        if (start_frame_id >= state.cur_frame_count) {
-            continue;
-        }
-        Eigen::Vector3d pt_in_C = feature.observations[0].uv * feature.estimated_depth;
-        Eigen::Vector3d pt_in_I = state.ric * pt_in_C + state.tic;
-        Eigen::Vector3d pt_in_W = state.Rs[start_frame_id] * pt_in_I + state.Ps[start_frame_id];
+        Eigen::Vector3d pt_in_I = cs.ric * pt_in_C + cs.tic;
+        Eigen::Vector3d pt_in_W = cs.Rs[start_frame_id] * pt_in_I + cs.Ps[start_frame_id];
         points.push_back(pt_in_W);
     }
     return points;

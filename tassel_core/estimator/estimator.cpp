@@ -92,6 +92,9 @@ void Estimator::processMeasurement(
             last_ts_ = imu.timestamp;
             last_imu_gyro_ = imu.gyro;
             last_imu_acc_ = imu.acc;
+            if (pose_callback_) {
+                pose_callback_(ts, Sophus::SE3d(R, P));
+            }
         }
 
         Eigen::Quaterniond q(R);
@@ -159,26 +162,18 @@ void Estimator::processMeasurement(
         // if (frame_count == state_->max_frame_count - 1) {
         // optimize();
         // }
+        state_->acc_vec.erase(state_->acc_vec.begin());
+        state_->gyro_vec.erase(state_->gyro_vec.begin());
+        state_->acc_vec.push_back(last_imu_acc_);
+        state_->gyro_vec.push_back(last_imu_gyro_);
         feature_manager_->removeNewest(frame_count);
         // slideWindow(false);
     }
 
-    int latest_idx = state_->cur_frame_count - 1 == state_->max_frame_count
-                         ? state_->cur_frame_count
-                         : state_->cur_frame_count - 1;
-
-    Sophus::SE3d latest_pose(state_->Rs[latest_idx], state_->Ps[latest_idx]);
-
-    if (pose_callback_) {
-        pose_callback_(ts, latest_pose);
-    }
-    if (mono_cloud_callback_) {
-        auto pts = feature_manager_->getMonoPointCloud(*state_);
-        mono_cloud_callback_(ts, pts);
-    }
-    if (stereo_cloud_callback_) {
-        auto pts = feature_manager_->getStereoPointCloud(*state_);
-        stereo_cloud_callback_(ts, pts);
+    int latest_idx = state_->cur_frame_count - 1;
+    if (cloud_callback_ && latest_idx >= 0) {
+        auto pts = feature_manager_->getPointCloud(*state_);
+        cloud_callback_(ts, pts);
     }
 }
 
@@ -228,7 +223,7 @@ void Estimator::optimize() {
         problem.AddResidualBlock(prior_cost, nullptr, prior_blocks);
     }
 
-    // ceres::LossFunction* loss = new ceres::HuberLoss(1.0);
+    ceres::LossFunction* loss = new ceres::HuberLoss(1.0);
     Eigen::Matrix2d sqrt_info = state_->visual_sqrt_info;
     for (size_t k = 0; k < features.size(); ++k) {
         Feature* f = features[k];
@@ -243,7 +238,7 @@ void Estimator::optimize() {
                 state_->params_speed_bias[host_id].data() + 6,
                 state_->params_speed_bias[target_id].data() + 6, sqrt_info);
             problem.AddResidualBlock(
-                cost, nullptr, state_->params_pose[host_id].data(),
+                cost, loss, state_->params_pose[host_id].data(),
                 state_->params_pose[target_id].data(), &inv_depth_params[k],
                 &state_->param_delay_time);
         }
@@ -292,14 +287,20 @@ void Estimator::buildPrior() {
     const int n = state_->max_frame_count;
     state_->stateToParams();
 
+    int max_obs_len = 0;
+    auto marg_features = feature_manager_->collectMarginalizationFeatures(max_obs_len);
+
+    int num_marg_pints =
+        max_obs_len > 1 ? max_obs_len - 1 : static_cast<int>(preintegrators_.size());
     std::vector<IntegratorBase<MidPointIntegrator>*> pint_ptrs;
-    pint_ptrs.reserve(preintegrators_.size());
-    for (auto& p : preintegrators_) {
-        pint_ptrs.push_back(&p);
+    pint_ptrs.reserve(num_marg_pints);
+    for (int i = 0; i < num_marg_pints; ++i) {
+        pint_ptrs.push_back(&preintegrators_[i]);
     }
 
     auto marg = MarginlizationSqrt<MidPointIntegrator>(
-        feature_manager_, nullptr, state_, pint_ptrs, marg_data_.get());
+        std::move(marg_features), std::make_unique<ceres::HuberLoss>(1.0), state_, pint_ptrs,
+        marg_data_.get());
     marg.allocate();
     marg.linearize();
     marg.performQRAll();
@@ -500,7 +501,7 @@ void Estimator::initializeImu(const std::vector<tassel_utils::IMUMeasurement>& i
     state_->Rs[0] = R0;
     state_->Ps[0] = Eigen::Vector3d::Zero();
     state_->Vs[0] = Eigen::Vector3d::Zero();
-    // state_->Bas[0] = avg_acc - R0.transpose() * tassel_utils::G;
+    state_->Bas[0] = avg_acc - R0.transpose() * tassel_utils::G;
     state_->Bgs[0] = avg_gyro;
     last_ts_ = imu_measurements.back().timestamp;
     last_imu_acc_ = imu_measurements.back().acc;
@@ -508,7 +509,7 @@ void Estimator::initializeImu(const std::vector<tassel_utils::IMUMeasurement>& i
     imu_initialized_ = true;
     spdlog::info(
         "IMU static init: Bg=({:.4f},{:.4f},{:.4f}) rad/s  Ba=({:.4f},{:.4f},{:.4f}) m/s²",
-        avg_gyro.x(), avg_gyro.y(), avg_gyro.z(), state_->Bas[0].x(), state_->Bas[0].y(),
-        state_->Bas[0].z());
+        state_->Bgs[0].x(), state_->Bgs[0].y(), state_->Bgs[0].z(), state_->Bas[0].x(),
+        state_->Bas[0].y(), state_->Bas[0].z());
 }
 }  // namespace tassel_core

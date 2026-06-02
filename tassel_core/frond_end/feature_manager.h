@@ -39,11 +39,9 @@ public:
 
     std::vector<Feature*> collectOptimizedFeatures();
 
-    std::vector<Feature*> collectMarginalizationFeatures();
+    std::vector<Feature*> collectMarginalizationFeatures(int& max_obs_len);
 
-    std::vector<Eigen::Vector3d> getMonoPointCloud(const State& state) const;
-
-    std::vector<Eigen::Vector3d> getStereoPointCloud(const State& state) const;
+    std::vector<Eigen::Vector3d> getPointCloud(const State& state) const;
 
     std::unordered_map<int, Feature>& testFeatures() { return features_; }
 

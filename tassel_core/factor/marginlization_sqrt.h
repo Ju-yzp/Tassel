@@ -11,7 +11,7 @@
 #include "factor/integrator_base.h"
 #include "factor/landmark_block.h"
 #include "factor/marg_lin_data.h"
-#include "frond_end/feature_manager.h"
+#include "frond_end/feature.h"
 #include "imu_block.h"
 #include "tassel_utils/macros.h"
 
@@ -23,29 +23,27 @@ template <typename Derived>
 class MarginlizationSqrt {
 public:
     MarginlizationSqrt(
-        std::shared_ptr<FeatureManager> feature_manager,
-        std::unique_ptr<ceres::LossFunction> loss_function, std::shared_ptr<State> state,
-        std::vector<IntegratorBase<Derived>*>& preintegrators, const MargLinData* prior = nullptr)
+        std::vector<Feature*> marg_features, std::unique_ptr<ceres::LossFunction> loss_function,
+        std::shared_ptr<State> state, std::vector<IntegratorBase<Derived>*>& preintegrators,
+        const MargLinData* prior = nullptr)
         : prior_(prior) {
-        feature_manager_ = feature_manager;
+        marg_features_ = std::move(marg_features);
         loss_function_ = std::move(loss_function);
         state_ = state;
         preintegrators_ = preintegrators;
         if (!preintegrators_.empty()) {
-            TASSEL_ASSERT(preintegrators.size() == state_->max_frame_count - 1);
+            TASSEL_ASSERT(preintegrators.size() <= state_->max_frame_count - 1);
             TASSEL_ASSERT(state_->cur_frame_count == state_->max_frame_count - 1);
         }
     }
 
     void allocate() {
-        const std::vector<Feature*> marg_features =
-            feature_manager_->collectMarginalizationFeatures();
-        landmark_blocks_.resize(marg_features.size());
-        for (size_t idx = 0; idx < marg_features.size(); ++idx) {
+        landmark_blocks_.resize(marg_features_.size());
+        for (size_t idx = 0; idx < marg_features_.size(); ++idx) {
             auto& lmb = landmark_blocks_[idx];
             lmb.allocate(
                 state_->max_frame_count,
-                static_cast<int>(marg_features[idx]->observations.size()) - 1,
+                static_cast<int>(marg_features_[idx]->observations.size()) - 1,
                 preintegrators_.empty() ? 6 : 15);
         }
         imu_blocks_.resize(preintegrators_.size());
@@ -55,13 +53,11 @@ public:
     }
 
     void linearize() {
-        const std::vector<Feature*> marg_features =
-            feature_manager_->collectMarginalizationFeatures();
         num_cols = state_->max_frame_count * 15;
         num_rows = 0;
-        for (size_t idx = 0; idx < marg_features.size(); ++idx) {
+        for (size_t idx = 0; idx < marg_features_.size(); ++idx) {
             auto& lmb = landmark_blocks_[idx];
-            lmb.linearize(*marg_features[idx], *state_);
+            lmb.linearize(*marg_features_[idx], *state_);
             num_rows += lmb.get_kept_rows();
         }
 
@@ -113,7 +109,7 @@ public:
     }
 
 private:
-    std::shared_ptr<FeatureManager> feature_manager_;
+    std::vector<Feature*> marg_features_;
     std::unique_ptr<ceres::LossFunction> loss_function_;
 
     std::shared_ptr<State> state_;

@@ -35,12 +35,8 @@ public:
     void setPoseCallback(std::function<void(double, const Sophus::SE3d&)> cb) {
         pose_callback_ = std::move(cb);
     }
-    void setMonoCloudCallback(std::function<void(double, const std::vector<Eigen::Vector3d>&)> cb) {
-        mono_cloud_callback_ = std::move(cb);
-    }
-    void setStereoCloudCallback(
-        std::function<void(double, const std::vector<Eigen::Vector3d>&)> cb) {
-        stereo_cloud_callback_ = std::move(cb);
+    void setCloudCallback(std::function<void(double, const std::vector<Eigen::Vector3d>&)> cb) {
+        cloud_callback_ = std::move(cb);
     }
 
     void optimize();
@@ -69,8 +65,7 @@ private:
     bool gravity_initialized_ = false;
 
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
-    std::function<void(double, const std::vector<Eigen::Vector3d>&)> mono_cloud_callback_;
-    std::function<void(double, const std::vector<Eigen::Vector3d>&)> stereo_cloud_callback_;
+    std::function<void(double, const std::vector<Eigen::Vector3d>&)> cloud_callback_;
 
     std::vector<MidPointIntegrator> preintegrators_;
     double last_ts_ = -1;

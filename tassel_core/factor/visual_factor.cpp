@@ -45,12 +45,13 @@ bool VisualFactor::Evaluate(
     Eigen::Vector3d V_j(v_j[0], v_j[1], v_j[2]);
     Eigen::Vector3d bg_i(bg_i_lin[0], bg_i_lin[1], bg_i_lin[2]);
     Eigen::Vector3d bg_j(bg_j_lin[0], bg_j_lin[1], bg_j_lin[2]);
+    Eigen::Matrix3d A_i = Sophus::SO3d::exp((w_i - bg_i) * dt).matrix();
+    Eigen::Matrix3d A_j = Sophus::SO3d::exp((bg_j - w_j) * dt).matrix();
     Eigen::Vector3d pi_in_C = uv_i * depth;
     Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
-    Eigen::Vector3d pi_in_G = R_i * Sophus::SO3d::exp((w_i - bg_i) * dt).matrix() * pi_in_I + P_i +
-                              V_i * dt + 0.5 * R_i * a_i * dt * dt;
-    Eigen::Vector3d pj_in_I = Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() * R_j.transpose() *
-                              (pi_in_G - (P_j + V_j * dt + 0.5 * R_j * a_j * dt * dt));
+    Eigen::Vector3d pi_in_G = R_i * A_i * pi_in_I + P_i + V_i * dt + 0.5 * R_i * a_i * dt * dt;
+    Eigen::Vector3d pj_in_I =
+        A_j * R_j.transpose() * (pi_in_G - (P_j + V_j * dt + 0.5 * R_j * a_j * dt * dt));
     Eigen::Vector3d pj_in_C = ric.transpose() * (pj_in_I - tic);
 
     double norm = pj_in_C.norm();
@@ -64,44 +65,35 @@ bool VisualFactor::Evaluate(
 
         if (jacobians[0]) {
             Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_pose_i(jacobians[0]);
-            jacobian_pose_i.block<2, 3>(0, 3) =
-                sqrt_info * reduce *
-                (ric.transpose() * Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() * R_j.transpose() *
-                 (-R_i *
-                      Sophus::SO3d::hat(Sophus::SO3d::exp((w_i - bg_i) * dt).matrix() * pi_in_I) -
-                  0.5 * R_i * Sophus::SO3d::hat(a_i * dt * dt)));
-            jacobian_pose_i.block<2, 3>(0, 0) = sqrt_info * reduce * ric.transpose() *
-                                                Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() *
-                                                R_j.transpose();
+            jacobian_pose_i.block<2, 3>(0, 0) =
+                sqrt_info * reduce * ric.transpose() * A_j * R_j.transpose();
+            jacobian_pose_i.block<2, 3>(0, 3) = sqrt_info * reduce * ric.transpose() * A_j *
+                                                R_j.transpose() *
+                                                (-R_i * Sophus::SO3d::hat(A_i * pi_in_I) -
+                                                 0.5 * R_i * Sophus::SO3d::hat(a_i * dt * dt));
         }
 
         if (jacobians[1]) {
             Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_pose_j(jacobians[1]);
+            jacobian_pose_j.block<2, 3>(0, 0) =
+                sqrt_info * reduce * (-ric.transpose() * A_j * R_j.transpose());
             jacobian_pose_j.block<2, 3>(0, 3) =
-                sqrt_info * reduce * ric.transpose() *
-                Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() *
+                sqrt_info * reduce * ric.transpose() * A_j *
                 Sophus::SO3d::hat(
                     R_j.transpose() * (pi_in_G - (P_j + V_j * dt + 0.5 * R_j * a_j * dt * dt)));
-            jacobian_pose_j.block<2, 3>(0, 0) =
-                sqrt_info * reduce *
-                (-ric.transpose() * Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() *
-                 R_j.transpose());
         }
 
         if (jacobians[2]) {
             Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_inv_depth(jacobians[2]);
-            jacobian_inv_depth =
-                sqrt_info * reduce *
-                (-ric.transpose() * Sophus::SO3d::exp((bg_j - w_j) * dt).matrix() *
-                 R_j.transpose() * R_i * Sophus::SO3d::exp((w_i - bg_i) * dt).matrix() * ric *
-                 (uv_i / (inv_depth * inv_depth)));
+            jacobian_inv_depth = sqrt_info * reduce *
+                                 (-ric.transpose() * A_j * R_j.transpose() * R_i * A_i * ric *
+                                  (uv_i / (inv_depth * inv_depth)));
         }
 
         // dt Jacobian: 仅角速度+线速度，去除加速度耦合
         if (jacobians[3]) {
             Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_dt(jacobians[3]);
-            Eigen::Matrix3d A_i = Sophus::SO3d::exp((w_i - bg_i) * dt).matrix();
-            Eigen::Matrix3d A_j = Sophus::SO3d::exp((bg_j - w_j) * dt).matrix();
+
             jacobian_dt = sqrt_info * reduce * ric.transpose() *
                           (Sophus::SO3d::hat(bg_j - w_j) * pj_in_I +
                            A_j * R_j.transpose() *

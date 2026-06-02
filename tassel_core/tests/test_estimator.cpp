@@ -78,8 +78,7 @@ int main(int argc, char** argv) {
     viewer->createImagePublisher("stereo/image");
     viewer->createOdometryPublisher("camera", "odom/camera");
     viewer->createPathPublisher("vo/path");
-    viewer->createPointCloudPublisher("landmarks/mono");
-    viewer->createPointCloudPublisher("landmarks/stereo");
+    viewer->createPointCloudPublisher("landmarks");
 
     auto stereo_buffer = StereoBuf::createShared(15);
     auto imu_buffer = IMUBuf::createShared(600);
@@ -186,14 +185,9 @@ int main(int argc, char** argv) {
         viewer->publishOdometry("odom/camera", pose.translation(), pose.unit_quaternion());
         viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion());
     });
-    estimator.setMonoCloudCallback(
-        [&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
-            viewer->publishPointCloud("landmarks/mono", pts);
-        });
-    estimator.setStereoCloudCallback(
-        [&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
-            viewer->publishPointCloud("landmarks/stereo", pts);
-        });
+    estimator.setCloudCallback([&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
+        viewer->publishPointCloud("landmarks", pts);
+    });
 
     rclcpp::Rate rate(30);
 
