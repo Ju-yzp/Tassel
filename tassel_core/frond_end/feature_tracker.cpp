@@ -156,6 +156,20 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::stereoTracking(
     return feature_frame;
 }
 
+void FeatureTracker::reset() {
+    for (auto& [id, ctc] : ctc_map_) {
+        ctc.prev_pts.clear();
+        ctc.cur_pts.clear();
+        ctc.prev_ids.clear();
+        ctc.cur_ids.clear();
+        ctc.prev_img = cv::Mat();
+        ctc.mask = cv::Mat();
+        ctc.grid_mask.assign(ctc.grid_rows * ctc.grid_cols, false);
+        ctc.feature_count = 0;
+        ctc.tracked_times.clear();
+    }
+}
+
 void FeatureTracker::drawTrackingResult(size_t camera_id, cv::Mat& img) {
     if (img.type() == CV_8UC1) {
         cv::cvtColor(img, img, cv::COLOR_GRAY2BGR);

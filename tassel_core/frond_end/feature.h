@@ -34,8 +34,6 @@ const double INVALID_DEPTH = -1.0;
 const double MIN_DISTANCE = 0.1;
 const double MAX_DISTANCE = 3.0;
 
-enum class TriangulationSource : uint8_t { None = 0, Monocular = 1, Stereo = 2 };
-
 struct Feature {
     Feature(size_t max_capacity);
 
@@ -59,7 +57,6 @@ struct Feature {
 
     size_t start_frame_id;
     double estimated_depth;
-    TriangulationSource tri_source = TriangulationSource::None;
     std::vector<FeaturePerFrame> observations;
     int optimized_count = 0;
 };

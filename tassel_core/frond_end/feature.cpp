@@ -44,7 +44,6 @@ void Feature::stereoTriangulate(
     double condition_number = singular_values(0) / singular_values(3);
     if (condition_number < 1e6 && point_3d.z() > min_depth && point_3d.z() < max_depth) {
         estimated_depth = point_3d.z();
-        tri_source = TriangulationSource::Stereo;
         return;
     }
 }
@@ -103,7 +102,6 @@ void Feature::monoTriangulate(
         double condition_number = singular_values(0) / singular_values(3);
         if (condition_number < 1e6 && point_3d.z() > min_depth && point_3d.z() < max_depth) {
             estimated_depth = point_3d.z();
-            tri_source = TriangulationSource::Monocular;
         }
     }
 }
@@ -122,7 +120,6 @@ void Feature::removeOldest(
                 estimated_depth = pj_in_C.z();
             } else {
                 estimated_depth = INVALID_DEPTH;
-                tri_source = TriangulationSource::None;
             }
         }
         observations.erase(observations.begin());

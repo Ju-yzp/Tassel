@@ -27,7 +27,10 @@ public:
         const State& state, const Eigen::Matrix3d& ric1 = Eigen::Matrix3d::Identity(),
         const Eigen::Vector3d& tic1 = Eigen::Vector3d::Zero());
 
-    void initPoseByPNP(State& state);
+    bool initPoseByPNP(State& state);
+
+    bool initPoseByPNP(
+        int frame_count, std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps);
 
     void removeOldest(const State& state);
 

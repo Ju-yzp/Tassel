@@ -56,6 +56,7 @@ struct Parameters {
         acc_w = parser.as<double>("acc_w");
         gyr_n = parser.as<double>("gyr_n");
         gyr_w = parser.as<double>("gyr_w");
+        g_norm = parser.as<double>("g_norm");
     }
 
     std::map<size_t, Eigen::Matrix4d> T_cam_imu_map;
@@ -93,6 +94,7 @@ struct Parameters {
 
     double acc_n, acc_w;
     double gyr_n, gyr_w;
+    double g_norm;
 };
 
 }  // namespace tassel_tools

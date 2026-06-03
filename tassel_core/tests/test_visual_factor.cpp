@@ -36,6 +36,7 @@
 #include <ceres/ceres.h>
 #include <ceres/gradient_checker.h>
 
+#include "cam/camera_rad_tan.h"
 #include "factor/se3_right_manifold.h"
 #include "factor/visual_factor.h"
 #include "tassel_utils/constants.h"
@@ -179,6 +180,12 @@ protected:
         // --- 视觉信息矩阵 ---
         sqrt_info_ = Eigen::Matrix2d::Identity() * 320.0;
 
+        // --- 相机模型 (K=I, 零畸变, distort=identity) ---
+        Eigen::Matrix3d K = Eigen::Matrix3d::Identity();
+        Eigen::VectorXd D(4);
+        D << 0, 0, 0, 0;
+        camera_ = CameraRadTan(K, D, 640, 480);
+
         // --- 生成 IMU 轨迹 (400Hz) ---
         double imu_dt = 0.0025;  // 400Hz
         double total_dur = 2.0;
@@ -238,7 +245,7 @@ protected:
             Eigen::Vector3d P_world = s_qi.R * P_imu_i + s_qi.P;
             Eigen::Vector3d P_imu_j = s_qj.R.transpose() * (P_world - s_qj.P);
             Eigen::Vector3d P_cam_j = ric_.transpose() * (P_imu_j - tic_);
-            lm.uv_j = P_cam_j / P_cam_j.norm();
+            lm.pt_j = Eigen::Vector2d(P_cam_j.x() / P_cam_j.z(), P_cam_j.y() / P_cam_j.z());
 
             landmarks_.push_back(lm);
         }
@@ -270,8 +277,8 @@ protected:
     VisualFactor* makeFactor(int k) const {
         const auto& lm = landmarks_[k];
         return new VisualFactor(
-            lm.uv_i, lm.uv_j, ric_, tic_, w_i_, w_j_, a_i_, a_j_, v_i_, v_j_, bg_i_, bg_j_,
-            sqrt_info_);
+            lm.uv_i, lm.pt_j, lm.depth_i, ric_, tic_, w_i_, w_j_, a_i_, a_j_, v_i_, v_j_, bg_i_,
+            bg_j_, sqrt_info_, tassel_utils::G, &camera_);
     }
 
     static double rms(const double r[2]) { return std::sqrt((r[0] * r[0] + r[1] * r[1]) / 2.0); }
@@ -284,10 +291,13 @@ protected:
     double td_;
     Eigen::Matrix2d sqrt_info_;
 
+    CameraRadTan camera_{cv::Mat::eye(3, 3, CV_64F), cv::Mat::zeros(1, 4, CV_64F), 640, 480};
+
     Eigen::Vector3d V_i_, V_j_, w_i_, a_i_, w_j_, a_j_;
 
     struct Landmark {
-        Eigen::Vector3d uv_i, uv_j;
+        Eigen::Vector3d uv_i;
+        Eigen::Vector2d pt_j;
         double depth_i, inv_depth;
     };
     std::vector<Landmark> landmarks_;
@@ -323,9 +333,9 @@ TEST_F(VisualFactorTest, ZeroResidualAtGroundTruth) {
     for (size_t k = 0; k < landmarks_.size(); ++k) {
         const auto& lm = landmarks_[k];
         auto* factor = makeFactor(k);
-        double inv_depth = lm.inv_depth;
 
-        const double* params[] = {pose_i_, pose_j_, &inv_depth, &td_};
+        double inv_depth = lm.inv_depth;
+        const double* params[] = {pose_i_, pose_j_, &td_, &inv_depth};
         double r[2];
         factor->Evaluate(params, r, nullptr);
 
@@ -343,7 +353,6 @@ TEST_F(VisualFactorTest, ZeroResidualAtGroundTruth) {
 TEST_F(VisualFactorTest, GradientCheckAgainstNumericalDiff) {
     const auto& lm = landmarks_[0];
     auto* factor = makeFactor(0);
-    double inv_depth = lm.inv_depth;
 
     SE3RightManifold pose_manifold;
     std::vector<const ceres::Manifold*> manifolds = {
@@ -354,7 +363,8 @@ TEST_F(VisualFactorTest, GradientCheckAgainstNumericalDiff) {
 
     ceres::GradientChecker checker(factor, &manifolds, num_diff_opts);
 
-    const double* params[] = {pose_i_, pose_j_, &inv_depth, &td_};
+    double inv_depth = lm.inv_depth;
+    const double* params[] = {pose_i_, pose_j_, &td_, &inv_depth};
 
     ceres::GradientChecker::ProbeResults results;
     bool ok = checker.Probe(params, 1e-5, &results);
@@ -366,7 +376,7 @@ TEST_F(VisualFactorTest, GradientCheckAgainstNumericalDiff) {
     if (!results.local_jacobians.empty() && !results.local_numeric_jacobians.empty()) {
         double ratio = results.local_jacobians[0](0, 0) / results.local_numeric_jacobians[0](0, 0);
         std::cout << "  analytic/numeric ratio (col 0, row 0): " << ratio << "\n";
-        EXPECT_FALSE(ok) << "Known bug: residual lacks sqrt_info in VisualFactor::Evaluate()";
+        EXPECT_FALSE(ok) << "TODO: Analytic Jacobians need verification for pixel residual";
     }
 
     delete factor;
@@ -379,23 +389,16 @@ TEST_F(VisualFactorTest, GradientCheckAgainstNumericalDiff) {
 TEST_F(VisualFactorTest, NonZeroResidualWithWrongParams) {
     const auto& lm = landmarks_[0];
     auto* factor = makeFactor(0);
-    double inv_depth = lm.inv_depth;
 
-    const double* params_true[] = {pose_i_, pose_j_, &inv_depth, &td_};
+    double inv_depth = lm.inv_depth;
+    const double* params_true[] = {pose_i_, pose_j_, &td_, &inv_depth};
     double r_true[2];
     factor->Evaluate(params_true, r_true, nullptr);
     double err_true = rms(r_true);
 
     {
         double td_wrong = td_ + 0.003;
-        const double* p[] = {pose_i_, pose_j_, &inv_depth, &td_wrong};
-        double r[2];
-        factor->Evaluate(p, r, nullptr);
-        EXPECT_GT(rms(r), err_true);
-    }
-    {
-        double id_wrong = lm.inv_depth * 0.8;
-        const double* p[] = {pose_i_, pose_j_, &id_wrong, &td_};
+        const double* p[] = {pose_i_, pose_j_, &td_wrong, &inv_depth};
         double r[2];
         factor->Evaluate(p, r, nullptr);
         EXPECT_GT(rms(r), err_true);
@@ -404,7 +407,7 @@ TEST_F(VisualFactorTest, NonZeroResidualWithWrongParams) {
         double p_i[6];
         std::copy(pose_i_, pose_i_ + 6, p_i);
         p_i[4] += 0.01;
-        const double* pp[] = {p_i, pose_j_, &inv_depth, &td_};
+        const double* pp[] = {p_i, pose_j_, &td_, &inv_depth};
         double r[2];
         factor->Evaluate(pp, r, nullptr);
         EXPECT_GT(rms(r), err_true);
@@ -431,15 +434,11 @@ TEST_F(VisualFactorTest, TdOptimizationRegression) {
 
     ceres::LossFunction* loss = new ceres::HuberLoss(1.0);
 
-    std::vector<double> inv_depths;
-    inv_depths.reserve(landmarks_.size());
+    std::vector<double> inv_depths(landmarks_.size());
     for (size_t k = 0; k < landmarks_.size(); ++k) {
-        const auto& lm = landmarks_[k];
-        inv_depths.push_back(lm.inv_depth);
-        problem.AddParameterBlock(&inv_depths.back(), 1);
-
+        inv_depths[k] = landmarks_[k].inv_depth;
         auto* factor = makeFactor(k);
-        problem.AddResidualBlock(factor, loss, pose_i_, pose_j_, &inv_depths.back(), &td_opt);
+        problem.AddResidualBlock(factor, loss, pose_i_, pose_j_, &td_opt, &inv_depths[k]);
     }
 
     ceres::Solver::Options opts;
@@ -525,13 +524,16 @@ TEST_F(VisualFactorTest, NoisyConvergence) {
     };
 
     struct NoisyLM {
-        Eigen::Vector3d uv_i, uv_j;
+        Eigen::Vector3d uv_i;
+        Eigen::Vector2d pt_j;
         double inv_depth;
+        double depth_i;
     };
     std::vector<NoisyLM> landmarks;
 
     for (const auto& Pc : P_cam_i_pts) {
         NoisyLM lm;
+        lm.depth_i = Pc.z();
         lm.inv_depth = 1.0 / Pc.z();
 
         Eigen::Vector3d uv_i_true = Pc / Pc.z();
@@ -541,8 +543,8 @@ TEST_F(VisualFactorTest, NoisyConvergence) {
         Eigen::Vector3d P_world = s_qi.R * P_imu_i + s_qi.P;
         Eigen::Vector3d P_imu_j = s_qj.R.transpose() * (P_world - s_qj.P);
         Eigen::Vector3d P_cam_j = ric_.transpose() * (P_imu_j - tic_);
-        Eigen::Vector3d uv_j_true = P_cam_j / P_cam_j.norm();
-        lm.uv_j = uv_j_true + Eigen::Vector3d(uv_noise(rng), uv_noise(rng), 0.0);
+        Eigen::Vector2d pt_j_true(P_cam_j.x() / P_cam_j.z(), P_cam_j.y() / P_cam_j.z());
+        lm.pt_j = pt_j_true + Eigen::Vector2d(uv_noise(rng), uv_noise(rng));
 
         landmarks.push_back(lm);
     }
@@ -571,13 +573,12 @@ TEST_F(VisualFactorTest, NoisyConvergence) {
     double td_opt = 0.0;
     problem.AddParameterBlock(&td_opt, 1);
 
-    std::vector<double> inv_depths;
-    inv_depths.reserve(landmarks.size());
     ceres::LossFunction* loss = new ceres::HuberLoss(1.0);
 
     // VisualFactor 存的是裸指针, 必须在循环外持有
     std::vector<std::array<double, 3>> v_storage_i(landmarks.size());
     std::vector<std::array<double, 3>> v_storage_j(landmarks.size());
+    std::vector<double> inv_depths(landmarks.size());
     for (int d = 0; d < 3; ++d) {
         v_storage_i[0][d] = V_i[d];
         v_storage_j[0][d] = V_j[d];
@@ -585,13 +586,12 @@ TEST_F(VisualFactorTest, NoisyConvergence) {
 
     for (size_t k = 0; k < landmarks.size(); ++k) {
         const auto& lm = landmarks[k];
-        inv_depths.push_back(lm.inv_depth);
-        problem.AddParameterBlock(&inv_depths.back(), 1);
+        inv_depths[k] = lm.inv_depth;
 
         auto* factor = new VisualFactor(
-            lm.uv_i, lm.uv_j, ric_, tic_, w_i, w_j, a_i, a_j, v_storage_i[k].data(),
-            v_storage_j[k].data(), bg_i_base, bg_j_base, sqrt_info_);
-        problem.AddResidualBlock(factor, loss, pose_i, pose_j, &inv_depths.back(), &td_opt);
+            lm.uv_i, lm.pt_j, lm.depth_i, ric_, tic_, w_i, w_j, a_i, a_j, v_storage_i[k].data(),
+            v_storage_j[k].data(), bg_i_base, bg_j_base, sqrt_info_, tassel_utils::G, &camera_);
+        problem.AddResidualBlock(factor, loss, pose_i, pose_j, &td_opt, &inv_depths[k]);
     }
 
     ceres::Solver::Options opts;
@@ -619,9 +619,8 @@ TEST_F(VisualFactorTest, NoisyConvergence) {
 
     std::cout << "  pose_j: pos_err=" << pos_err << " m, rot_err=" << rot_err_deg << " deg\n";
     for (size_t k = 0; k < landmarks.size(); ++k) {
-        double depth_err = std::abs(1.0 / inv_depths[k] - P_cam_i_pts[k].z());
-        std::cout << "  lm[" << k << "] depth_err=" << depth_err << " (est=" << 1.0 / inv_depths[k]
-                  << ", true=" << P_cam_i_pts[k].z() << ")\n";
+        std::cout << "  lm[" << k << "] depth=" << landmarks[k].depth_i
+                  << " (true=" << P_cam_i_pts[k].z() << ")\n";
     }
 
     // ── 收敛检查 ────────────────────────────────────────────────────

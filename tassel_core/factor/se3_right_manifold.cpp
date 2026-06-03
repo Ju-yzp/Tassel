@@ -11,7 +11,9 @@ bool SE3RightManifold::Plus(const double* x, const double* delta, double* x_plus
 
     Sophus::SO3d R = Sophus::SO3d::exp(phi);
     Sophus::SO3d R_new = R * Sophus::SO3d::exp(dphi);
-    Eigen::Vector3d phi_new = R_new.log();
+    Eigen::Quaterniond q_new = R_new.unit_quaternion();
+    q_new.normalize();
+    Eigen::Vector3d phi_new = Sophus::SO3d(q_new).log();
     Eigen::Vector3d P_new = P + dP;
 
     for (int i = 0; i < 3; ++i) {

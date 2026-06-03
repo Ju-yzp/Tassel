@@ -154,6 +154,7 @@ int main(int argc, char** argv) {
     std::cout << "[VO] Stereo-IMU Synchronizer running. Waiting for data..." << std::endl;
 
     auto cameras = initializeCameras(params);
+    const tassel_core::CameraBase* camera_ptr = cameras[0].get();
 
     FeatureTracker tracker(
         params.flow_back, params.max_square_move_dist, false, 5, params.min_gradient);
@@ -172,6 +173,7 @@ int main(int argc, char** argv) {
     option.acc_w = params.acc_w;
     option.gyr_n = params.gyr_n;
     option.gyr_w = params.gyr_w;
+    option.g_norm = params.g_norm;
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count));
     state->visual_sqrt_info = Eigen::Matrix2d::Identity() * params.visual_factor_weight;
     auto feature_manager = std::make_shared<FeatureManager>(
@@ -180,7 +182,7 @@ int main(int argc, char** argv) {
         params.min_translation, params.min_depth, params.max_depth);
 
     Estimator estimator(option, state, feature_manager, ric, tic, ric1, tic1);
-
+    estimator.setCamera(camera_ptr);
     estimator.setPoseCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
         viewer->publishOdometry("odom/camera", pose.translation(), pose.unit_quaternion());
         viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion());

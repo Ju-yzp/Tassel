@@ -31,6 +31,8 @@ public:
         size_t left_camera_id, const cv::Mat& left_img, size_t right_camera_id,
         const cv::Mat& right_img);
 
+    void reset();
+
     void drawTrackingResult(size_t camera_id, cv::Mat& img);
 
 private:

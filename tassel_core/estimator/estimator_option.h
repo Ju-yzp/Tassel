@@ -12,6 +12,8 @@ struct EstimatorOption {
 
     double init_time_span = 5.0;
 
+    double g_norm = 9.8;
+
     // IMU noise
     double acc_n = 0.01;
     double acc_w = 0.001;

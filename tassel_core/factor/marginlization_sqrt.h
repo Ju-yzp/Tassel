@@ -13,6 +13,7 @@
 #include "factor/marg_lin_data.h"
 #include "frond_end/feature.h"
 #include "imu_block.h"
+#include "tassel_utils/constants.h"
 #include "tassel_utils/macros.h"
 
 namespace tassel_core {
@@ -48,7 +49,7 @@ public:
         }
         imu_blocks_.resize(preintegrators_.size());
         for (size_t idx = 0; idx < preintegrators_.size(); ++idx) {
-            imu_blocks_[idx].allocate(preintegrators_[idx]);
+            imu_blocks_[idx].allocate(preintegrators_[idx], tassel_utils::G);
         }
     }
 

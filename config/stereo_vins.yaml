@@ -39,16 +39,16 @@ max_square_move_dist: 0.8
 min_gradient: 10.0
 enable_statistics: true
 
-reprojection_error_thres: 0.995
-parallax_thres: 80.0
+reprojection_error_thres: 2
+parallax_thres: 70.0
 max_pnp_needed_num: 25
-tracked_times_thres: 2
+tracked_times_thres: 3
 min_pnp_num: 8
 min_pnp_inliers_ratio: 0.85
 min_depth: 0.15
 max_depth: 3.0
 min_translation: 0.16
-min_tracked_pts_num: 90
+min_tracked_pts_num: 50
 
 use_imu: true
 num_iterations: 10
@@ -56,9 +56,10 @@ max_frame_count: 10
 
 initial_exposure_time_us: 6000
 
-visual_factor_weight: 500.0
+visual_factor_weight: 300.0
 
 acc_n: 1.9291286492253038e-02
 acc_w: 8.0363303593887979e-04
 gyr_n: 2.6401761065710893e-03
 gyr_w: 7.0304129470456934e-05
+g_norm: 9.80

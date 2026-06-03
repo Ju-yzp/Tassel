@@ -12,7 +12,8 @@ namespace tassel_core {
 template <typename Derived>
 class IMUFactor : public ceres::SizedCostFunction<15, 6, 9, 6, 9> {
 public:
-    IMUFactor(std::shared_ptr<IntegratorBase<Derived>> integrator_) : integrator(integrator_) {}
+    IMUFactor(std::shared_ptr<IntegratorBase<Derived>> integrator_, const Eigen::Vector3d& G_)
+        : integrator(integrator_), G(G_) {}
 
     bool Evaluate(
         double const* const* parameters, double* residuals, double** jacobians) const override {
@@ -53,12 +54,12 @@ public:
 
         // 残差: [dp, dq, dv, dba, dbg]
         res.block<3, 1>(0, 0) =
-            R_i.transpose() * (0.5 * tassel_utils::G * sum_dt * sum_dt + P_j - P_i - V_i * sum_dt) -
+            R_i.transpose() * (0.5 * G * sum_dt * sum_dt + P_j - P_i - V_i * sum_dt) -
             corrected_delta_p;
         res.block<3, 1>(3, 0) =
             Sophus::SO3d(corrected_delta_q.inverse() * (R_i.inverse() * R_j)).log();
         res.template block<3, 1>(6, 0) =
-            R_i.transpose() * (tassel_utils::G * sum_dt + V_j - V_i) - corrected_delta_v;
+            R_i.transpose() * (G * sum_dt + V_j - V_i) - corrected_delta_v;
         res.template block<3, 1>(9, 0) = Ba_j - Ba_i;
         res.template block<3, 1>(12, 0) = Bg_j - Bg_i;
 
@@ -76,12 +77,11 @@ public:
                     jacobians[0]);
                 jacobian_pose_i.setZero();
                 jacobian_pose_i.template block<3, 3>(0, 3) = Sophus::SO3d::hat(
-                    R_i.transpose() *
-                    (0.5 * tassel_utils::G * sum_dt * sum_dt + P_j - P_i - V_i * sum_dt));
+                    R_i.transpose() * (0.5 * G * sum_dt * sum_dt + P_j - P_i - V_i * sum_dt));
                 jacobian_pose_i.template block<3, 3>(0, 0) = -R_i.transpose();
                 jacobian_pose_i.template block<3, 3>(3, 3) = Jr_inv * R_j.transpose() * R_i;
                 jacobian_pose_i.template block<3, 3>(6, 3) =
-                    Sophus::SO3d::hat(R_i.transpose() * (tassel_utils::G * sum_dt + V_j - V_i));
+                    Sophus::SO3d::hat(R_i.transpose() * (G * sum_dt + V_j - V_i));
                 jacobian_pose_i = sqrt_info * jacobian_pose_i;
             }
             if (jacobians[1]) {
@@ -128,6 +128,7 @@ public:
         return true;
     }
     std::shared_ptr<IntegratorBase<Derived>> integrator;
+    Eigen::Vector3d G;
 };
 }  // namespace tassel_core
 #endif  // TASSEL_CORE_FACTOR_IMU_FACTOR_H_

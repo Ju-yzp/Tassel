@@ -2,6 +2,7 @@
 #define TASSEL_CORE_INTEGRATOR_BASE_H_
 
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 #include <sophus/so3.hpp>
 #include <utility>
 #include <vector>
@@ -53,15 +54,15 @@ public:
         }
     }
 
-    inline Eigen::Matrix3d get_dq_dbg() { return jacobian.template block<3, 3>(3, 12); }
+    inline Eigen::Matrix3d get_dq_dbg() const { return jacobian.template block<3, 3>(3, 12); }
 
-    inline Eigen::Matrix3d get_dp_dbg() { return jacobian.template block<3, 3>(0, 12); }
+    inline Eigen::Matrix3d get_dp_dbg() const { return jacobian.template block<3, 3>(0, 12); }
 
-    inline Eigen::Matrix3d get_dp_dba() { return jacobian.template block<3, 3>(0, 9); }
+    inline Eigen::Matrix3d get_dp_dba() const { return jacobian.template block<3, 3>(0, 9); }
 
-    inline Eigen::Matrix3d get_dv_dbg() { return jacobian.template block<3, 3>(6, 12); }
+    inline Eigen::Matrix3d get_dv_dbg() const { return jacobian.template block<3, 3>(6, 12); }
 
-    inline Eigen::Matrix3d get_dv_dba() { return jacobian.template block<3, 3>(6, 9); }
+    inline Eigen::Matrix3d get_dv_dba() const { return jacobian.template block<3, 3>(6, 9); }
 
     std::vector<tassel_utils::IMUMeasurement> buffer;
 
@@ -130,13 +131,15 @@ public:
         V.block<3, 3>(6, 3) = 0.5 * -temp_delta_q * R_a_1_x * dt * 0.5 * dt;
         V.block<3, 3>(6, 6) = 0.5 * temp_delta_q * dt;
         V.block<3, 3>(6, 9) = V.block<3, 3>(6, 3);
-        V.block<3, 3>(9, 12) = Eigen::MatrixXd::Identity(3, 3);
-        V.block<3, 3>(12, 15) = Eigen::MatrixXd::Identity(3, 3);
+        V.block<3, 3>(9, 12) = Eigen::MatrixXd::Identity(3, 3) * dt;
+        V.block<3, 3>(12, 15) = Eigen::MatrixXd::Identity(3, 3) * dt;
 
         jacobian = F * jacobian;
         covariance = F * covariance * F.transpose() + V * noise * V.transpose();
 
-        final_delta_q = temp_delta_q;
+        Eigen::Quaterniond q(temp_delta_q);
+        q.normalize();
+        final_delta_q = q.toRotationMatrix();
         final_delta_p = temp_delta_p;
         final_delta_v = temp_delta_v;
         sum_dt += dt;

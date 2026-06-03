@@ -18,6 +18,8 @@
 
 namespace tassel_core {
 
+class CameraBase;
+
 class Estimator {
 public:
     Estimator(
@@ -38,16 +40,20 @@ public:
     void setCloudCallback(std::function<void(double, const std::vector<Eigen::Vector3d>&)> cb) {
         cloud_callback_ = std::move(cb);
     }
+    void setCamera(const CameraBase* camera) {
+        camera_ = camera;
+        if (state_) state_->camera = camera;
+    }
 
     void optimize();
+
+    void resetInit();
 
 private:
     void buildPrior();
     void slideWindow();
     void solveGyroBias();
     void initializeImu(const std::vector<tassel_utils::IMUMeasurement>& imu_measurements);
-    bool linearAlignment(Eigen::Vector3d& G_body);
-    void refineGravity(Eigen::Vector3d& G_body);
 
     Eigen::Matrix<double, 18, 18> initNoise() const;
 
@@ -59,6 +65,8 @@ private:
     Eigen::Vector3d tic_;
     Eigen::Matrix3d ric1_;
     Eigen::Vector3d tic1_;
+
+    const CameraBase* camera_ = nullptr;
 
     Eigen::Matrix<double, 18, 18> noise_;
 
@@ -80,6 +88,9 @@ private:
     // marginalization prior
     bool is_first_optimization_ = true;
     std::unique_ptr<MargLinData> marg_data_;
+
+    // Runtime gravity vector (estimated by VI alignment, used in IMU propagation)
+    Eigen::Vector3d Grav_ = Eigen::Vector3d(0, 0, 9.8);
 
     // Pnp解算获取imu的位姿
     std::vector<Eigen::Matrix3d> Rs_;

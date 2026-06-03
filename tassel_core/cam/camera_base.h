@@ -52,7 +52,7 @@ public:
     }
 
     virtual void get_jacobian(
-        Eigen::Vector2d uv_norm, Eigen::MatrixXd& H_dz_dzn, Eigen::MatrixXd& H_dz_dzeta) = 0;
+        Eigen::Vector2d uv_norm, Eigen::MatrixXd& H_dz_dzn, Eigen::MatrixXd& H_dz_dzeta) const = 0;
 
     int get_height() const { return height_; }
     int get_width() const { return width_; }

@@ -11,6 +11,7 @@
 #include "tassel_utils/constants.h"
 
 namespace tassel_core {
+class CameraBase;
 struct State {
     State(
         int max_frame_count_ = 10, bool use_imu_ = false,
@@ -115,6 +116,23 @@ struct State {
         storage_speed_bias_lin = params_speed_bias;
     }
 
+    void reset() {
+        cur_frame_count = 0;
+        acc_vec.clear();
+        gyro_vec.clear();
+        std::fill(Rs.begin(), Rs.end(), Eigen::Matrix3d::Identity());
+        std::fill(Ps.begin(), Ps.end(), Eigen::Vector3d::Zero());
+        std::fill(Vs.begin(), Vs.end(), Eigen::Vector3d::Zero());
+        std::fill(Bas.begin(), Bas.end(), Eigen::Vector3d::Zero());
+        std::fill(Bgs.begin(), Bgs.end(), Eigen::Vector3d::Zero());
+        std::fill(params_pose.begin(), params_pose.end(), std::array<double, 6>{0, 0, 0, 0, 0, 0});
+        std::fill(
+            params_speed_bias.begin(), params_speed_bias.end(),
+            std::array<double, 9>{0, 0, 0, 0, 0, 0, 0, 0, 0});
+        delay_time = 0.0;
+        param_delay_time = 0.0;
+    }
+
     int max_frame_count;
     int cur_frame_count;
     bool use_imu;
@@ -139,6 +157,9 @@ struct State {
     std::vector<std::array<double, 6>> params_pose;
     std::vector<std::array<double, 9>> params_speed_bias;  // 线速度 / 加速度偏置 / 角速度偏置
     double param_delay_time;
+
+    //  相机模型（用于 VisualFactor 畸变与雅可比）
+    const CameraBase* camera = nullptr;
 
     //  视觉因子信息矩阵
     Eigen::Matrix2d visual_sqrt_info;

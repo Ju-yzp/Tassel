@@ -80,7 +80,8 @@ public:
     }
 
     void get_jacobian(
-        Eigen::Vector2d uv_norm, Eigen::MatrixXd& H_dz_dzn, Eigen::MatrixXd& H_dz_dzeta) override {
+        Eigen::Vector2d uv_norm, Eigen::MatrixXd& H_dz_dzn,
+        Eigen::MatrixXd& H_dz_dzeta) const override {
         double x = uv_norm(0);
         double y = uv_norm(1);
         double x_2 = x * x;

@@ -13,6 +13,7 @@
 #include <opencv2/core/types.hpp>
 
 // tassel
+#include "cam/camera_base.h"
 #include "feature.h"
 #include "feature_manager.h"
 #include "state/state.h"
@@ -78,16 +79,16 @@ void FeatureManager::triangulate(
     auto cs = state.get_compensated_state();
     for (auto& [id, feature] : features_) {
         feature.stereoTriangulate(state.ric, state.tic, ric1, tic1, min_depth_, max_depth_);
-        // if (mono_triangulate) {
-        //     feature.monoTriangulate(
-        //         cs, state.ric, state.tic, min_translation_, min_depth_, max_depth_);
-        // }
+        if (mono_triangulate) {
+            feature.monoTriangulate(
+                cs, state.ric, state.tic, min_translation_, min_depth_, max_depth_);
+        }
     }
 }
 
-void FeatureManager::initPoseByPNP(State& state) {
+bool FeatureManager::initPoseByPNP(State& state) {
     if (state.cur_frame_count <= 0) {
-        return;
+        return true;  // first frame is reference
     }
 
     state.Rs[state.cur_frame_count] = state.Rs[state.cur_frame_count - 1];
@@ -113,7 +114,7 @@ void FeatureManager::initPoseByPNP(State& state) {
     if (static_cast<int>(object_pts.size()) < min_pnp_pt_num_) {
         spdlog::error(
             "Not enough points for PnP. Only {} points.", static_cast<int>(object_pts.size()));
-        return;
+        return false;
     }
 
     Eigen::Matrix3d guess_R = state.Rs[state.cur_frame_count - 1] * state.ric;
@@ -147,10 +148,81 @@ void FeatureManager::initPoseByPNP(State& state) {
         state.Rs[state.cur_frame_count] = q_opt.toRotationMatrix();
         state.Ps[state.cur_frame_count] = guess_P - guess_R * state.tic;
         spdlog::info("PNP success");
+        return true;
     } else {
         spdlog::error(
             "PnP failed,inliers ratio:{}",
             static_cast<double>(inliers.size()) / static_cast<double>(object_pts.size()));
+        return false;
+    }
+}
+
+bool FeatureManager::initPoseByPNP(
+    int frame_count, std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps) {
+    if (frame_count <= 0) return true;  // first frame is reference, no PnP needed
+
+    Rs[frame_count] = Rs[frame_count - 1];
+    Ps[frame_count] = Ps[frame_count - 1];
+
+    std::vector<cv::Point3f> object_pts;
+    std::vector<cv::Point2f> normalize_pts;
+    for (const auto& [id, feature] : features_) {
+        int start_frame_id = feature.start_frame_id;
+        double depth = feature.estimated_depth;
+        int obs_idx = frame_count - start_frame_id;
+        if (obs_idx < 0 || obs_idx >= static_cast<int>(feature.observations.size()) ||
+            depth == INVALID_DEPTH)
+            continue;
+        Eigen::Vector3d p_in_C = feature.observations[0].uv * depth;
+        Eigen::Vector3d p_in_W = Rs[start_frame_id] * p_in_C + Ps[start_frame_id];
+        object_pts.emplace_back(p_in_W(0), p_in_W(1), p_in_W(2));
+        Eigen::Vector3d uv = feature.observations[obs_idx].uv;
+        normalize_pts.emplace_back(uv(0), uv(1));
+    }
+
+    if (static_cast<int>(object_pts.size()) < min_pnp_pt_num_) {
+        spdlog::error(
+            "Not enough points for PnP. Only {} points.", static_cast<int>(object_pts.size()));
+        return false;
+    }
+
+    // Rs/Ps are already camera poses, use directly as PnP initial guess
+    Eigen::Matrix3d guess_R = Rs[frame_count - 1];
+    Eigen::Vector3d guess_P = Ps[frame_count - 1];
+
+    cv::Mat R_cv, rvec, tvec;
+    guess_R.transposeInPlace();
+    guess_P = (-guess_R * guess_P).eval();
+    cv::eigen2cv(guess_R, R_cv);
+    cv::eigen2cv(guess_P, tvec);
+    cv::Rodrigues(R_cv, rvec);
+
+    cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
+    std::vector<int> inliers;
+    bool success = cv::solvePnPRansac(
+        object_pts, normalize_pts, K, cv::Mat(), rvec, tvec, true, 30, reprojection_error_thres_,
+        min_pnp_inliers_ratio_, inliers, cv::SOLVEPNP_EPNP);
+
+    if (success) {
+        cv::Mat R_result_cv;
+        cv::Rodrigues(rvec, R_result_cv);
+        cv::cv2eigen(R_result_cv, guess_R);
+        cv::cv2eigen(tvec, guess_P);
+
+        guess_R.transposeInPlace();
+        guess_P = (-guess_R * guess_P).eval();
+
+        Eigen::Quaterniond q_opt(guess_R);
+        q_opt.normalize();
+        Rs[frame_count] = q_opt.toRotationMatrix();
+        Ps[frame_count] = guess_P;
+        spdlog::info("PNP success (camera pose)");
+        return true;
+    } else {
+        spdlog::error(
+            "PnP failed, inliers ratio: {}",
+            static_cast<double>(inliers.size()) / static_cast<double>(object_pts.size()));
+        return false;
     }
 }
 
@@ -179,6 +251,8 @@ void FeatureManager::removeNewest(size_t frame_count) {
 
 void FeatureManager::removeOutliers(const State& state) {
     auto cs = state.get_compensated_state();
+    if (!cs.camera) return;
+
     std::set<int> removed_ids;
     for (auto& [id, feature] : features_) {
         double depth = feature.estimated_depth;
@@ -193,17 +267,21 @@ void FeatureManager::removeOutliers(const State& state) {
         Eigen::Vector3d pi_in_I = cs.ric * pi_in_C + cs.tic;
         Eigen::Vector3d pi_in_W = cs.Rs[start_frame_id] * pi_in_I + cs.Ps[start_frame_id];
 
-        double cosine_sum = 0.0;
+        double error_sum = 0.0;
         for (size_t k = 1; k < observations.size(); ++k) {
             int j = start_frame_id + static_cast<int>(k);
             Eigen::Vector3d pj_in_I = cs.Rs[j].transpose() * (pi_in_W - cs.Ps[j]);
             Eigen::Vector3d pj_in_C = cs.ric.transpose() * (pj_in_I - cs.tic);
-            double cos_angle = pj_in_C.normalized().dot(observations[k].uv.normalized());
-            cosine_sum += cos_angle;
+
+            double inv_z = 1.0 / pj_in_C.z();
+            Eigen::Vector2d uv_norm(pj_in_C.x() * inv_z, pj_in_C.y() * inv_z);
+            Eigen::Vector2d uv_pixel = cs.camera->distort(uv_norm);
+            Eigen::Vector2d pt_meas(observations[k].pt.x, observations[k].pt.y);
+            error_sum += (uv_pixel - pt_meas).norm();
         }
 
-        double average_cosine = cosine_sum / static_cast<double>((observations.size() - 1));
-        if (average_cosine < reprojection_error_thres_) {
+        double average_error = error_sum / static_cast<double>((observations.size() - 1));
+        if (average_error > reprojection_error_thres_) {
             removed_ids.insert(id);
         }
     }

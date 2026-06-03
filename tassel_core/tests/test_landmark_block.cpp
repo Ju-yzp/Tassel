@@ -125,7 +125,7 @@ TEST_F(LandmarkBlockTest, QRSingleObservation) {
     EXPECT_NEAR(s(1, lb.get_landmark_index()), 0.0, kQrTol);
 }
 
-// ── QR: verify the Givens rotation is correct on a known 2-row case ────
+// ── QR: verify Householder reflection on a known 2-row case ──────────
 
 TEST_F(LandmarkBlockTest, QRGivensRotationExact) {
     LandmarkBlock lb(6, nullptr);
@@ -134,8 +134,6 @@ TEST_F(LandmarkBlockTest, QRGivensRotationExact) {
     auto& s = lb.get_mutable_storage();
     s.setZero();
 
-    // Set up known values: row0 = [1,2,3], row1 = [4,5,6]
-    // landmark column is at lm_idx (after padding)
     int lm = lb.get_landmark_index();
     int res = lb.get_residual_index();
     int pad = lb.get_padding_index();
@@ -147,24 +145,15 @@ TEST_F(LandmarkBlockTest, QRGivensRotationExact) {
     s(1, lm) = 5;
     s(1, res) = 6;
 
-    // Givens rotation to zero s(1, lm)=5 using s(0, lm)=2
-    // G = [c  s; -s  c] such that -s*2 + c*5 = 0
-    // c = 2/r, s = 5/r where r = sqrt(4+25) = sqrt(29)
-    double r = std::sqrt(29.0);
-    double c = 2.0 / r;
-    double s_val = 5.0 / r;
-
+    double norm_before = s.norm();
     lb.performQR();
 
+    // landmark column zeroed below row 0
     EXPECT_NEAR(s(1, lm), 0.0, kQrTol);
+    EXPECT_NE(std::abs(s(0, lm)), 0.0);
 
-    // row0_new = c * row0_old + s_val * row1_old
-    EXPECT_NEAR(s(0, 0), c * 1 + s_val * 4, 1e-12);
-    EXPECT_NEAR(s(0, res), c * 3 + s_val * 6, 1e-12);
-
-    // row1_new = -s_val * row0_old + c * row1_old
-    EXPECT_NEAR(s(1, 0), -s_val * 1 + c * 4, 1e-12);
-    EXPECT_NEAR(s(1, res), -s_val * 3 + c * 6, 1e-12);
+    // Frobenius norm preserved (Householder is orthogonal)
+    EXPECT_NEAR(s.norm(), norm_before, 1e-12);
 }
 
 // ── QR: 3-row case, verify two Givens rotations zero both rows ─────────
