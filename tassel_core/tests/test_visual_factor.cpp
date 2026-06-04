@@ -278,8 +278,8 @@ protected:
     VisualFactor* makeFactor(int k) const {
         const auto& lm = landmarks_[k];
         return new VisualFactor(
-            lm.uv_i, lm.pt_j, lm.depth_i, ric_, tic_, w_i_, w_j_, a_i_, a_j_, v_i_, v_j_, bg_i_,
-            bg_j_, sqrt_info_, &camera_);
+            lm.uv_i, lm.pt_j, ric_, tic_, w_i_, w_j_, a_i_, a_j_, v_i_, v_j_, bg_i_, bg_j_,
+            sqrt_info_, &camera_);
     }
 
     static double rms(const double r[2]) { return std::sqrt((r[0] * r[0] + r[1] * r[1]) / 2.0); }
@@ -590,7 +590,7 @@ TEST_F(VisualFactorTest, NoisyConvergence) {
         inv_depths[k] = lm.inv_depth;
 
         auto* factor = new VisualFactor(
-            lm.uv_i, lm.pt_j, lm.depth_i, ric_, tic_, w_i, w_j, a_i, a_j, v_storage_i[k].data(),
+            lm.uv_i, lm.pt_j, ric_, tic_, w_i, w_j, a_i, a_j, v_storage_i[k].data(),
             v_storage_j[k].data(), bg_i_base, bg_j_base, sqrt_info_, &camera_);
         problem.AddResidualBlock(factor, loss, pose_i, pose_j, &td_opt, &inv_depths[k]);
     }

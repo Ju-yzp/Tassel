@@ -64,7 +64,7 @@ Estimator::Estimator(
     Vs_[0] = Eigen::Vector3d::Zero();
 }
 
-void Estimator::resetInit() {
+void Estimator::reset() {
     gravity_initialized_ = false;
     init_ts_ = -1;
     last_ts_ = -1;
@@ -145,7 +145,7 @@ void Estimator::processMeasurement(
         if (!gravity_initialized_) {
             if (!feature_manager_->initPoseByPNP(frame_count, Rs_, Ps_, ric_, tic_)) {
                 spdlog::warn("PnP failed, resetting initialization");
-                resetInit();
+                reset();
                 return;
             }
         }
@@ -316,9 +316,9 @@ void Estimator::optimize() {
             int target_id = host_id + static_cast<int>(obs_idx);
             Eigen::Vector2d pt_j(f->observations[obs_idx].pt.x, f->observations[obs_idx].pt.y);
             auto* cost = new VisualFactor(
-                f->observations[0].uv, pt_j, f->estimated_depth, ric_, tic_,
-                state_->gyro_vec[host_id], state_->gyro_vec[target_id], state_->acc_vec[host_id],
-                state_->acc_vec[target_id], state_->params_speed_bias[host_id].data(),
+                f->observations[0].uv, pt_j, ric_, tic_, state_->gyro_vec[host_id],
+                state_->gyro_vec[target_id], state_->acc_vec[host_id], state_->acc_vec[target_id],
+                state_->params_speed_bias[host_id].data(),
                 state_->params_speed_bias[target_id].data(),
                 state_->params_speed_bias[host_id].data() + 6,
                 state_->params_speed_bias[target_id].data() + 6, sqrt_info, state_->camera);

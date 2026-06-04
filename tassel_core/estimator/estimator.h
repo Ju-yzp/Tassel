@@ -49,7 +49,7 @@ public:
 
     void optimize();
 
-    void resetInit();
+    void reset();
 
 private:
     void buildPrior();

@@ -27,10 +27,10 @@ inline Eigen::Matrix<double, 2, 3> computeTangentBasis(const Eigen::Vector3d& uv
 class VisualFactor : public ceres::SizedCostFunction<2, 6, 6, 1, 1> {
 public:
     explicit VisualFactor(
-        const Eigen::Vector3d& uv_i_, const Eigen::Vector2d& pt_j_, double depth_,
-        const Eigen::Matrix3d& ric_, const Eigen::Vector3d& tic_, const Eigen::Vector3d& w_i_,
-        const Eigen::Vector3d& w_j_, const Eigen::Vector3d& a_i_, const Eigen::Vector3d& a_j_,
-        const double* v_i_, const double* v_j_, const double* bg_i_lin_, const double* bg_j_lin_,
+        const Eigen::Vector3d& uv_i_, const Eigen::Vector2d& pt_j_, const Eigen::Matrix3d& ric_,
+        const Eigen::Vector3d& tic_, const Eigen::Vector3d& w_i_, const Eigen::Vector3d& w_j_,
+        const Eigen::Vector3d& a_i_, const Eigen::Vector3d& a_j_, const double* v_i_,
+        const double* v_j_, const double* bg_i_lin_, const double* bg_j_lin_,
         const Eigen::Matrix2d& sqrt_info_, const CameraBase* camera);
 
     virtual bool Evaluate(
@@ -39,7 +39,6 @@ public:
 private:
     Eigen::Vector3d uv_i;
     Eigen::Vector2d pt_j;
-    double depth;
     Eigen::Matrix3d ric;
     Eigen::Vector3d tic;
     Eigen::Vector3d w_i, w_j;

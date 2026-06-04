@@ -13,7 +13,6 @@
 #include "factor/marg_lin_data.h"
 #include "frond_end/feature.h"
 #include "imu_block.h"
-#include "tassel_utils/constants.h"
 #include "tassel_utils/macros.h"
 
 namespace tassel_core {

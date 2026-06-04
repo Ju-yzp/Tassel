@@ -47,7 +47,7 @@ void LandmarkBlock::linearize(const Feature& feature, const State& state) {
         Eigen::Vector2d pt_j(observations[offset].pt.x, observations[offset].pt.y);
         double inv_depth = 1.0 / depth;
         auto visual_factor = new VisualFactor(
-            uv_i, pt_j, depth, ric, tic, state.gyro_vec[start_frame_id], state.gyro_vec[target_id],
+            uv_i, pt_j, ric, tic, state.gyro_vec[start_frame_id], state.gyro_vec[target_id],
             state.acc_vec[start_frame_id], state.acc_vec[target_id],
             state.params_speed_bias[start_frame_id].data(),
             state.params_speed_bias[target_id].data(),
