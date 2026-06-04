@@ -21,6 +21,7 @@
 
 #include <ceres/ceres.h>
 
+#include "factor/initial_gravity_speed_factor.h"
 #include "factor/integrator_base.h"
 #include "factor/visual_factor.h"  // computeTangentBasis
 #include "tassel_utils/types.h"
@@ -50,66 +51,6 @@ struct SimConfig {
     // True biases (|Ba| ≈ 0.3, realistic for BMI270 at startup)
     Eigen::Vector3d Ba_true = Eigen::Vector3d(0.25, -0.15, 0.10);
     Eigen::Vector3d Bg_true = Eigen::Vector3d(0.0, 0.0, 0.0);  // assume solved
-};
-
-// ── Cost function: preintegration residual per frame pair ──────────────────
-// Parameters: [V_i(3), V_j(3), w(2)]  — Ba is NOT optimized, deferred to backend
-// Residual: 6D [dp_err(3), dv_err(3)]
-
-struct ViInitCost {
-    Eigen::Vector3d dp_meas, dv_meas;
-    Eigen::Vector3d Pi, Pj;
-    Eigen::Matrix3d Ri_T;
-    double sum_dt;
-    double g_mag;
-    Eigen::Matrix<double, 3, 2> dg_dw;
-    Eigen::Vector3d g0_dir;
-
-    ViInitCost(
-        const MidPointIntegrator& pint, const Eigen::Vector3d& P_i, const Eigen::Vector3d& P_j,
-        const Eigen::Matrix3d& R_i, const Eigen::Matrix<double, 2, 3>& tangent_base,
-        const Eigen::Vector3d& g_dir, double gm)
-        : dp_meas(pint.final_delta_p),
-          dv_meas(pint.final_delta_v),
-          Pi(P_i),
-          Pj(P_j),
-          Ri_T(R_i.transpose()),
-          sum_dt(pint.sum_dt),
-          g_mag(gm),
-          dg_dw(tangent_base.transpose()),
-          g0_dir(g_dir) {}
-
-    template <typename T>
-    bool operator()(const T* const V_i, const T* const V_j, const T* const w, T* residual) const {
-        // Gravity on tangent plane: g = g_mag * (g0_dir + dg/dw * w) / |·|
-        T g_dir_T[3], g[3];
-        for (int k = 0; k < 3; ++k)
-            g_dir_T[k] = T(g0_dir[k]) + w[0] * T(dg_dw(k, 0)) + w[1] * T(dg_dw(k, 1));
-        T inv_norm = ceres::sqrt(
-            g_dir_T[0] * g_dir_T[0] + g_dir_T[1] * g_dir_T[1] + g_dir_T[2] * g_dir_T[2]);
-        T gm = T(g_mag);
-        for (int k = 0; k < 3; ++k) g[k] = gm * g_dir_T[k] / inv_norm;
-
-        // Predicted delta (no bias correction — Ba deferred to backend)
-        T dt = T(sum_dt);
-        T half_dt2 = T(0.5) * dt * dt;
-
-        T pred_p_w[3], pred_v_w[3];
-        for (int c = 0; c < 3; ++c) {
-            pred_p_w[c] = T(Pj[c]) - T(Pi[c]) - V_i[c] * dt - half_dt2 * g[c];
-            pred_v_w[c] = V_j[c] - V_i[c] - dt * g[c];
-        }
-        for (int r = 0; r < 3; ++r) {
-            T rot_p = T(0), rot_v = T(0);
-            for (int c = 0; c < 3; ++c) {
-                rot_p += T(Ri_T(r, c)) * pred_p_w[c];
-                rot_v += T(Ri_T(r, c)) * pred_v_w[c];
-            }
-            residual[r] = rot_p - T(dp_meas[r]);
-            residual[r + 3] = rot_v - T(dv_meas[r]);
-        }
-        return true;
-    }
 };
 
 // ── Trajectory state ──────────────────────────────────────────────────────
@@ -150,6 +91,9 @@ SimData generateData(const SimConfig& cfg) {
 
     Eigen::Vector3d g_world(0, 0, cfg.g_mag);
 
+    // ── Trajectory with strong angular + linear acceleration ──────────────
+    // Angular excitation decouples Ba from g (g changes direction in body frame).
+    // Linear acceleration provides Ba observability in velocity residuals.
     Eigen::Matrix3d R_wb = Eigen::Matrix3d::Identity();
     Eigen::Vector3d P_w = Eigen::Vector3d::Zero();
     Eigen::Vector3d V_w = Eigen::Vector3d(1.5, 0.7, -0.3);
@@ -164,9 +108,20 @@ SimData generateData(const SimConfig& cfg) {
     int cam_idx = 0;
     for (int k = 0; k < n_imu; ++k) {
         double ts = k * imu_dt;
+        double phase = 2.0 * M_PI * ts / cfg.duration;
 
-        Eigen::Vector3d gyro_body = cfg.ang_vel;
-        Eigen::Vector3d acc_body = -R_wb.transpose() * g_world;
+        // Angular velocity: large-amplitude multi-axis sinusoidal (~1 rad/s)
+        Eigen::Vector3d gyro_body(
+            0.8 * std::sin(phase * 1.3) + 0.3 * std::cos(phase * 2.7),
+            0.6 * std::cos(phase * 1.9) + 0.5 * std::sin(phase * 0.7),
+            0.4 * std::sin(phase * 2.1) + 0.7 * std::cos(phase * 1.5));
+
+        // World-frame linear acceleration (m/s²) — aggressive maneuvers
+        Eigen::Vector3d a_world(
+            1.5 * std::sin(phase * 2.3), 1.2 * std::cos(phase * 1.8), 0.8 * std::sin(phase * 3.1));
+
+        // Body-frame specific force = R^T * (a_world - g_world)
+        Eigen::Vector3d acc_body = R_wb.transpose() * (a_world - g_world);
 
         tassel_utils::IMUMeasurement m;
         m.timestamp = ts;
@@ -181,7 +136,8 @@ SimData generateData(const SimConfig& cfg) {
             Bg[i] += sigma_bgw * n01(rng);
         }
 
-        P_w += V_w * imu_dt;
+        V_w += a_world * imu_dt;
+        P_w += V_w * imu_dt + 0.5 * a_world * imu_dt * imu_dt;
         R_wb = R_wb * Sophus::SO3d::exp(gyro_body * imu_dt).matrix();
 
         if (k % cam_skip == 0) {
@@ -208,11 +164,12 @@ SimData generateData(const SimConfig& cfg) {
     return data;
 }
 
-// ── Ceres joint init: [V, g(2-DOF)] only ──────────────────────────────────
+// ── Ceres joint init: [V, g(2-DOF), Ba] ────────────────────────────────────
 
 struct InitResult {
     std::vector<Eigen::Vector3d> V;
     Eigen::Vector3d g;
+    Eigen::Vector3d Ba;
     double final_cost;
 };
 
@@ -224,6 +181,7 @@ InitResult runCeresInit(
 
     std::vector<std::array<double, 3>> V_arr(n_frames);
     double w_arr[2] = {0.0, 0.0};
+    double Ba_arr[3] = {0.0, 0.0, 0.0};
 
     for (int i = 0; i < n_frames; ++i) V_arr[i] = {0.0, 0.0, 0.0};
 
@@ -246,9 +204,12 @@ InitResult runCeresInit(
         ceres::LossFunction* huber = new ceres::HuberLoss(1.0);
 
         for (int i = 0; i < n_pairs; ++i) {
-            auto* cost = new ceres::AutoDiffCostFunction<ViInitCost, 6, 3, 3, 2>(
-                new ViInitCost(preints[i], Ps[i], Ps[i + 1], Rs[i], tangent_base, g0_dir, g_mag));
-            problem.AddResidualBlock(cost, huber, V_arr[i].data(), V_arr[i + 1].data(), w_arr);
+            const auto& p = preints[i];
+            auto* cost = new InitialGravitySpeedFactor(
+                p.final_delta_p, p.final_delta_v, p.get_dp_dba(), p.get_dv_dba(), Ps[i], Ps[i + 1],
+                Rs[i], tangent_base, g0_dir, g_mag, p.sum_dt, true);
+            problem.AddResidualBlock(
+                cost, huber, V_arr[i].data(), V_arr[i + 1].data(), w_arr, Ba_arr);
         }
 
         ceres::Solver::Options opts;
@@ -268,6 +229,7 @@ InitResult runCeresInit(
     }
 
     result.g = g_mag * g0_dir;
+    result.Ba = Eigen::Vector3d(Ba_arr[0], Ba_arr[1], Ba_arr[2]);
     result.V.resize(n_frames);
     for (int i = 0; i < n_frames; ++i)
         result.V[i] = Eigen::Vector3d(V_arr[i][0], V_arr[i][1], V_arr[i][2]);
@@ -284,9 +246,9 @@ TEST(ViInitSim, RecoverGravityAndBias) {
     int n_pairs = static_cast<int>(data.preints.size());
     ASSERT_GE(n_pairs, 5) << "Need at least 5 frame pairs";
 
-    std::cout << "\n=== VI Init Simulation (V+g only) ===\n"
+    std::cout << "\n=== VI Init Simulation (V+g+Ba joint) ===\n"
               << "Frames: " << n_pairs + 1 << ", pairs: " << n_pairs << "\n"
-              << "True Ba: " << cfg.Ba_true.transpose() << " (NOT optimized)\n"
+              << "True Ba: " << cfg.Ba_true.transpose() << "\n"
               << "IMU rate: " << cfg.imu_rate << " Hz, cam rate: " << cfg.cam_rate << " Hz\n";
 
     InitResult result = runCeresInit(data.preints, data.Rs, data.Ps, cfg.g_mag, 1);
@@ -307,9 +269,17 @@ TEST(ViInitSim, RecoverGravityAndBias) {
               << "V[0] |err|: " << v0_err << "\n";
     std::cout << "Final cost: " << result.final_cost << "\n\n";
 
+    // ── Joint Ba estimation (optimized jointly with V+g) ─────────────────
+    double ba_err = (result.Ba - cfg.Ba_true).norm();
+    std::cout << "\n--- Ba estimation (joint) ---\n"
+              << "Ba true:  " << cfg.Ba_true.transpose() << "\n"
+              << "Ba est:   " << result.Ba.transpose() << "\n"
+              << "Ba |err|: " << ba_err << "\n";
+
     EXPECT_LT(g_deg, 5.0) << "Gravity direction should be within 5 deg";
     EXPECT_LT(g_deg, 15.0) << "Gravity direction unrecoverable";
     EXPECT_LT(v0_err, 1.0) << "V[0] within 1 m/s";
+    EXPECT_LT(ba_err, 1.0) << "Ba should be roughly recoverable";
 }
 
 }  // namespace

@@ -57,6 +57,12 @@ struct Parameters {
         gyr_n = parser.as<double>("gyr_n");
         gyr_w = parser.as<double>("gyr_w");
         g_norm = parser.as<double>("g_norm");
+
+        estimate_ba_init = parser.as<bool>("estimate_ba_init");
+        init_ba = parser.as<Eigen::Vector3d>("init_ba");
+        min_rot_excitation = parser.as<double>("min_rot_excitation");
+        min_excited_frames = parser.as<int>("min_excited_frames");
+        num_init_iterations = parser.as<int>("num_init_iterations");
     }
 
     std::map<size_t, Eigen::Matrix4d> T_cam_imu_map;
@@ -95,6 +101,12 @@ struct Parameters {
     double acc_n, acc_w;
     double gyr_n, gyr_w;
     double g_norm;
+
+    bool estimate_ba_init;
+    Eigen::Vector3d init_ba;
+    double min_rot_excitation;
+    int min_excited_frames;
+    int num_init_iterations;
 };
 
 }  // namespace tassel_tools

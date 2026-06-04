@@ -1,6 +1,8 @@
 #ifndef TASSEL_CORE_ESTIMATOR_ESTIMATOR_OPTION_H_
 #define TASSEL_CORE_ESTIMATOR_ESTIMATOR_OPTION_H_
 
+#include <Eigen/Core>
+
 namespace tassel_core {
 
 struct EstimatorOption {
@@ -14,7 +16,12 @@ struct EstimatorOption {
 
     double g_norm = 9.8;
 
-    // IMU noise
+    bool estimate_ba_init = false;
+    Eigen::Vector3d init_ba = Eigen::Vector3d::Zero();
+    double min_rot_excitation = 0.2;
+    int min_excited_frames = 3;
+    int num_init_iterations = 2;
+
     double acc_n = 0.01;
     double acc_w = 0.001;
     double gyr_n = 0.001;

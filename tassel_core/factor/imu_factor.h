@@ -6,17 +6,18 @@
 #include <sophus/so3.hpp>
 
 #include "factor/integrator_base.h"
+#include "tassel_utils/types.h"
 
 namespace tassel_core {
 
 template <typename Derived>
 class IMUFactor : public ceres::SizedCostFunction<15, 6, 9, 6, 9> {
 public:
-    IMUFactor(std::shared_ptr<IntegratorBase<Derived>> integrator_, const Eigen::Vector3d& G_)
-        : integrator(integrator_), G(G_) {}
+    IMUFactor(std::shared_ptr<IntegratorBase<Derived>> integrator_) : integrator(integrator_) {}
 
     bool Evaluate(
         double const* const* parameters, double* residuals, double** jacobians) const override {
+        const Eigen::Vector3d& G = tassel_utils::G;
         Eigen::Vector3d P_i(parameters[0][0], parameters[0][1], parameters[0][2]);
         Eigen::Vector3d phi_i(parameters[0][3], parameters[0][4], parameters[0][5]);
         Eigen::Matrix3d R_i = Sophus::SO3d::exp(phi_i).matrix();
@@ -128,7 +129,6 @@ public:
         return true;
     }
     std::shared_ptr<IntegratorBase<Derived>> integrator;
-    Eigen::Vector3d G;
 };
 }  // namespace tassel_core
 #endif  // TASSEL_CORE_FACTOR_IMU_FACTOR_H_

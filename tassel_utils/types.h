@@ -12,6 +12,8 @@
 
 namespace tassel_utils {
 
+inline Eigen::Vector3d G{0.0, 0.0, 9.8};
+
 using MatrixRowMajor = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 
 struct IMUMeasurement {

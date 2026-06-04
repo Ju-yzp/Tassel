@@ -10,7 +10,7 @@ VisualFactor::VisualFactor(
     const Eigen::Matrix3d& ric_, const Eigen::Vector3d& tic_, const Eigen::Vector3d& w_i_,
     const Eigen::Vector3d& w_j_, const Eigen::Vector3d& a_i_, const Eigen::Vector3d& a_j_,
     const double* v_i_, const double* v_j_, const double* bg_i_lin_, const double* bg_j_lin_,
-    const Eigen::Matrix2d& sqrt_info_, const Eigen::Vector3d& G_, const CameraBase* camera_)
+    const Eigen::Matrix2d& sqrt_info_, const CameraBase* camera_)
     : uv_i(uv_i_),
       pt_j(pt_j_),
       depth(depth_),
@@ -25,7 +25,6 @@ VisualFactor::VisualFactor(
       bg_i_lin(bg_i_lin_),
       bg_j_lin(bg_j_lin_),
       sqrt_info(sqrt_info_),
-      G(G_),
       camera(camera_) {}
 
 bool VisualFactor::Evaluate(

@@ -40,6 +40,7 @@
 #include "factor/se3_right_manifold.h"
 #include "factor/visual_factor.h"
 #include "tassel_utils/constants.h"
+#include "tassel_utils/types.h"
 
 namespace tassel_core {
 namespace {
@@ -278,7 +279,7 @@ protected:
         const auto& lm = landmarks_[k];
         return new VisualFactor(
             lm.uv_i, lm.pt_j, lm.depth_i, ric_, tic_, w_i_, w_j_, a_i_, a_j_, v_i_, v_j_, bg_i_,
-            bg_j_, sqrt_info_, tassel_utils::G, &camera_);
+            bg_j_, sqrt_info_, &camera_);
     }
 
     static double rms(const double r[2]) { return std::sqrt((r[0] * r[0] + r[1] * r[1]) / 2.0); }
@@ -590,7 +591,7 @@ TEST_F(VisualFactorTest, NoisyConvergence) {
 
         auto* factor = new VisualFactor(
             lm.uv_i, lm.pt_j, lm.depth_i, ric_, tic_, w_i, w_j, a_i, a_j, v_storage_i[k].data(),
-            v_storage_j[k].data(), bg_i_base, bg_j_base, sqrt_info_, tassel_utils::G, &camera_);
+            v_storage_j[k].data(), bg_i_base, bg_j_base, sqrt_info_, &camera_);
         problem.AddResidualBlock(factor, loss, pose_i, pose_j, &td_opt, &inv_depths[k]);
     }
 

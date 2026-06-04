@@ -13,11 +13,11 @@ namespace tassel_core {
 template <typename Derived>
 class IMUBlock {
 public:
-    void allocate(IntegratorBase<Derived>* integrator, const Eigen::Vector3d& G) {
+    void allocate(IntegratorBase<Derived>* integrator) {
         TASSEL_ASSERT(integrator != nullptr);
         auto pint_ptr =
             std::shared_ptr<IntegratorBase<Derived>>(integrator, [](IntegratorBase<Derived>*) {});
-        imu_factor_ = std::make_unique<IMUFactor<Derived>>(pint_ptr, G);
+        imu_factor_ = std::make_unique<IMUFactor<Derived>>(pint_ptr);
     }
 
     void linearize(

@@ -12,6 +12,7 @@
 #include <sophus/so3.hpp>
 
 #include "factor/imu_factor.h"
+#include "factor/initial_gravity_speed_factor.h"
 #include "factor/integrator_base.h"
 #include "factor/marg_helper.h"
 #include "factor/marginalization_prior_factor.h"
@@ -22,71 +23,6 @@
 namespace tassel_core {
 namespace {
 
-// ── Ceres cost for VI initialization ──────────────────────────────────────
-//
-// Residual per adjacent frame pair (i, i+1) — 6D:
-//   r_p = R_iᵀ(Pⱼ-Pᵢ-Vᵢ·dt-½g·dt²) - δp
-//   r_v = R_iᵀ(Vⱼ-Vᵢ-g·dt)       - δv
-//
-// Parameters: [V_i, V_j, w(2-DOF gravity tangent)]  — Ba deferred to backend
-
-struct ViInitResidual {
-    Eigen::Vector3d dp_meas, dv_meas;
-    Eigen::Vector3d Pi, Pj;
-    Eigen::Matrix3d Ri_T;
-    double sum_dt;
-    double g_mag;
-    Eigen::Matrix<double, 3, 2> dg_dw;
-    Eigen::Vector3d g0_dir;
-
-    ViInitResidual(
-        const MidPointIntegrator& pint, const Eigen::Vector3d& P_i, const Eigen::Vector3d& P_j,
-        const Eigen::Matrix3d& R_i, const Eigen::Matrix<double, 2, 3>& tangent_base,
-        const Eigen::Vector3d& g_dir, double gm, double dt)
-        : dp_meas(pint.final_delta_p),
-          dv_meas(pint.final_delta_v),
-          Pi(P_i),
-          Pj(P_j),
-          Ri_T(R_i.transpose()),
-          sum_dt(dt),
-          g_mag(gm),
-          dg_dw(tangent_base.transpose()),
-          g0_dir(g_dir) {}
-
-    template <typename T>
-    bool operator()(const T* const V_i, const T* const V_j, const T* const w, T* residual) const {
-        // Gravity on sphere: g = g_mag * (g0_dir + dg/dw * w) / |·|
-        T g_dir_T[3], g[3];
-        for (int k = 0; k < 3; ++k)
-            g_dir_T[k] = T(g0_dir[k]) + w[0] * T(dg_dw(k, 0)) + w[1] * T(dg_dw(k, 1));
-        T inv_norm = ceres::sqrt(
-            g_dir_T[0] * g_dir_T[0] + g_dir_T[1] * g_dir_T[1] + g_dir_T[2] * g_dir_T[2]);
-        T gm = T(g_mag);
-        for (int k = 0; k < 3; ++k) g[k] = gm * g_dir_T[k] / inv_norm;
-
-        // Predicted delta (no bias correction — Ba deferred to backend)
-        T dt = T(sum_dt);
-        T half_dt2 = T(0.5) * dt * dt;
-
-        T pred_p_w[3], pred_v_w[3];
-        for (int c = 0; c < 3; ++c) {
-            pred_p_w[c] = T(Pj[c]) - T(Pi[c]) - V_i[c] * dt - half_dt2 * g[c];
-            pred_v_w[c] = V_j[c] - V_i[c] - dt * g[c];
-        }
-        for (int r = 0; r < 3; ++r) {
-            T rot_p = T(0), rot_v = T(0);
-            for (int c = 0; c < 3; ++c) {
-                rot_p += T(Ri_T(r, c)) * pred_p_w[c];
-                rot_v += T(Ri_T(r, c)) * pred_v_w[c];
-            }
-            residual[r] = rot_p - T(dp_meas[r]);
-            residual[r + 3] = rot_v - T(dv_meas[r]);
-        }
-        return true;
-    }
-};
-
-// Check if ≥ min_frames preintegrators show enough rotation
 bool hasEnoughExcitation(
     const std::vector<MidPointIntegrator>& preints, int n_pairs, int min_frames,
     double rot_thresh_rad) {
@@ -100,8 +36,6 @@ bool hasEnoughExcitation(
 
 }  // namespace
 
-// ── Estimator public interface ─────────────────────────────────────────────
-
 Estimator::Estimator(
     const EstimatorOption& option, std::shared_ptr<State> state, std::shared_ptr<FeatureManager> fm,
     const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1,
@@ -113,8 +47,7 @@ Estimator::Estimator(
       tic_(tic),
       ric1_(ric1),
       tic1_(tic1) {
-    Grav_ = Eigen::Vector3d(0, 0, option_.g_norm);
-    tassel_utils::G = Grav_;
+    tassel_utils::G = Eigen::Vector3d(0, 0, option_.g_norm);
     cv::setNumThreads(option_.num_threads);
     noise_ = initNoise();
     preintegrators_.resize(
@@ -125,13 +58,14 @@ Estimator::Estimator(
     state_->tic = tic_;
     Rs_.resize(state_->max_frame_count);
     Ps_.resize(state_->max_frame_count);
+    Vs_.resize(state_->max_frame_count);
     Rs_[0] = Eigen::Matrix3d::Identity();
     Ps_[0] = Eigen::Vector3d::Zero();
+    Vs_[0] = Eigen::Vector3d::Zero();
 }
 
 void Estimator::resetInit() {
     gravity_initialized_ = false;
-    imu_initialized_ = false;
     init_ts_ = -1;
     last_ts_ = -1;
     last_imu_acc_ = Eigen::Vector3d::Zero();
@@ -143,14 +77,15 @@ void Estimator::resetInit() {
         MidPointIntegrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise_));
     Rs_.clear();
     Ps_.clear();
+    Vs_.clear();
     Rs_.resize(state_->max_frame_count);
     Ps_.resize(state_->max_frame_count);
+    Vs_.resize(state_->max_frame_count);
     Rs_[0] = Eigen::Matrix3d::Identity();
     Ps_[0] = Eigen::Vector3d::Zero();
+    Vs_[0] = Eigen::Vector3d::Zero();
     marg_data_.reset();
-    is_first_optimization_ = true;
-    Grav_ = Eigen::Vector3d(0, 0, option_.g_norm);
-    tassel_utils::G = Grav_;
+    tassel_utils::G = Eigen::Vector3d(0, 0, option_.g_norm);
     state_->reset();
     feature_manager_->reset();
 }
@@ -159,22 +94,7 @@ void Estimator::processMeasurement(
     double ts, const std::unordered_map<int, FeaturePerFrame>& feature_frame,
     const std::vector<tassel_utils::IMUMeasurement>& imu_measurements) {
     int& frame_count = state_->cur_frame_count;
-
-    if (gravity_initialized_) return;
-
-    // if (!imu_initialized_) {
-    //     if (init_ts_ < 0) {
-    //         init_ts_ = ts;
-    //     }
-    //     imu_init_buf_.insert(imu_init_buf_.end(), imu_measurements.begin(),
-    //     imu_measurements.end()); if (ts - init_ts_ >= option_.init_time_span) {
-    //         initializeImu(imu_init_buf_);
-    //     }
-    //     return;
-    // }
-
     if (last_ts_ < 0 && !imu_measurements.empty()) {
-        //  initializeImu(imu_measurements);
         last_ts_ = imu_measurements.back().timestamp;
         last_imu_acc_ = imu_measurements.back().acc;
         last_imu_gyro_ = imu_measurements.back().gyro;
@@ -194,10 +114,10 @@ void Estimator::processMeasurement(
             preintegrator.update(imu);
 
             double dt = imu.timestamp - last_ts_;
-            Eigen::Vector3d acc_0 = R * (last_imu_acc_ - Ba) - Grav_;
+            Eigen::Vector3d acc_0 = R * (last_imu_acc_ - Ba) - tassel_utils::G;
             Eigen::Vector3d gyr = 0.5 * (last_imu_gyro_ + imu.gyro) - Bg;
             R = R * Sophus::SO3d::exp(gyr * dt).matrix();
-            Eigen::Vector3d acc_1 = R * (imu.acc - Ba) - Grav_;
+            Eigen::Vector3d acc_1 = R * (imu.acc - Ba) - tassel_utils::G;
             Eigen::Vector3d acc = 0.5 * (acc_0 + acc_1);
             P += V * dt + 0.5 * acc * dt * dt;
             V += acc * dt;
@@ -223,7 +143,7 @@ void Estimator::processMeasurement(
         state_->gyro_vec.push_back(last_imu_gyro_);
 
         if (!gravity_initialized_) {
-            if (!feature_manager_->initPoseByPNP(frame_count, Rs_, Ps_)) {
+            if (!feature_manager_->initPoseByPNP(frame_count, Rs_, Ps_, ric_, tic_)) {
                 spdlog::warn("PnP failed, resetting initialization");
                 resetInit();
                 return;
@@ -238,124 +158,40 @@ void Estimator::processMeasurement(
                     preintegrators_[i].reintegrate(Eigen::Vector3d::Zero(), state_->Bgs[i], noise_);
                 }
 
-                // ── Rotation gating ─────────────────────────────────
-                static constexpr double kMinRotRad = 0.2;  // ~12° per pair
+                static constexpr double kMinRotRad = 0.2;
                 static constexpr int kMinExcitedFrames = 3;
                 int n_pairs = state_->cur_frame_count;
 
-                if (!hasEnoughExcitation(preintegrators_, n_pairs, kMinExcitedFrames, kMinRotRad)) {
+                if (!hasEnoughExcitation(
+                        preintegrators_, n_pairs, option_.min_excited_frames,
+                        option_.min_rot_excitation)) {
                     spdlog::warn(
                         "Insufficient rotation excitation ({}/{} pairs > {:.0f}°). "
                         "Please move the device to initialize.",
                         std::count_if(
                             preintegrators_.begin(), preintegrators_.begin() + n_pairs,
-                            [](const auto& p) {
-                                return Sophus::SO3d(p.final_delta_q).log().norm() > kMinRotRad;
+                            [thresh = option_.min_rot_excitation](const auto& p) {
+                                return Sophus::SO3d(p.final_delta_q).log().norm() > thresh;
                             }),
-                        n_pairs, kMinRotRad * 180.0 / M_PI);
-                    // Reset to re‑collect with new motion
+                        n_pairs, option_.min_rot_excitation * 180.0 / M_PI);
                     frame_count = 0;
                     state_->cur_frame_count = 0;
                     state_->acc_vec.clear();
                     state_->gyro_vec.clear();
                     Rs_.clear();
                     Ps_.clear();
+                    Vs_.clear();
                     Rs_.resize(state_->max_frame_count);
                     Ps_.resize(state_->max_frame_count);
+                    Vs_.resize(state_->max_frame_count);
                     feature_manager_->reset();
                     return;
                 }
 
-                // ── Ceres joint initialization: [V, g(2-DOF tangent)] ──
-                int n_frames = n_pairs + 1;
-                std::vector<std::array<double, 3>> V_blocks(n_frames);
-                double w_block[2] = {0.0, 0.0};
+                Eigen::Vector3d g_B0 = solveGravityVelocity();
+                Eigen::Vector3d G_body = buildGVsOptimizeProblem(g_B0);
 
-                // Initial guesses
-                {
-                    // V: accumulate PnP position deltas
-                    for (int i = 0; i < n_frames; ++i) {
-                        V_blocks[i] = {0.0, 0.0, 0.0};
-                    }
-                    for (int i = 0; i < n_pairs; ++i) {
-                        double dt = preintegrators_[i].sum_dt;
-                        if (dt > 1e-6) {
-                            Eigen::Vector3d dP_w = (Ps_[i + 1] - Ps_[i]) / dt;
-                            for (int d = 0; d < 3; ++d) V_blocks[i][d] = dP_w[d];
-                        }
-                    }
-                }
-
-                // Initial gravity direction: rotate first acc to world, negate
-                // acc_body ≈ -R^T * g_world + Ba, so g_world_dir ≈ average(-R_imu_i * acc_i)
-                Eigen::Vector3d avg_acc = Eigen::Vector3d::Zero();
-                for (int i = 0; i < n_pairs; ++i) {
-                    Eigen::Matrix3d R_imu_i = Rs_[i] * ric_.transpose();
-                    avg_acc += R_imu_i * (-preintegrators_[i].buffer.front().acc);
-                }
-                avg_acc /= n_pairs;
-                Eigen::Vector3d g0_dir = avg_acc.normalized();
-                if (g0_dir.z() < 0) g0_dir = -g0_dir;
-
-                double g_mag = Grav_.norm();
-
-                // Iterative refinement with tangent-basis gravity
-                for (int iter = 0; iter < 4; ++iter) {
-                    Eigen::Matrix<double, 2, 3> tangent_base = computeTangentBasis(g0_dir);
-
-                    ceres::Problem init_problem;
-                    ceres::LossFunction* huber = new ceres::HuberLoss(1.0);
-
-                    for (int i = 0; i < n_pairs; ++i) {
-                        Eigen::Matrix3d R_imu_i = Rs_[i] * ric_.transpose();
-                        Eigen::Vector3d Pi = Ps_[i] - R_imu_i * tic_;
-                        Eigen::Vector3d Pj = Ps_[i + 1] - Rs_[i + 1] * ric_.transpose() * tic_;
-
-                        auto* cost = new ceres::AutoDiffCostFunction<ViInitResidual, 6, 3, 3, 2>(
-                            new ViInitResidual(
-                                preintegrators_[i], Pi, Pj, R_imu_i, tangent_base, g0_dir, g_mag,
-                                preintegrators_[i].sum_dt));
-                        init_problem.AddResidualBlock(
-                            cost, huber, V_blocks[i].data(), V_blocks[i + 1].data(), w_block);
-                    }
-
-                    ceres::Solver::Options opts;
-                    opts.linear_solver_type = ceres::DENSE_SCHUR;
-                    opts.max_num_iterations = 50;
-                    opts.num_threads = option_.num_threads;
-                    opts.minimizer_progress_to_stdout = false;
-                    opts.logging_type = ceres::SILENT;
-
-                    ceres::Solver::Summary summary;
-                    ceres::Solve(opts, &init_problem, &summary);
-
-                    // Recenter tangent at new optimal direction
-                    Eigen::Vector3d dg =
-                        tangent_base.transpose() * Eigen::Vector2d(w_block[0], w_block[1]);
-                    g0_dir = (g0_dir + dg).normalized();
-                    w_block[0] = w_block[1] = 0.0;
-
-                    if (iter == 0) {
-                        spdlog::info(
-                            "VI Ceres init (iter {}): iters={} init_cost={:.2f} final_cost={:.2f}",
-                            iter, summary.iterations.size(), summary.initial_cost,
-                            summary.final_cost);
-                    }
-                }
-
-                Eigen::Vector3d G_body = g_mag * g0_dir;
-                spdlog::info(
-                    "  |g|={:.4f} g=({:.3f},{:.3f},{:.3f})", G_body.norm(), G_body.x(), G_body.y(),
-                    G_body.z());
-
-                // Store results
-                for (int i = 0; i < n_frames; ++i) {
-                    state_->Vs[i] = Eigen::Vector3d(V_blocks[i][0], V_blocks[i][1], V_blocks[i][2]);
-                }
-
-                // ── Gravity alignment ──────────────────────────────
-                // G_body points DOWN (gravity direction).
-                // Align the UP direction (−G_body) to world +Z.
+                // Gravity alignment: rotate world so that -G_body aligns with +Z (Z-up world)
                 Eigen::Matrix3d R0 = Eigen::Quaterniond::FromTwoVectors(
                                          (-G_body).normalized(), Eigen::Vector3d(0, 0, 1))
                                          .toRotationMatrix();
@@ -367,17 +203,14 @@ void Estimator::processMeasurement(
                     Eigen::Quaterniond q_tmp(Rs_[i]);
                     q_tmp.normalize();
                     Rs_[i] = q_tmp.toRotationMatrix();
-                    state_->Rs[i] = Rs_[i] * ric_.transpose();
-                    Eigen::Quaterniond q_state(state_->Rs[i]);
-                    q_state.normalize();
-                    state_->Rs[i] = q_state.toRotationMatrix();
-                    state_->Ps[i] = Ps_[i] - state_->Rs[i] * tic_;
+                    state_->Rs[i] = Rs_[i];
+                    state_->Ps[i] = Ps_[i];
                     state_->Vs[i] = R0 * state_->Vs[i];
                 }
-                Grav_ = Eigen::Vector3d(0, 0, G_body.norm());
-                tassel_utils::G = Grav_;
+                tassel_utils::G = Eigen::Vector3d(0, 0, option_.g_norm);
                 gravity_initialized_ = true;
-                spdlog::info("Gravity aligned: |g|={:.4f}", Grav_.norm());
+
+                spdlog::info("Gravity aligned: |g|={:.4f}", tassel_utils::G.norm());
                 spdlog::info(
                     "G_body(est): ({:.3f},{:.3f},{:.3f}) → aligned to Z-up", G_body.x(), G_body.y(),
                     G_body.z());
@@ -392,18 +225,6 @@ void Estimator::processMeasurement(
                         state_->Vs[i].x(), state_->Vs[i].y(), state_->Vs[i].z(), state_->Ps[i].x(),
                         state_->Ps[i].y(), state_->Ps[i].z());
                 }
-
-                // Publish first-frame pose and point cloud for verification
-                if (pose_callback_) {
-                    Eigen::Quaterniond q0(state_->Rs[0]);
-                    q0.normalize();
-                    pose_callback_(ts, Sophus::SE3d(q0.toRotationMatrix(), state_->Ps[0]));
-                }
-                if (cloud_callback_) {
-                    auto pts = feature_manager_->getPointCloud(*state_);
-                    cloud_callback_(ts, pts);
-                }
-                return;
             }
             optimize();
             feature_manager_->removeOutliers(*state_);
@@ -500,7 +321,7 @@ void Estimator::optimize() {
                 state_->acc_vec[target_id], state_->params_speed_bias[host_id].data(),
                 state_->params_speed_bias[target_id].data(),
                 state_->params_speed_bias[host_id].data() + 6,
-                state_->params_speed_bias[target_id].data() + 6, sqrt_info, Grav_, state_->camera);
+                state_->params_speed_bias[target_id].data() + 6, sqrt_info, state_->camera);
             problem.AddResidualBlock(
                 cost, loss, state_->params_pose[host_id].data(),
                 state_->params_pose[target_id].data(), &state_->param_delay_time,
@@ -512,7 +333,7 @@ void Estimator::optimize() {
         if (preintegrators_[i].buffer.size() < 2) continue;
         auto pint_ptr =
             std::shared_ptr<MidPointIntegrator>(&preintegrators_[i], [](MidPointIntegrator*) {});
-        auto* imu_cost = new IMUFactor<MidPointIntegrator>(pint_ptr, Grav_);
+        auto* imu_cost = new IMUFactor<MidPointIntegrator>(pint_ptr);
         problem.AddResidualBlock(
             imu_cost, nullptr, state_->params_pose[i].data(), state_->params_speed_bias[i].data(),
             state_->params_pose[i + 1].data(), state_->params_speed_bias[i + 1].data());
@@ -622,24 +443,21 @@ Eigen::Matrix<double, 18, 18> Estimator::initNoise() const {
     return noise;
 }
 
+// 构建最小二乘优化问题求解陀螺仪初始偏置均值
 void Estimator::solveGyroBias() {
-    // 忽略时间延迟的影响，使用一阶线性化估计偏置，需要角速度激励充足，否则估计结果不可靠
-    // 影响ceres优化的初始值
     Eigen::Matrix3d A;
     Eigen::Vector3d b;
     A.setZero();
     b.setZero();
     for (int i = 0; i < state_->cur_frame_count; ++i) {
-        Eigen::Matrix3d R_imu_i = Rs_[i] * ric_.transpose();
-        Eigen::Matrix3d R_imu_j = Rs_[i + 1] * ric_.transpose();
-        Eigen::Matrix3d R_ij = R_imu_i.transpose() * R_imu_j;
+        Eigen::Matrix3d R_ij = Rs_[i].transpose() * Rs_[i + 1];
         auto preintegrator = preintegrators_[i];
         Eigen::Matrix3d R_diff = preintegrator.final_delta_q.transpose() * R_ij;
         Eigen::Quaterniond q_diff(R_diff);
         q_diff.normalize();
         Eigen::Vector3d phi = Sophus::SO3d(q_diff).log();
-        A += preintegrator.get_dq_dbg();
-        b += phi;
+        A += preintegrator.get_dq_dbg().transpose() * preintegrator.get_dq_dbg();
+        b += preintegrator.get_dq_dbg().transpose() * phi;
     }
     Eigen::Vector3d bg = A.ldlt().solve(b);
     for (auto& bg_i : state_->Bgs) {
@@ -648,33 +466,145 @@ void Estimator::solveGyroBias() {
     spdlog::info("Gyro bias solved: ({:.6f}, {:.6f}, {:.6f})", bg.x(), bg.y(), bg.z());
 }
 
-void Estimator::initializeImu(const std::vector<tassel_utils::IMUMeasurement>& imu_measurements) {
-    Eigen::Vector3d avg_acc = Eigen::Vector3d::Zero();
-    Eigen::Vector3d avg_gyro = Eigen::Vector3d::Zero();
-    for (const auto& m : imu_measurements) {
-        avg_acc += m.acc;
-        avg_gyro += m.gyro;
-    }
-    avg_acc /= static_cast<double>(imu_measurements.size());
-    avg_gyro /= static_cast<double>(imu_measurements.size());
+Eigen::Vector3d Estimator::solveGravityVelocity() {
+    // ── Linear least-squares for initial velocity + gravity ────────────────────
+    //
+    // World frame = IMU body frame at first keyframe (B0).  All V_i and g are
+    // expressed in B0.  Rs_[i] = R_{B0→Bi} rotates vectors from body frame i to B0.
+    //
+    // Preintegration kinematics (r = 0):
+    //     Position:  Pⱼ - Pᵢ - Vᵢ·dt - ½g·dt²  =  Rᵢ · δp          (1)
+    //     Velocity:        Vⱼ - Vᵢ -  g·dt     =  Rᵢ · δv          (2)
+    //
+    // Unknowns: x = [V₀, V₁, …, V_{n-1}, g]ᵀ   ∈ ℝ^{3n+3}
+    //
+    // Stacked linear system A·x = b,  A ∈ ℝ^{6m × (3n+3)},  b ∈ ℝ^{6m}:
+    //
+    //   Pair i, position rows (i·6 … i·6+2):
+    //     A(i·6:i·6+2, i·3:i·3+2) =  dt·I₃         (Vᵢ coef)
+    //     A(i·6:i·6+2, 3n:3n+2)   =  ½dt²·I₃      (g  coef)
+    //     b(i·6:i·6+2) = Pⱼ - Pᵢ - Rᵢ·δp
+    //
+    //   Pair i, velocity rows (i·6+3 … i·6+5):
+    //     A(i·6+3:i·6+5,   i·3  :  i·3+2)   = -I₃     (Vᵢ coef)
+    //     A(i·6+3:i·6+5, (i+1)·3:(i+1)·3+2) = +I₃     (Vⱼ coef)
+    //     A(i·6+3:i·6+5,   3n:3n+2)          = -dt·I₃  (g  coef)
+    //     b(i·6+3:i·6+5) = Rᵢ·δv
+    //
+    // Normal equations:  (AᵀA) · x = Aᵀb   →   H·x = -b̂
+    //
+    int n_frames = state_->cur_frame_count + 1;
+    int n_pairs = n_frames - 1;
+    int n_vars = n_frames * 3 + 3;  // V (3n) + g (3)
 
-    Eigen::Vector3d ng1 = avg_acc.normalized();
-    Eigen::Vector3d ng2(0.0, 0.0, 1.0);
-    Eigen::Matrix3d R0 = Eigen::Quaterniond::FromTwoVectors(ng1, ng2).toRotationMatrix();
-    double yaw = std::atan2(R0(1, 0), R0(0, 0));
-    R0 = Eigen::AngleAxisd(-yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix() * R0;
-    state_->Rs[0] = R0;
-    state_->Ps[0] = Eigen::Vector3d::Zero();
-    state_->Vs[0] = Eigen::Vector3d::Zero();
-    state_->Bas[0] = avg_acc - R0.transpose() * Grav_;
-    state_->Bgs[0] = avg_gyro;
-    last_ts_ = imu_measurements.back().timestamp;
-    last_imu_acc_ = imu_measurements.back().acc;
-    last_imu_gyro_ = imu_measurements.back().gyro;
-    imu_initialized_ = true;
+    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(n_pairs * 6, n_vars);
+    Eigen::VectorXd b = Eigen::VectorXd::Zero(n_pairs * 6);
+
+    for (int i = 0; i < n_pairs; ++i) {
+        Eigen::Matrix3d R_i = Rs_[i];
+        double dt = preintegrators_[i].sum_dt;
+        const auto& pint = preintegrators_[i];
+
+        // ---- position ----
+        int rp = i * 6;
+        b.segment<3>(rp) = Ps_[i + 1] - Ps_[i] - R_i * pint.final_delta_p;
+        A.block<3, 3>(rp, i * 3) = dt * Eigen::Matrix3d::Identity();
+        A.block<3, 3>(rp, n_frames * 3) = 0.5 * dt * dt * Eigen::Matrix3d::Identity();
+
+        // ---- velocity ----
+        int rv = i * 6 + 3;
+        b.segment<3>(rv) = R_i * pint.final_delta_v;
+        A.block<3, 3>(rv, i * 3) = -Eigen::Matrix3d::Identity();
+        A.block<3, 3>(rv, (i + 1) * 3) = Eigen::Matrix3d::Identity();
+        A.block<3, 3>(rv, n_frames * 3) = -dt * Eigen::Matrix3d::Identity();
+    }
+
+    // H = AᵀA,  b̂ = Aᵀb  →  H·x = b̂
+    Eigen::MatrixXd H = A.transpose() * A;
+    Eigen::VectorXd b_hat = A.transpose() * b;
+    Eigen::VectorXd x = H.ldlt().solve(b_hat);
+
+    for (int i = 0; i < n_frames; ++i) {
+        state_->Vs[i] = x.segment<3>(i * 3);
+    }
+    Eigen::Vector3d g_B0 = x.segment<3>(n_frames * 3);
     spdlog::info(
-        "IMU static init: Bg=({:.4f},{:.4f},{:.4f}) rad/s  Ba=({:.4f},{:.4f},{:.4f}) m/s²",
-        state_->Bgs[0].x(), state_->Bgs[0].y(), state_->Bgs[0].z(), state_->Bas[0].x(),
-        state_->Bas[0].y(), state_->Bas[0].z());
+        "solveGravityVelocity: |g|={:.4f} g_B0=({:.3f},{:.3f},{:.3f}) n_frames={}", g_B0.norm(),
+        g_B0.x(), g_B0.y(), g_B0.z(), n_frames);
+    return g_B0;
+}
+
+Eigen::Vector3d Estimator::buildGVsOptimizeProblem(const Eigen::Vector3d& g_B0_init) {
+    int n_frames = state_->cur_frame_count + 1;
+    int n_pairs = n_frames - 1;
+
+    // Build V_blocks from current state
+    std::vector<std::array<double, 3>> V_blocks(n_frames);
+    for (int i = 0; i < n_frames; ++i) {
+        const Eigen::Vector3d& v = state_->Vs[i];
+        V_blocks[i] = {v.x(), v.y(), v.z()};
+    }
+    double w_block[2] = {0.0, 0.0};
+    double ba_block[3] = {option_.init_ba.x(), option_.init_ba.y(), option_.init_ba.z()};
+
+    Eigen::Vector3d g0_dir = g_B0_init.normalized();
+    const double g_mag = option_.g_norm;
+
+    const bool estimate_ba = option_.estimate_ba_init;
+
+    for (int iter = 0; iter < option_.num_init_iterations; ++iter) {
+        Eigen::Matrix<double, 2, 3> tangent_base = computeTangentBasis(g0_dir);
+
+        ceres::Problem init_problem;
+        ceres::LossFunction* huber = new ceres::HuberLoss(1.0);
+
+        for (int i = 0; i < n_pairs; ++i) {
+            const auto& pint = preintegrators_[i];
+            auto* cost = new InitialGravitySpeedFactor(
+                pint.final_delta_p, pint.final_delta_v, pint.get_dp_dba(), pint.get_dv_dba(),
+                Ps_[i], Ps_[i + 1], Rs_[i], tangent_base, g0_dir, g_mag, pint.sum_dt, estimate_ba);
+            if (estimate_ba) {
+                init_problem.AddResidualBlock(
+                    cost, huber, V_blocks[i].data(), V_blocks[i + 1].data(), w_block, ba_block);
+            } else {
+                init_problem.AddResidualBlock(
+                    cost, huber, V_blocks[i].data(), V_blocks[i + 1].data(), w_block);
+            }
+        }
+
+        ceres::Solver::Options opts;
+        opts.linear_solver_type = ceres::DENSE_SCHUR;
+        opts.max_num_iterations = 50;
+        opts.num_threads = option_.num_threads;
+        opts.minimizer_progress_to_stdout = false;
+        opts.logging_type = ceres::SILENT;
+
+        ceres::Solver::Summary summary;
+        ceres::Solve(opts, &init_problem, &summary);
+
+        // Recenter tangent at new optimal direction
+        Eigen::Vector3d dg = tangent_base.transpose() * Eigen::Vector2d(w_block[0], w_block[1]);
+        g0_dir = (g0_dir + dg).normalized();
+        w_block[0] = w_block[1] = 0.0;
+
+        if (iter == 0) {
+            spdlog::info(
+                "VI init (iter {}): iters={} init_cost={:.2f} final_cost={:.2f}", iter,
+                summary.iterations.size(), summary.initial_cost, summary.final_cost);
+        }
+    }
+
+    // Store refined results
+    for (int i = 0; i < n_frames; ++i) {
+        state_->Vs[i] = Eigen::Vector3d(V_blocks[i][0], V_blocks[i][1], V_blocks[i][2]);
+    }
+    if (option_.estimate_ba_init) {
+        for (int i = 0; i <= state_->cur_frame_count; ++i) {
+            state_->Bas[i] = Eigen::Vector3d(ba_block[0], ba_block[1], ba_block[2]);
+        }
+        spdlog::info("  Ba_init=({:.4f},{:.4f},{:.4f})", ba_block[0], ba_block[1], ba_block[2]);
+    }
+
+    return g_mag * g0_dir;
 }
 }  // namespace tassel_core

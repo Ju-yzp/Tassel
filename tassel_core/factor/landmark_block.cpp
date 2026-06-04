@@ -52,8 +52,7 @@ void LandmarkBlock::linearize(const Feature& feature, const State& state) {
             state.params_speed_bias[start_frame_id].data(),
             state.params_speed_bias[target_id].data(),
             state.params_speed_bias[start_frame_id].data() + 6,
-            state.params_speed_bias[target_id].data() + 6, sqrt_info, tassel_utils::G,
-            state.camera);
+            state.params_speed_bias[target_id].data() + 6, sqrt_info, state.camera);
 
         std::vector<double*> jacobians;
         jacobians.push_back(jacobian_pose_i.data());

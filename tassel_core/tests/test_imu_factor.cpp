@@ -279,7 +279,7 @@ protected:
 
         // IMU 因子
         for (int f = 0; f < num_frames_ - 1; ++f) {
-            auto* imu = new IMUFactor<MidPointIntegrator>(preints_[f], tassel_utils::G);
+            auto* imu = new IMUFactor<MidPointIntegrator>(preints_[f]);
             problem.AddResidualBlock(
                 imu, nullptr, params_pose_[f].data(), params_sb_[f].data(),
                 params_pose_[f + 1].data(), params_sb_[f + 1].data());
@@ -302,7 +302,7 @@ protected:
                     lm.uv_i, lm.pt_j, lm.depth_i, ric_, tic_, frames_gyro_[host],
                     frames_gyro_[target], frames_acc_[host], frames_acc_[target],
                     params_sb_[host].data(), params_sb_[target].data(), params_sb_[host].data() + 6,
-                    params_sb_[target].data() + 6, sqrt_info_vis_, tassel_utils::G, &camera_);
+                    params_sb_[target].data() + 6, sqrt_info_vis_, &camera_);
                 problem.AddResidualBlock(
                     vis, loss, params_pose_[host].data(), params_pose_[target].data(), &td_param_,
                     &inv_depth_params[lm_idx]);
@@ -418,7 +418,7 @@ TEST_F(ImuFactorTest, ZeroResidualAtGroundTruth) {
     std::cout << "\n--- Per-factor cost diagnostic ---\n";
     double total_cost = 0.0;
     for (int f = 0; f < num_frames_ - 1; ++f) {
-        IMUFactor<MidPointIntegrator> imu_f(preints_[f], tassel_utils::G);
+        IMUFactor<MidPointIntegrator> imu_f(preints_[f]);
         const double* imu_p[] = {
             params_pose_[f].data(), params_sb_[f].data(), params_pose_[f + 1].data(),
             params_sb_[f + 1].data()};
@@ -526,7 +526,7 @@ TEST_F(ImuFactorTest, BiasOnlyRecoveryWithTrueVelocity) {
 
     // 3. IMU 因子
     for (int f = 0; f < num_frames_ - 1; ++f) {
-        auto* imu = new IMUFactor<MidPointIntegrator>(preints_[f], tassel_utils::G);
+        auto* imu = new IMUFactor<MidPointIntegrator>(preints_[f]);
         problem.AddResidualBlock(
             imu, nullptr, params_pose_[f].data(), params_sb_[f].data(), params_pose_[f + 1].data(),
             params_sb_[f + 1].data());

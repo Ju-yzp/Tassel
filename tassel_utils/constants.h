@@ -22,8 +22,6 @@ const int O_V = 6;
 const int O_BA = 9;
 const int O_BG = 12;
 
-inline Eigen::Vector3d G{0.0, 0.0, 9.8};
-
 }  // namespace tassel_utils
 
 #endif  // TASSEL_UTILS_CONSTANTS_H_

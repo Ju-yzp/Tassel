@@ -288,6 +288,11 @@ int main(int argc, char** argv) {
     option.gyr_n = params.gyr_n;
     option.gyr_w = params.gyr_w;
     option.g_norm = params.g_norm;
+    option.estimate_ba_init = params.estimate_ba_init;
+    option.init_ba = params.init_ba;
+    option.min_rot_excitation = params.min_rot_excitation;
+    option.min_excited_frames = params.min_excited_frames;
+    option.num_init_iterations = params.num_init_iterations;
 
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count));
     state->visual_sqrt_info = Eigen::Matrix2d::Identity() * params.visual_factor_weight;

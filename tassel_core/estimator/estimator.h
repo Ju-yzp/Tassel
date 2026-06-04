@@ -16,6 +16,8 @@
 
 #include <sophus/se3.hpp>
 
+#include <ceres/ceres.h>
+
 namespace tassel_core {
 
 class CameraBase;
@@ -51,9 +53,14 @@ public:
 
 private:
     void buildPrior();
+
     void slideWindow();
+
     void solveGyroBias();
-    void initializeImu(const std::vector<tassel_utils::IMUMeasurement>& imu_measurements);
+
+    Eigen::Vector3d solveGravityVelocity();
+
+    Eigen::Vector3d buildGVsOptimizeProblem(const Eigen::Vector3d& g_B0_init);
 
     Eigen::Matrix<double, 18, 18> initNoise() const;
 
@@ -80,21 +87,15 @@ private:
     Eigen::Vector3d last_imu_acc_;
     Eigen::Vector3d last_imu_gyro_;
 
-    // static IMU initialization
-    bool imu_initialized_ = false;
     double init_ts_ = -1;
     std::vector<tassel_utils::IMUMeasurement> imu_init_buf_;
 
-    // marginalization prior
-    bool is_first_optimization_ = true;
     std::unique_ptr<MargLinData> marg_data_;
 
-    // Runtime gravity vector (estimated by VI alignment, used in IMU propagation)
-    Eigen::Vector3d Grav_ = Eigen::Vector3d(0, 0, 9.8);
-
-    // Pnp解算获取imu的位姿
+    // 动态初始化使用,存储sfm位姿以及imu在体坐标系下的速度
     std::vector<Eigen::Matrix3d> Rs_;
     std::vector<Eigen::Vector3d> Ps_;
+    std::vector<Eigen::Vector3d> Vs_;
 };
 
 }  // namespace tassel_core

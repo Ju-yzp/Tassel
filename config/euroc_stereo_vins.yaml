@@ -62,6 +62,13 @@ initial_exposure_time_us: 10000
 
 visual_factor_weight: 30.0
 
+# VI initialization
+estimate_ba_init: false
+init_ba: [0.0, 0.0, 0.0]
+min_rot_excitation: 0.2
+min_excited_frames: 3
+num_init_iterations: 2
+
 # ADIS16448 IMU noise (EuRoC)
 acc_n: 0.08
 acc_w: 0.0004

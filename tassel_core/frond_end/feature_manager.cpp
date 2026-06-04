@@ -17,7 +17,6 @@
 #include "feature.h"
 #include "feature_manager.h"
 #include "state/state.h"
-#include "tassel_utils/constants.h"
 
 #include <spdlog/spdlog.h>
 
@@ -67,7 +66,6 @@ bool FeatureManager::checkKeyFrameByParallax(
         }
     }
 
-    // spdlog::info("Current frame track {}.f old feature from last frame", parallax_num);
     return (
         parallax_num == 0 || (parallax_sum / parallax_num) > parallax_thres_ ||
         parallax_num < min_tracked_pts_num_);
@@ -79,90 +77,19 @@ void FeatureManager::triangulate(
     auto cs = state.get_compensated_state();
     for (auto& [id, feature] : features_) {
         feature.stereoTriangulate(state.ric, state.tic, ric1, tic1, min_depth_, max_depth_);
-        if (mono_triangulate) {
-            feature.monoTriangulate(
-                cs, state.ric, state.tic, min_translation_, min_depth_, max_depth_);
-        }
-    }
-}
-
-bool FeatureManager::initPoseByPNP(State& state) {
-    if (state.cur_frame_count <= 0) {
-        return true;  // first frame is reference
-    }
-
-    state.Rs[state.cur_frame_count] = state.Rs[state.cur_frame_count - 1];
-    state.Ps[state.cur_frame_count] = state.Ps[state.cur_frame_count - 1];
-    std::vector<cv::Point3f> object_pts;
-    std::vector<cv::Point2f> normalize_pts;
-    std::vector<size_t> candidate_ids;
-    for (const auto& [id, feature] : features_) {
-        int start_frame_id = feature.start_frame_id;
-        int observation_num = static_cast<int>(feature.observations.size());
-        double depth = feature.estimated_depth;
-        int obs_idx = state.cur_frame_count - start_frame_id;
-        if (obs_idx >= 0 && obs_idx < observation_num && depth != INVALID_DEPTH) {
-            Eigen::Vector3d p_in_C = feature.observations[0].uv * depth;
-            Eigen::Vector3d p_in_W = state.Rs[start_frame_id] * p_in_C + state.Ps[start_frame_id];
-            object_pts.push_back(cv::Point3f(p_in_W(0), p_in_W(1), p_in_W(2)));
-            Eigen::Vector3d uv = feature.observations[obs_idx].uv;
-            normalize_pts.push_back(cv::Point2f(uv(0), uv(1)));
-            candidate_ids.push_back(id);
-        }
-    }
-
-    if (static_cast<int>(object_pts.size()) < min_pnp_pt_num_) {
-        spdlog::error(
-            "Not enough points for PnP. Only {} points.", static_cast<int>(object_pts.size()));
-        return false;
-    }
-
-    Eigen::Matrix3d guess_R = state.Rs[state.cur_frame_count - 1] * state.ric;
-    Eigen::Vector3d guess_P =
-        state.Rs[state.cur_frame_count - 1] * state.tic + state.Ps[state.cur_frame_count - 1];
-
-    cv::Mat R_cv, rvec, tvec;
-    guess_R.transposeInPlace();
-    guess_P = (-guess_R * guess_P).eval();
-    cv::eigen2cv(guess_R, R_cv);
-    cv::eigen2cv(guess_P, tvec);
-    cv::Rodrigues(R_cv, rvec);
-
-    cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
-    std::vector<int> inliers;
-    bool success = cv::solvePnPRansac(
-        object_pts, normalize_pts, K, cv::Mat(), rvec, tvec, true, 30, reprojection_error_thres_,
-        min_pnp_inliers_ratio_, inliers, cv::SOLVEPNP_EPNP);
-
-    if (success) {
-        cv::Mat R_result_cv;
-        cv::Rodrigues(rvec, R_result_cv);
-        cv::cv2eigen(R_result_cv, guess_R);
-        cv::cv2eigen(tvec, guess_P);
-
-        guess_R.transposeInPlace();
-        guess_P = (-guess_R * guess_P).eval();
-
-        Eigen::Quaterniond q_opt(guess_R);
-        q_opt.normalize();
-        state.Rs[state.cur_frame_count] = q_opt.toRotationMatrix();
-        state.Ps[state.cur_frame_count] = guess_P - guess_R * state.tic;
-        spdlog::info("PNP success");
-        return true;
-    } else {
-        spdlog::error(
-            "PnP failed,inliers ratio:{}",
-            static_cast<double>(inliers.size()) / static_cast<double>(object_pts.size()));
-        return false;
+        // if (mono_triangulate) {
+        //     feature.monoTriangulate(
+        //         cs, state.ric, state.tic, min_translation_, min_depth_, max_depth_);
+        // }
     }
 }
 
 bool FeatureManager::initPoseByPNP(
-    int frame_count, std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps) {
-    if (frame_count <= 0) return true;  // first frame is reference, no PnP needed
-
-    Rs[frame_count] = Rs[frame_count - 1];
-    Ps[frame_count] = Ps[frame_count - 1];
+    int frame_count, std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps,
+    Eigen::Matrix3d ric, Eigen::Vector3d tic) {
+    if (frame_count <= 0) {
+        return true;
+    }
 
     std::vector<cv::Point3f> object_pts;
     std::vector<cv::Point2f> normalize_pts;
@@ -171,10 +98,12 @@ bool FeatureManager::initPoseByPNP(
         double depth = feature.estimated_depth;
         int obs_idx = frame_count - start_frame_id;
         if (obs_idx < 0 || obs_idx >= static_cast<int>(feature.observations.size()) ||
-            depth == INVALID_DEPTH)
+            depth == INVALID_DEPTH) {
             continue;
+        }
         Eigen::Vector3d p_in_C = feature.observations[0].uv * depth;
-        Eigen::Vector3d p_in_W = Rs[start_frame_id] * p_in_C + Ps[start_frame_id];
+        Eigen::Vector3d p_in_I = ric * p_in_C + tic;
+        Eigen::Vector3d p_in_W = Rs[start_frame_id] * p_in_I + Ps[start_frame_id];
         object_pts.emplace_back(p_in_W(0), p_in_W(1), p_in_W(2));
         Eigen::Vector3d uv = feature.observations[obs_idx].uv;
         normalize_pts.emplace_back(uv(0), uv(1));
@@ -186,9 +115,8 @@ bool FeatureManager::initPoseByPNP(
         return false;
     }
 
-    // Rs/Ps are already camera poses, use directly as PnP initial guess
-    Eigen::Matrix3d guess_R = Rs[frame_count - 1];
-    Eigen::Vector3d guess_P = Ps[frame_count - 1];
+    Eigen::Matrix3d guess_R = Rs[frame_count - 1] * ric;
+    Eigen::Vector3d guess_P = Ps[frame_count - 1] + Rs[frame_count - 1] * tic;
 
     cv::Mat R_cv, rvec, tvec;
     guess_R.transposeInPlace();
@@ -214,8 +142,8 @@ bool FeatureManager::initPoseByPNP(
 
         Eigen::Quaterniond q_opt(guess_R);
         q_opt.normalize();
-        Rs[frame_count] = q_opt.toRotationMatrix();
-        Ps[frame_count] = guess_P;
+        Rs[frame_count] = q_opt.toRotationMatrix() * ric.transpose();
+        Ps[frame_count] = guess_P - q_opt.toRotationMatrix() * tic;
         spdlog::info("PNP success (camera pose)");
         return true;
     } else {
@@ -251,7 +179,9 @@ void FeatureManager::removeNewest(size_t frame_count) {
 
 void FeatureManager::removeOutliers(const State& state) {
     auto cs = state.get_compensated_state();
-    if (!cs.camera) return;
+    if (!cs.camera) {
+        return;
+    }
 
     std::set<int> removed_ids;
     for (auto& [id, feature] : features_) {

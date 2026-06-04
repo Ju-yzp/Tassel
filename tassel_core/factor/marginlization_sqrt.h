@@ -49,7 +49,7 @@ public:
         }
         imu_blocks_.resize(preintegrators_.size());
         for (size_t idx = 0; idx < preintegrators_.size(); ++idx) {
-            imu_blocks_[idx].allocate(preintegrators_[idx], tassel_utils::G);
+            imu_blocks_[idx].allocate(preintegrators_[idx]);
         }
     }
 
