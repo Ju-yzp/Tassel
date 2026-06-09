@@ -16,9 +16,10 @@ struct State;
 class FeatureManager {
 public:
     FeatureManager(
-        double reprojection_error_thres, double parallax_thres, int tracked_times_thres,
-        int min_tracked_pts_num, int min_pnp_pt_num, double min_pnp_inliers_ratio,
-        double min_translation, double min_depth = MIN_DISTANCE, double max_depth = MAX_DISTANCE);
+        double reprojection_error_thres, double pnp_reprojection_error_thres, double parallax_thres,
+        int tracked_times_thres, int min_tracked_pts_num, int min_pnp_pt_num,
+        double min_pnp_inliers_ratio, double min_translation, double min_depth = MIN_DISTANCE,
+        double max_depth = MAX_DISTANCE);
 
     bool checkKeyFrameByParallax(
         size_t frame_count, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
@@ -41,7 +42,7 @@ public:
 
     std::vector<Feature*> collectOptimizedFeatures();
 
-    std::vector<Feature*> collectMarginalizationFeatures(int& max_obs_len);
+    std::vector<Feature*> collectMarginalizationFeatures();
 
     std::vector<Eigen::Vector3d> getPointCloud(const State& state) const;
 
@@ -51,6 +52,7 @@ public:
 
 private:
     double reprojection_error_thres_;
+    double pnp_reprojection_error_thres_;
 
     double parallax_thres_;
 

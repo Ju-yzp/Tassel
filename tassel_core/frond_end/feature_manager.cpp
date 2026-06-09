@@ -31,15 +31,15 @@ inline double computeParallax(const cv::Point2f& p1, const cv::Point2f& p2) {
 }  // namespace
 
 FeatureManager::FeatureManager(
-    double reprojection_error_thres, double parallax_thres, int tracked_times_thres,
-    int min_tracked_pts_num, int min_pnp_pt_num, double min_pnp_inliers_ratio,
-    double min_translation, double min_depth, double max_depth)
+    double reprojection_error_thres, double pnp_reprojection_error_thres, double parallax_thres,
+    int tracked_times_thres, int min_tracked_pts_num, int min_pnp_pt_num,
+    double min_pnp_inliers_ratio, double min_translation, double min_depth, double max_depth)
     : reprojection_error_thres_(reprojection_error_thres),
+      pnp_reprojection_error_thres_(pnp_reprojection_error_thres),
       parallax_thres_(parallax_thres),
       tracked_times_thres_(tracked_times_thres),
       min_tracked_pts_num_(min_tracked_pts_num),
       min_pnp_pt_num_(min_pnp_pt_num),
-
       min_pnp_inliers_ratio_(min_pnp_inliers_ratio),
       min_translation_(min_translation),
       min_depth_(min_depth),
@@ -77,10 +77,10 @@ void FeatureManager::triangulate(
     auto cs = state.get_compensated_state();
     for (auto& [id, feature] : features_) {
         feature.stereoTriangulate(state.ric, state.tic, ric1, tic1, min_depth_, max_depth_);
-        // if (mono_triangulate) {
-        //     feature.monoTriangulate(
-        //         cs, state.ric, state.tic, min_translation_, min_depth_, max_depth_);
-        // }
+        if (mono_triangulate) {
+            feature.monoTriangulate(
+                cs, state.ric, state.tic, min_translation_, min_depth_, max_depth_);
+        }
     }
 }
 
@@ -95,9 +95,10 @@ bool FeatureManager::initPoseByPNP(
     std::vector<cv::Point2f> normalize_pts;
     for (const auto& [id, feature] : features_) {
         int start_frame_id = feature.start_frame_id;
+        if (start_frame_id < frame_count - 3) continue;
         double depth = feature.estimated_depth;
         int obs_idx = frame_count - start_frame_id;
-        if (obs_idx < 0 || obs_idx >= static_cast<int>(feature.observations.size()) ||
+        if (obs_idx < 1 || obs_idx >= static_cast<int>(feature.observations.size()) ||
             depth == INVALID_DEPTH) {
             continue;
         }
@@ -128,10 +129,16 @@ bool FeatureManager::initPoseByPNP(
     cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
     std::vector<int> inliers;
     bool success = cv::solvePnPRansac(
-        object_pts, normalize_pts, K, cv::Mat(), rvec, tvec, true, 30, reprojection_error_thres_,
-        min_pnp_inliers_ratio_, inliers, cv::SOLVEPNP_EPNP);
+        object_pts, normalize_pts, K, cv::Mat(), rvec, tvec, true, 30,
+        pnp_reprojection_error_thres_, 0.90, inliers, cv::SOLVEPNP_EPNP);
 
-    if (success) {
+    double inlier_ratio =
+        static_cast<double>(inliers.size()) / static_cast<double>(object_pts.size());
+    spdlog::info(
+        "PNP: {} 3D pts, {} inliers ({:.1f}%)", object_pts.size(), inliers.size(),
+        100.0 * inlier_ratio);
+
+    if (success && inlier_ratio >= min_pnp_inliers_ratio_) {
         cv::Mat R_result_cv;
         cv::Rodrigues(rvec, R_result_cv);
         cv::cv2eigen(R_result_cv, guess_R);
@@ -143,13 +150,13 @@ bool FeatureManager::initPoseByPNP(
         Eigen::Quaterniond q_opt(guess_R);
         q_opt.normalize();
         Rs[frame_count] = q_opt.toRotationMatrix() * ric.transpose();
-        Ps[frame_count] = guess_P - q_opt.toRotationMatrix() * tic;
+        Ps[frame_count] = guess_P - Rs[frame_count] * tic;
         spdlog::info("PNP success (camera pose)");
         return true;
     } else {
         spdlog::error(
-            "PnP failed, inliers ratio: {}",
-            static_cast<double>(inliers.size()) / static_cast<double>(object_pts.size()));
+            "PnP failed (success={}), inlier ratio: {:.1f}% < {:.0f}%", success,
+            100.0 * inlier_ratio, 100.0 * min_pnp_inliers_ratio_);
         return false;
     }
 }
@@ -221,19 +228,14 @@ void FeatureManager::removeOutliers(const State& state) {
 
 void FeatureManager::reset() { features_.clear(); }
 
-std::vector<Feature*> FeatureManager::collectMarginalizationFeatures(int& max_obs_len) {
+std::vector<Feature*> FeatureManager::collectMarginalizationFeatures() {
     std::vector<Feature*> result;
-    max_obs_len = 0;
     for (auto& [id, feature] : features_) {
         bool is_marginalized =
             !((feature.start_frame_id != 0) || (feature.estimated_depth == INVALID_DEPTH) ||
               (static_cast<int>(feature.observations.size()) < tracked_times_thres_));
         if (is_marginalized) {
             result.push_back(&feature);
-            int obs_len = static_cast<int>(feature.observations.size());
-            if (obs_len > max_obs_len) {
-                max_obs_len = obs_len;
-            }
         }
     }
     return result;

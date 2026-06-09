@@ -62,6 +62,9 @@ Estimator::Estimator(
     Rs_[0] = Eigen::Matrix3d::Identity();
     Ps_[0] = Eigen::Vector3d::Zero();
     Vs_[0] = Eigen::Vector3d::Zero();
+    if (option_.estimate_ba_init) {
+        state_->Bas[0] = option_.init_ba;
+    }
 }
 
 void Estimator::reset() {
@@ -87,6 +90,9 @@ void Estimator::reset() {
     marg_data_.reset();
     tassel_utils::G = Eigen::Vector3d(0, 0, option_.g_norm);
     state_->reset();
+    if (option_.estimate_ba_init) {
+        state_->Bas[0] = option_.init_ba;
+    }
     feature_manager_->reset();
 }
 
@@ -96,7 +102,8 @@ void Estimator::processMeasurement(
     int& frame_count = state_->cur_frame_count;
     if (last_ts_ < 0 && !imu_measurements.empty()) {
         last_ts_ = imu_measurements.back().timestamp;
-        last_imu_acc_ = imu_measurements.back().acc;
+        last_imu_acc_ =
+            option_.acc_correction_matrix * (imu_measurements.back().acc - option_.acc_bias);
         last_imu_gyro_ = imu_measurements.back().gyro;
     }
 
@@ -111,20 +118,23 @@ void Estimator::processMeasurement(
         auto& preintegrator = preintegrators_[frame_count - 1];
 
         for (const auto& imu : imu_measurements) {
-            preintegrator.update(imu);
+            // Apply accelerometer intrinsic calibration
+            tassel_utils::IMUMeasurement imu_cal = imu;
+            imu_cal.acc = option_.acc_correction_matrix * (imu.acc - option_.acc_bias);
+            preintegrator.propagate(imu_cal);
 
-            double dt = imu.timestamp - last_ts_;
+            double dt = imu_cal.timestamp - last_ts_;
             Eigen::Vector3d acc_0 = R * (last_imu_acc_ - Ba) - tassel_utils::G;
-            Eigen::Vector3d gyr = 0.5 * (last_imu_gyro_ + imu.gyro) - Bg;
+            Eigen::Vector3d gyr = 0.5 * (last_imu_gyro_ + imu_cal.gyro) - Bg;
             R = R * Sophus::SO3d::exp(gyr * dt).matrix();
-            Eigen::Vector3d acc_1 = R * (imu.acc - Ba) - tassel_utils::G;
+            Eigen::Vector3d acc_1 = R * (imu_cal.acc - Ba) - tassel_utils::G;
             Eigen::Vector3d acc = 0.5 * (acc_0 + acc_1);
             P += V * dt + 0.5 * acc * dt * dt;
             V += acc * dt;
-            last_ts_ = imu.timestamp;
-            last_imu_gyro_ = imu.gyro;
-            last_imu_acc_ = imu.acc;
-            if (pose_callback_) {
+            last_ts_ = imu_cal.timestamp;
+            last_imu_gyro_ = imu_cal.gyro;
+            last_imu_acc_ = imu_cal.acc;
+            if (pose_callback_ && gravity_initialized_) {
                 Eigen::Quaterniond q_pose(R);
                 q_pose.normalize();
                 pose_callback_(ts, Sophus::SE3d(q_pose.toRotationMatrix(), P));
@@ -142,6 +152,7 @@ void Estimator::processMeasurement(
         state_->acc_vec.push_back(last_imu_acc_);
         state_->gyro_vec.push_back(last_imu_gyro_);
 
+        feature_manager_->triangulate(*state_, ric1_, tic1_);
         if (!gravity_initialized_) {
             if (!feature_manager_->initPoseByPNP(frame_count, Rs_, Ps_, ric_, tic_)) {
                 spdlog::warn("PnP failed, resetting initialization");
@@ -150,12 +161,11 @@ void Estimator::processMeasurement(
             }
         }
 
-        feature_manager_->triangulate(*state_, ric1_, tic1_);
         if (frame_count == state_->max_frame_count - 1) {
             if (!gravity_initialized_) {
                 solveGyroBias();
                 for (int i = 0; i < state_->cur_frame_count; ++i) {
-                    preintegrators_[i].reintegrate(Eigen::Vector3d::Zero(), state_->Bgs[i], noise_);
+                    preintegrators_[i].repropagate(state_->Bas[i], state_->Bgs[i], noise_);
                 }
 
                 static constexpr double kMinRotRad = 0.2;
@@ -174,17 +184,7 @@ void Estimator::processMeasurement(
                                 return Sophus::SO3d(p.final_delta_q).log().norm() > thresh;
                             }),
                         n_pairs, option_.min_rot_excitation * 180.0 / M_PI);
-                    frame_count = 0;
-                    state_->cur_frame_count = 0;
-                    state_->acc_vec.clear();
-                    state_->gyro_vec.clear();
-                    Rs_.clear();
-                    Ps_.clear();
-                    Vs_.clear();
-                    Rs_.resize(state_->max_frame_count);
-                    Ps_.resize(state_->max_frame_count);
-                    Vs_.resize(state_->max_frame_count);
-                    feature_manager_->reset();
+                    reset();
                     return;
                 }
 
@@ -245,13 +245,15 @@ void Estimator::processMeasurement(
             }
         }
     } else {
-        // if (frame_count == state_->max_frame_count - 1) {
-        // optimize();
-        // }
         state_->acc_vec.erase(state_->acc_vec.begin());
         state_->gyro_vec.erase(state_->gyro_vec.begin());
         state_->acc_vec.push_back(last_imu_acc_);
         state_->gyro_vec.push_back(last_imu_gyro_);
+        if (frame_count == state_->max_frame_count - 1 && gravity_initialized_) {
+            optimize();
+            feature_manager_->removeOutliers(*state_);
+        }
+
         feature_manager_->removeNewest(frame_count);
         // slideWindow(false);
     }
@@ -279,9 +281,10 @@ void Estimator::optimize() {
 
     problem.AddParameterBlock(&state_->param_delay_time, 1);
     bool set_dt_constant_flag = true;
-    for (auto V : state_->Vs) {
-        if (V.norm() > 0.3) {
+    for (int i = 0; i < state_->cur_frame_count; ++i) {
+        if (state_->Vs[i].norm() > 0.6 && state_->gyro_vec[i].norm() > 2.0) {
             set_dt_constant_flag = false;
+            break;
         }
     }
 
@@ -321,11 +324,13 @@ void Estimator::optimize() {
                 state_->params_speed_bias[host_id].data(),
                 state_->params_speed_bias[target_id].data(),
                 state_->params_speed_bias[host_id].data() + 6,
-                state_->params_speed_bias[target_id].data() + 6, sqrt_info, state_->camera);
+                state_->params_speed_bias[target_id].data() + 6,
+                state_->params_speed_bias[host_id].data() + 3,
+                state_->params_speed_bias[target_id].data() + 3, sqrt_info, state_->camera);
             problem.AddResidualBlock(
                 cost, loss, state_->params_pose[host_id].data(),
-                state_->params_pose[target_id].data(), &state_->param_delay_time,
-                &inv_depth_params[k]);
+                state_->params_pose[target_id].data(), &inv_depth_params[k],
+                &state_->param_delay_time);
         }
     }
 
@@ -358,7 +363,7 @@ void Estimator::optimize() {
     }
 
     for (int i = 0; i < preintegrators_.size(); ++i) {
-        preintegrators_[i].reintegrate(state_->Bas[i], state_->Bgs[i], noise_);
+        preintegrators_[i].repropagate(state_->Bas[i], state_->Bgs[i], noise_);
     }
 
     spdlog::info(
@@ -371,16 +376,10 @@ void Estimator::buildPrior() {
     const int n = state_->max_frame_count;
     state_->stateToParams();
 
-    int max_obs_len = 0;
-    auto marg_features = feature_manager_->collectMarginalizationFeatures(max_obs_len);
+    auto marg_features = feature_manager_->collectMarginalizationFeatures();
 
-    int num_marg_pints =
-        max_obs_len > 1 ? max_obs_len - 1 : static_cast<int>(preintegrators_.size());
     std::vector<IntegratorBase<MidPointIntegrator>*> pint_ptrs;
-    pint_ptrs.reserve(num_marg_pints);
-    for (int i = 0; i < num_marg_pints; ++i) {
-        pint_ptrs.push_back(&preintegrators_[i]);
-    }
+    pint_ptrs.push_back(&preintegrators_[0]);
 
     auto marg = MarginlizationSqrt<MidPointIntegrator>(
         std::move(marg_features), std::make_unique<ceres::HuberLoss>(1.0), state_, pint_ptrs,
@@ -461,76 +460,83 @@ void Estimator::solveGyroBias() {
     }
     Eigen::Vector3d bg = A.ldlt().solve(b);
     for (auto& bg_i : state_->Bgs) {
-        bg_i += bg;
+        bg_i = bg;
     }
     spdlog::info("Gyro bias solved: ({:.6f}, {:.6f}, {:.6f})", bg.x(), bg.y(), bg.z());
 }
 
 Eigen::Vector3d Estimator::solveGravityVelocity() {
-    // ── Linear least-squares for initial velocity + gravity ────────────────────
+    // ── Linear least-squares for initial velocity + gravity ──────────────────
     //
-    // World frame = IMU body frame at first keyframe (B0).  All V_i and g are
-    // expressed in B0.  Rs_[i] = R_{B0→Bi} rotates vectors from body frame i to B0.
+    // World frame = IMU body frame at first keyframe (B0).
+    // V_i and g are expressed in B0.  Rs_[i] = R_{B0→Bi} rotates from Bi to B0.
     //
-    // Preintegration kinematics (r = 0):
-    //     Position:  Pⱼ - Pᵢ - Vᵢ·dt - ½g·dt²  =  Rᵢ · δp          (1)
-    //     Velocity:        Vⱼ - Vᵢ -  g·dt     =  Rᵢ · δv          (2)
+    // Body-frame formulation (ref: VINS-Fusion LinearAlignment):
+    // Preintegrated deltas δp, δv are in body frame i.  Rotate kinematic
+    // constraints by R_i^T for better numerical conditioning.
+    //
+    //   Position:  R_i^T·(Pⱼ-Pᵢ) - R_i^T·Vᵢ·dt - ½R_i^T·g·dt² = δp
+    //   Velocity:          R_i^T·Vⱼ - R_i^T·Vᵢ - R_i^T·g·dt  = δv
     //
     // Unknowns: x = [V₀, V₁, …, V_{n-1}, g]ᵀ   ∈ ℝ^{3n+3}
     //
-    // Stacked linear system A·x = b,  A ∈ ℝ^{6m × (3n+3)},  b ∈ ℝ^{6m}:
-    //
-    //   Pair i, position rows (i·6 … i·6+2):
-    //     A(i·6:i·6+2, i·3:i·3+2) =  dt·I₃         (Vᵢ coef)
-    //     A(i·6:i·6+2, 3n:3n+2)   =  ½dt²·I₃      (g  coef)
-    //     b(i·6:i·6+2) = Pⱼ - Pᵢ - Rᵢ·δp
-    //
-    //   Pair i, velocity rows (i·6+3 … i·6+5):
-    //     A(i·6+3:i·6+5,   i·3  :  i·3+2)   = -I₃     (Vᵢ coef)
-    //     A(i·6+3:i·6+5, (i+1)·3:(i+1)·3+2) = +I₃     (Vⱼ coef)
-    //     A(i·6+3:i·6+5,   3n:3n+2)          = -dt·I₃  (g  coef)
-    //     b(i·6+3:i·6+5) = Rᵢ·δv
-    //
-    // Normal equations:  (AᵀA) · x = Aᵀb   →   H·x = -b̂
-    //
     int n_frames = state_->cur_frame_count + 1;
     int n_pairs = n_frames - 1;
-    int n_vars = n_frames * 3 + 3;  // V (3n) + g (3)
+    int n_state = n_frames * 3 + 3;  // V (3n) + g (3)
 
-    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(n_pairs * 6, n_vars);
-    Eigen::VectorXd b = Eigen::VectorXd::Zero(n_pairs * 6);
+    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(n_state, n_state);
+    Eigen::VectorXd b = Eigen::VectorXd::Zero(n_state);
 
     for (int i = 0; i < n_pairs; ++i) {
-        Eigen::Matrix3d R_i = Rs_[i];
+        Eigen::Matrix3d R_i_T = Rs_[i].transpose();
         double dt = preintegrators_[i].sum_dt;
         const auto& pint = preintegrators_[i];
 
-        // ---- position ----
-        int rp = i * 6;
-        b.segment<3>(rp) = Ps_[i + 1] - Ps_[i] - R_i * pint.final_delta_p;
-        A.block<3, 3>(rp, i * 3) = dt * Eigen::Matrix3d::Identity();
-        A.block<3, 3>(rp, n_frames * 3) = 0.5 * dt * dt * Eigen::Matrix3d::Identity();
+        Eigen::Vector3d vis_dp = Ps_[i + 1] - Ps_[i];
 
-        // ---- velocity ----
-        int rv = i * 6 + 3;
-        b.segment<3>(rv) = R_i * pint.final_delta_v;
-        A.block<3, 3>(rv, i * 3) = -Eigen::Matrix3d::Identity();
-        A.block<3, 3>(rv, (i + 1) * 3) = Eigen::Matrix3d::Identity();
-        A.block<3, 3>(rv, n_frames * 3) = -dt * Eigen::Matrix3d::Identity();
+        // 6×9 per-pair system: cols [0..2]=V_i, [3..5]=V_j, [6..8]=g
+        Eigen::Matrix<double, 6, 9> tmp_A = Eigen::Matrix<double, 6, 9>::Zero();
+        Eigen::Matrix<double, 6, 1> tmp_b = Eigen::Matrix<double, 6, 1>::Zero();
+
+        // ---- position (3 rows, body frame i) ----
+        tmp_A.block<3, 3>(0, 0) = dt * R_i_T;             // V_i
+        tmp_A.block<3, 3>(0, 6) = 0.5 * dt * dt * R_i_T;  // g
+        tmp_b.segment<3>(0) = R_i_T * vis_dp - pint.final_delta_p;
+
+        // ---- velocity (3 rows, body frame i) ----
+        tmp_A.block<3, 3>(3, 0) = -R_i_T;       // V_i
+        tmp_A.block<3, 3>(3, 3) = R_i_T;        // V_j
+        tmp_A.block<3, 3>(3, 6) = -dt * R_i_T;  // g
+        tmp_b.segment<3>(3) = pint.final_delta_v;
+
+        // H = tmp_A^T * tmp_A,  h = tmp_A^T * tmp_b
+        Eigen::Matrix<double, 9, 9> r_A = tmp_A.transpose() * tmp_A;
+        Eigen::Matrix<double, 9, 1> r_b = tmp_A.transpose() * tmp_b;
+
+        // Block-diagonal: V_i, V_j (6×6 at position i*3)
+        A.block<6, 6>(i * 3, i * 3) += r_A.topLeftCorner<6, 6>();
+        b.segment<6>(i * 3) += r_b.head<6>();
+
+        // Bottom-right: g (3×3)
+        A.bottomRightCorner<3, 3>() += r_A.bottomRightCorner<3, 3>();
+        b.tail<3>() += r_b.tail<3>();
+
+        // Cross-terms
+        A.block<6, 3>(i * 3, n_state - 3) += r_A.topRightCorner<6, 3>();
+        A.block<3, 6>(n_state - 3, i * 3) += r_A.bottomLeftCorner<3, 6>();
     }
 
-    // H = AᵀA,  b̂ = Aᵀb  →  H·x = b̂
-    Eigen::MatrixXd H = A.transpose() * A;
-    Eigen::VectorXd b_hat = A.transpose() * b;
-    Eigen::VectorXd x = H.ldlt().solve(b_hat);
+    Eigen::VectorXd x = A.ldlt().solve(b);
 
     for (int i = 0; i < n_frames; ++i) {
         state_->Vs[i] = x.segment<3>(i * 3);
     }
     Eigen::Vector3d g_B0 = x.segment<3>(n_frames * 3);
+
     spdlog::info(
         "solveGravityVelocity: |g|={:.4f} g_B0=({:.3f},{:.3f},{:.3f}) n_frames={}", g_B0.norm(),
         g_B0.x(), g_B0.y(), g_B0.z(), n_frames);
+
     return g_B0;
 }
 
@@ -545,12 +551,9 @@ Eigen::Vector3d Estimator::buildGVsOptimizeProblem(const Eigen::Vector3d& g_B0_i
         V_blocks[i] = {v.x(), v.y(), v.z()};
     }
     double w_block[2] = {0.0, 0.0};
-    double ba_block[3] = {option_.init_ba.x(), option_.init_ba.y(), option_.init_ba.z()};
 
     Eigen::Vector3d g0_dir = g_B0_init.normalized();
     const double g_mag = option_.g_norm;
-
-    const bool estimate_ba = option_.estimate_ba_init;
 
     for (int iter = 0; iter < option_.num_init_iterations; ++iter) {
         Eigen::Matrix<double, 2, 3> tangent_base = computeTangentBasis(g0_dir);
@@ -561,15 +564,10 @@ Eigen::Vector3d Estimator::buildGVsOptimizeProblem(const Eigen::Vector3d& g_B0_i
         for (int i = 0; i < n_pairs; ++i) {
             const auto& pint = preintegrators_[i];
             auto* cost = new InitialGravitySpeedFactor(
-                pint.final_delta_p, pint.final_delta_v, pint.get_dp_dba(), pint.get_dv_dba(),
-                Ps_[i], Ps_[i + 1], Rs_[i], tangent_base, g0_dir, g_mag, pint.sum_dt, estimate_ba);
-            if (estimate_ba) {
-                init_problem.AddResidualBlock(
-                    cost, huber, V_blocks[i].data(), V_blocks[i + 1].data(), w_block, ba_block);
-            } else {
-                init_problem.AddResidualBlock(
-                    cost, huber, V_blocks[i].data(), V_blocks[i + 1].data(), w_block);
-            }
+                pint.final_delta_p, pint.final_delta_v, Ps_[i], Ps_[i + 1], Rs_[i], tangent_base,
+                g0_dir, g_mag, pint.sum_dt);
+            init_problem.AddResidualBlock(
+                cost, huber, V_blocks[i].data(), V_blocks[i + 1].data(), w_block);
         }
 
         ceres::Solver::Options opts;
@@ -594,15 +592,9 @@ Eigen::Vector3d Estimator::buildGVsOptimizeProblem(const Eigen::Vector3d& g_B0_i
         }
     }
 
-    // Store refined results
+    // Store refined velocities
     for (int i = 0; i < n_frames; ++i) {
         state_->Vs[i] = Eigen::Vector3d(V_blocks[i][0], V_blocks[i][1], V_blocks[i][2]);
-    }
-    if (option_.estimate_ba_init) {
-        for (int i = 0; i <= state_->cur_frame_count; ++i) {
-            state_->Bas[i] = Eigen::Vector3d(ba_block[0], ba_block[1], ba_block[2]);
-        }
-        spdlog::info("  Ba_init=({:.4f},{:.4f},{:.4f})", ba_block[0], ba_block[1], ba_block[2]);
     }
 
     return g_mag * g0_dir;

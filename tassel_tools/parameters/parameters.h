@@ -28,6 +28,7 @@ struct Parameters {
         enable_statistics = parser.as<bool>("enable_statistics");
 
         reprojection_error_thres = parser.as<double>("reprojection_error_thres");
+        pnp_reprojection_error_thres = parser.as<double>("pnp_reprojection_error_thres");
         parallax_thres = parser.as<double>("parallax_thres");
         min_tracked_pts_num = parser.as<int>("min_tracked_pts_num");
         min_pnp_num = parser.as<int>("min_pnp_num");
@@ -63,6 +64,17 @@ struct Parameters {
         min_rot_excitation = parser.as<double>("min_rot_excitation");
         min_excited_frames = parser.as<int>("min_excited_frames");
         num_init_iterations = parser.as<int>("num_init_iterations");
+
+        try {
+            acc_correction_matrix = parser.as<Eigen::Matrix3d>("acc_correction_matrix");
+        } catch (const std::runtime_error&) {
+            acc_correction_matrix = Eigen::Matrix3d::Identity();
+        }
+        try {
+            acc_bias = parser.as<Eigen::Vector3d>("acc_bias");
+        } catch (const std::runtime_error&) {
+            acc_bias = Eigen::Vector3d::Zero();
+        }
     }
 
     std::map<size_t, Eigen::Matrix4d> T_cam_imu_map;
@@ -81,6 +93,7 @@ struct Parameters {
     bool enable_statistics;
 
     double reprojection_error_thres;
+    double pnp_reprojection_error_thres;  // normalized-coordinate threshold for PnP
     double parallax_thres;
     int min_tracked_pts_num;
     int min_pnp_num;
@@ -101,6 +114,9 @@ struct Parameters {
     double acc_n, acc_w;
     double gyr_n, gyr_w;
     double g_norm;
+
+    Eigen::Matrix3d acc_correction_matrix = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d acc_bias = Eigen::Vector3d::Zero();
 
     bool estimate_ba_init;
     Eigen::Vector3d init_ba;

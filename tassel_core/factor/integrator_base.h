@@ -20,7 +20,7 @@ public:
         reset(ba_lin, bg_lin, init_noise);
     }
 
-    void update(const tassel_utils::IMUMeasurement& measurement) {
+    void propagate(const tassel_utils::IMUMeasurement& measurement) {
         buffer.push_back(measurement);
         if (buffer.size() > 1) {
             const auto& prev = buffer[buffer.size() - 2];
@@ -30,7 +30,8 @@ public:
     }
 
     void reset(
-        Eigen::Vector3d ba_lin, Eigen::Vector3d bg_lin, Eigen::Matrix<double, 18, 18> init_noise) {
+        const Eigen::Vector3d ba_lin, const Eigen::Vector3d bg_lin,
+        const Eigen::Matrix<double, 18, 18> init_noise) {
         buffer.clear();
         sum_dt = 0.0;
         ba_linearized = ba_lin;
@@ -43,14 +44,15 @@ public:
         covariance = Eigen::Matrix<double, 15, 15>::Zero();
     }
 
-    void reintegrate(
-        Eigen::Vector3d ba_lin, Eigen::Vector3d bg_lin, Eigen::Matrix<double, 18, 18> init_noise) {
-        std::vector<tassel_utils::IMUMeasurement> prev_buffer;
-        std::swap(prev_buffer, buffer);
+    void repropagate(
+        const Eigen::Vector3d ba_lin, const Eigen::Vector3d bg_lin,
+        const Eigen::Matrix<double, 18, 18> init_noise) {
+        std::vector<tassel_utils::IMUMeasurement> tmp_buffer;
+        std::swap(tmp_buffer, buffer);
         reset(ba_lin, bg_lin, init_noise);
 
-        for (auto& measurement : prev_buffer) {
-            update(measurement);
+        for (auto& measurement : tmp_buffer) {
+            propagate(measurement);
         }
     }
 

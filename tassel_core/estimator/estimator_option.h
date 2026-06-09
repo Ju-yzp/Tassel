@@ -26,6 +26,9 @@ struct EstimatorOption {
     double acc_w = 0.001;
     double gyr_n = 0.001;
     double gyr_w = 0.0001;
+
+    Eigen::Matrix3d acc_correction_matrix = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d acc_bias = Eigen::Vector3d::Zero();
 };
 
 }  // namespace tassel_core

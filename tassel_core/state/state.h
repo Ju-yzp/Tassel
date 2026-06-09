@@ -8,7 +8,6 @@
 #include <sophus/se3.hpp>
 #include <vector>
 
-#include "tassel_utils/constants.h"
 #include "tassel_utils/types.h"
 
 namespace tassel_core {

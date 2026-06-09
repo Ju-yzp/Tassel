@@ -79,9 +79,7 @@ public:
         return out;
     }
 
-    void get_jacobian(
-        Eigen::Vector2d uv_norm, Eigen::MatrixXd& H_dz_dzn,
-        Eigen::MatrixXd& H_dz_dzeta) const override {
+    void get_jacobian_dzn(Eigen::Vector2d uv_norm, Eigen::MatrixXd& H_dz_dzn) const override {
         double x = uv_norm(0);
         double y = uv_norm(1);
         double x_2 = x * x;
@@ -97,7 +95,6 @@ public:
         double p1 = camera_values(6);
         double p2 = camera_values(7);
 
-        // Jacobian of distorted pixel to normalized pixel (2x2)
         H_dz_dzn = Eigen::MatrixXd::Zero(2, 2);
         H_dz_dzn(0, 0) = fx * ((1 + k1 * r_2 + k2 * r_4) + (2 * k1 * x_2 + 4 * k2 * x_2 * r_2) +
                                2 * p1 * y + (2 * p2 * x + 4 * p2 * x));
@@ -105,13 +102,28 @@ public:
         H_dz_dzn(1, 0) = fy * (2 * k1 * x_y + 4 * k2 * x_y * r_2 + 2 * p1 * x + 2 * p2 * y);
         H_dz_dzn(1, 1) = fy * ((1 + k1 * r_2 + k2 * r_4) + (2 * k1 * y_2 + 4 * k2 * y_2 * r_2) +
                                2 * p2 * x + (2 * p1 * y + 4 * p1 * y));
+    }
 
-        // Distorted normalized coordinates (for Jacobian w.r.t. intrinsics)
+    void get_jacobian_dzeta(Eigen::Vector2d uv_norm, Eigen::MatrixXd& H_dz_dzeta) const override {
+        double x = uv_norm(0);
+        double y = uv_norm(1);
+        double x_2 = x * x;
+        double y_2 = y * y;
+        double x_y = x * y;
+        double r_2 = x_2 + y_2;
+        double r_4 = r_2 * r_2;
+
+        double fx = camera_values(0);
+        double fy = camera_values(1);
+        double k1 = camera_values(4);
+        double k2 = camera_values(5);
+        double p1 = camera_values(6);
+        double p2 = camera_values(7);
+
         double radial = 1 + k1 * r_2 + k2 * r_4;
         double x1 = x * radial + 2 * p1 * x_y + p2 * (r_2 + 2 * x_2);
         double y1 = y * radial + p1 * (r_2 + 2 * y_2) + 2 * p2 * x_y;
 
-        // Jacobian w.r.t. intrinsics [fx, fy, cx, cy, k1, k2, p1, p2] (2x8)
         H_dz_dzeta = Eigen::MatrixXd::Zero(2, 8);
         H_dz_dzeta(0, 0) = x1;
         H_dz_dzeta(0, 2) = 1;

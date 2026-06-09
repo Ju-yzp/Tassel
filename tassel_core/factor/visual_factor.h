@@ -31,7 +31,8 @@ public:
         const Eigen::Vector3d& tic_, const Eigen::Vector3d& w_i_, const Eigen::Vector3d& w_j_,
         const Eigen::Vector3d& a_i_, const Eigen::Vector3d& a_j_, const double* v_i_,
         const double* v_j_, const double* bg_i_lin_, const double* bg_j_lin_,
-        const Eigen::Matrix2d& sqrt_info_, const CameraBase* camera);
+        const double* ba_i_lin_, const double* ba_j_lin_, const Eigen::Matrix2d& sqrt_info_,
+        const CameraBase* camera);
 
     virtual bool Evaluate(
         double const* const* parameters, double* residuals, double** jacobians) const;
@@ -45,6 +46,7 @@ private:
     Eigen::Vector3d a_i, a_j;
     const double *v_i, *v_j;
     const double *bg_i_lin, *bg_j_lin;
+    const double *ba_i_lin, *ba_j_lin;
     Eigen::Matrix2d sqrt_info;
     const CameraBase* camera;
 };

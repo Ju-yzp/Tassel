@@ -29,8 +29,6 @@ include(GoogleTest)
 enable_testing()
 
 message(STATUS "tassel_core tests:")
-# Only test_vo_estimator is active; other tests depend on old State API
-# (commented out).
 file(GLOB _ALL_TEST_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
 set(_ACTIVE_TESTS
     test_estimator
@@ -39,9 +37,7 @@ set(_ACTIVE_TESTS
     test_visual_factor
     test_prior_factor
     test_landmark_block
-    test_imu_factor
-    test_vi_init_sim)
-# test_imu_static removed — superseded by test_euroc offline data loader
+    test_imu_factor)
 foreach(_src ${_ALL_TEST_SRCS})
   get_filename_component(_name ${_src} NAME_WE)
   if(NOT _name IN_LIST _ACTIVE_TESTS)

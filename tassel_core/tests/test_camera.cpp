@@ -163,8 +163,8 @@ TEST_F(CameraRadTanTest, JacobianDZN) {
 
     for (int k = 0; k < 20; ++k) {
         Eigen::Vector2d uv(rnd(rng), rnd(rng));
-        Eigen::MatrixXd H_analytic, H_zeta;
-        cam_->get_jacobian(uv, H_analytic, H_zeta);
+        Eigen::MatrixXd H_analytic;
+        cam_->get_jacobian_dzn(uv, H_analytic);
         Eigen::Matrix2d H_num = numerical_dzn(cam_.get(), uv, eps);
 
         for (int i = 0; i < 2; ++i)
@@ -183,8 +183,8 @@ TEST_F(CameraRadTanTest, JacobianDZeta) {
 
     for (int k = 0; k < 15; ++k) {
         Eigen::Vector2d uv(rnd(rng), rnd(rng));
-        Eigen::MatrixXd H_dzn, H_analytic;
-        cam_->get_jacobian(uv, H_dzn, H_analytic);
+        Eigen::MatrixXd H_analytic;
+        cam_->get_jacobian_dzeta(uv, H_analytic);
         Eigen::Matrix<double, 2, 8> H_num = numerical_dzeta<tassel_core::CameraRadTan>(
             radtan_K, radtan_D, kWidth, kHeight, uv, eps);
 
@@ -272,8 +272,8 @@ TEST_F(CameraEquiTest, JacobianDZN) {
     for (int k = 0; k < 20; ++k) {
         Eigen::Vector2d uv(rnd(rng), rnd(rng));
         if (uv.norm() < 0.01) continue;  // skip singularity at r=0
-        Eigen::MatrixXd H_analytic, H_zeta;
-        cam_->get_jacobian(uv, H_analytic, H_zeta);
+        Eigen::MatrixXd H_analytic;
+        cam_->get_jacobian_dzn(uv, H_analytic);
         Eigen::Matrix2d H_num = numerical_dzn(cam_.get(), uv, eps);
 
         for (int i = 0; i < 2; ++i)
@@ -293,8 +293,8 @@ TEST_F(CameraEquiTest, JacobianDZeta) {
     for (int k = 0; k < 15; ++k) {
         Eigen::Vector2d uv(rnd(rng), rnd(rng));
         if (uv.norm() < 0.01) continue;  // skip singularity at r=0
-        Eigen::MatrixXd H_dzn, H_analytic;
-        cam_->get_jacobian(uv, H_dzn, H_analytic);
+        Eigen::MatrixXd H_analytic;
+        cam_->get_jacobian_dzeta(uv, H_analytic);
         Eigen::Matrix<double, 2, 8> H_num =
             numerical_dzeta<tassel_core::CameraEqui>(equi_K, equi_D, kWidth, kHeight, uv, eps);
 

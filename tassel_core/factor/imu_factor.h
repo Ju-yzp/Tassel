@@ -77,10 +77,10 @@ public:
                 Eigen::Map<Eigen::Matrix<double, 15, 6, Eigen::RowMajor>> jacobian_pose_i(
                     jacobians[0]);
                 jacobian_pose_i.setZero();
+                jacobian_pose_i.template block<3, 3>(0, 0) = -R_i.transpose();
                 jacobian_pose_i.template block<3, 3>(0, 3) = Sophus::SO3d::hat(
                     R_i.transpose() * (0.5 * G * sum_dt * sum_dt + P_j - P_i - V_i * sum_dt));
-                jacobian_pose_i.template block<3, 3>(0, 0) = -R_i.transpose();
-                jacobian_pose_i.template block<3, 3>(3, 3) = Jr_inv * R_j.transpose() * R_i;
+                jacobian_pose_i.template block<3, 3>(3, 3) = -Jr_inv * R_j.transpose() * R_i;
                 jacobian_pose_i.template block<3, 3>(6, 3) =
                     Sophus::SO3d::hat(R_i.transpose() * (G * sum_dt + V_j - V_i));
                 jacobian_pose_i = sqrt_info * jacobian_pose_i;
@@ -93,7 +93,8 @@ public:
                 jacobian_speedbias_i.block<3, 3>(0, 3) = -dp_dba;
                 jacobian_speedbias_i.block<3, 3>(0, 6) = -dp_dbg;
 
-                jacobian_speedbias_i.block<3, 3>(3, 6) = -Jr_inv * dq_dbg;
+                jacobian_speedbias_i.block<3, 3>(3, 6) =
+                    -Jr_inv * R_j.transpose() * R_i * corrected_delta_q * dq_dbg;
 
                 jacobian_speedbias_i.block<3, 3>(6, 0) = -R_i.transpose();
                 jacobian_speedbias_i.block<3, 3>(6, 3) = -dv_dba;

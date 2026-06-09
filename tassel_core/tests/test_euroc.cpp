@@ -41,9 +41,11 @@
 #include "parameters/parameters.h"
 #include "state/state.h"
 #include "tassel_utils/timer.h"
+#include "viewer/viewer.h"
 
 #include <buffer.h>
 #include <synchronizer.h>
+#include <rclcpp/rclcpp.hpp>
 
 namespace {
 
@@ -135,7 +137,7 @@ std::vector<tassel_core::Camera> initializeCameras(const tassel_tools::Parameter
         auto it_d = params.cam_distort_map.find(id);
         if (it_k == params.cam_intrinsic_map.end() || it_d == params.cam_distort_map.end())
             continue;
-        std::string model = (id == 0) ? "equi" : "equi";
+        std::string model = (id == 0) ? "radtan" : "radtan";
         result.push_back(tassel_core::CameraFactory::create(
             model, it_k->second, it_d->second, params.cols, params.rows));
     }
@@ -293,27 +295,42 @@ int main(int argc, char** argv) {
     option.min_rot_excitation = params.min_rot_excitation;
     option.min_excited_frames = params.min_excited_frames;
     option.num_init_iterations = params.num_init_iterations;
+    option.acc_correction_matrix = params.acc_correction_matrix;
+    option.acc_bias = params.acc_bias;
 
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count));
     state->visual_sqrt_info = Eigen::Matrix2d::Identity() * params.visual_factor_weight;
 
     auto feature_manager = std::make_shared<FeatureManager>(
-        params.reprojection_error_thres, params.parallax_thres, params.tracked_times_thres,
-        params.min_tracked_pts_num, params.min_pnp_num, params.min_pnp_inliers_ratio,
-        params.min_translation, params.min_depth, params.max_depth);
+        params.reprojection_error_thres, params.pnp_reprojection_error_thres, params.parallax_thres,
+        params.tracked_times_thres, params.min_tracked_pts_num, params.min_pnp_num,
+        params.min_pnp_inliers_ratio, params.min_translation, params.min_depth, params.max_depth);
 
     Estimator estimator(option, state, feature_manager, ric, tic, ric1, tic1);
     estimator.setCamera(camera_ptr);
 
+    // ── Viewer ──────────────────────────────────────────────────────────
+    rclcpp::init(argc, argv);
+    auto viewer = std::make_shared<tassel_tools::Viewer>("world");
+    viewer->createImagePublisher("stereo/image");
+    viewer->createOdometryPublisher("camera", "odom/camera");
+    viewer->createPathPublisher("vo/path");
+    viewer->createPointCloudPublisher("landmarks");
+
     std::vector<std::pair<double, Sophus::SE3d>> trajectory;
-    estimator.setPoseCallback(
-        [&trajectory](double ts, const Sophus::SE3d& pose) { trajectory.emplace_back(ts, pose); });
+    estimator.setPoseCallback([&trajectory, &viewer](double ts, const Sophus::SE3d& pose) {
+        trajectory.emplace_back(ts, pose);
+        viewer->publishOdometry("odom/camera", pose.translation(), pose.unit_quaternion());
+        viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion());
+    });
+    estimator.setCloudCallback([&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
+        viewer->publishPointCloud("landmarks", pts);
+    });
 
     // ── Main processing loop ───────────────────────────────────────────
     std::cout << "[EuRoC] Processing " << stereo_data.size() << " frames...\n";
 
     size_t imu_idx = 0;
-    size_t n_keyframes = 0;
 
     for (size_t i = 0; i < stereo_data.size(); ++i) {
         const auto& s = stereo_data[i];
@@ -358,6 +375,33 @@ int main(int argc, char** argv) {
 
         estimator.processMeasurement(ts, feature_frame, imu_vec);
 
+        // Visualization: feature overlay + publish
+        cv::Mat disp_left, disp_right;
+        cv::cvtColor(stereo_ptr->left_img, disp_left, cv::COLOR_GRAY2BGR);
+        tracker.drawTrackingResult(0, disp_left);
+        cv::cvtColor(stereo_ptr->right_img, disp_right, cv::COLOR_GRAY2BGR);
+        tracker.drawTrackingResult(1, disp_right);
+
+        // Pose text overlay
+        if (state->cur_frame_count > 0) {
+            int k = state->cur_frame_count - 1;
+            Eigen::Vector3d P = state->Ps[k];
+            Eigen::Vector3d V = state->Vs[k];
+            char buf[256];
+            std::snprintf(
+                buf, sizeof(buf), "P: %.3f %.3f %.3f | V: %.3f %.3f %.3f | kf: %d", P.x(), P.y(),
+                P.z(), V.x(), V.y(), V.z(), state->cur_frame_count);
+            cv::putText(
+                disp_left, buf, cv::Point(10, 20), cv::FONT_HERSHEY_SIMPLEX, 0.5,
+                cv::Scalar(0, 255, 0), 1);
+        }
+
+        cv::Mat stereo_disp;
+        cv::hconcat(disp_left, disp_right, stereo_disp);
+        viewer->publishImage("stereo/image", "camera", stereo_disp);
+
+        rclcpp::spin_some(viewer);
+
         if (i % 100 == 0 || i == stereo_data.size() - 1) {
             double pct = (i + 1) * 100.0 / stereo_data.size();
             std::printf(
@@ -367,6 +411,8 @@ int main(int argc, char** argv) {
         }
     }
     std::cout << "\n";
+
+    rclcpp::shutdown();
 
     // ── Final pose ─────────────────────────────────────────────────────
     std::cout << "\n[EuRoC] Done. " << state->cur_frame_count << " keyframes in window.\n";
