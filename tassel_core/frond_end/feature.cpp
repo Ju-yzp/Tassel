@@ -54,7 +54,7 @@ void Feature::monoTriangulate(
     if (estimated_depth != INVALID_DEPTH) {
         return;
     }
-    if (observations.size() > 2) {
+    if (observations.size() > 1) {
         Eigen::Matrix3d reference_r = state.Rs[start_frame_id];
         Eigen::Vector3d reference_t = reference_r * tic + state.Ps[start_frame_id];
 

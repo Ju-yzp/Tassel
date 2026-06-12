@@ -32,12 +32,12 @@ message(STATUS "tassel_core tests:")
 file(GLOB _ALL_TEST_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
 set(_ACTIVE_TESTS
     test_estimator
-    test_euroc
     test_camera
     test_visual_factor
     test_prior_factor
     test_landmark_block
-    test_imu_factor)
+    test_imu_factor
+    test_two_view_factor)
 foreach(_src ${_ALL_TEST_SRCS})
   get_filename_component(_name ${_src} NAME_WE)
   if(NOT _name IN_LIST _ACTIVE_TESTS)

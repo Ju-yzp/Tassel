@@ -111,11 +111,6 @@ struct State {
         return compensated;
     }
 
-    void saveStateWithLinearized() {
-        storage_poses_lin = params_pose;
-        storage_speed_bias_lin = params_speed_bias;
-    }
-
     void reset() {
         cur_frame_count = 0;
         acc_vec.clear();
@@ -163,10 +158,6 @@ struct State {
 
     //  视觉因子信息矩阵
     Eigen::Matrix2d visual_sqrt_info;
-
-    // 旧状态(线性化点)
-    std::vector<std::array<double, 6>> storage_poses_lin;
-    std::vector<std::array<double, 9>> storage_speed_bias_lin;
 };
 
 }  // namespace tassel_core

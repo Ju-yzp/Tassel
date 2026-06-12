@@ -21,6 +21,7 @@ struct EstimatorOption {
     double min_rot_excitation = 0.2;
     int min_excited_frames = 3;
     int num_init_iterations = 2;
+    double parallax_thres = 40.0;
 
     double acc_n = 0.01;
     double acc_w = 0.001;

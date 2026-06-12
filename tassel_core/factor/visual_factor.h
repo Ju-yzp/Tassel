@@ -34,8 +34,8 @@ public:
         const double* ba_i_lin_, const double* ba_j_lin_, const Eigen::Matrix2d& sqrt_info_,
         const CameraBase* camera);
 
-    virtual bool Evaluate(
-        double const* const* parameters, double* residuals, double** jacobians) const;
+    bool Evaluate(
+        double const* const* parameters, double* residuals, double** jacobians) const override;
 
 private:
     Eigen::Vector3d uv_i;

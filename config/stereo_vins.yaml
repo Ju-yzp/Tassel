@@ -27,37 +27,38 @@ cam1:
 
 rows: 480
 cols: 640
-per_grid_rows: 40
-per_grid_cols: 60
+per_grid_rows: 30
+per_grid_cols: 40
 edge_x: 15
 edge_y: 15
 mask_radius: 15.0
-min_feature_num: 100
+min_feature_num: 150
 
 flow_back: true
 max_square_move_dist: 0.8
 min_gradient: 20.0
 enable_statistics: true
 
-reprojection_error_thres: 2
-pnp_reprojection_error_thres: 0.01
-parallax_thres: 60.0
+reprojection_error_thres: 1.4
+pnp_reprojection_error_thres: 0.008
+init_parallax_thres: 60.0
+parallax_thres: 20.0
 max_pnp_needed_num: 25
 tracked_times_thres: 3
 min_pnp_num: 8
 min_pnp_inliers_ratio: 0.80
-min_depth: 0.15
-max_depth: 3.0
-min_translation: 0.16
-min_tracked_pts_num: 50
+min_depth: 0.10
+max_depth: 5.0
+min_translation: 0.07
+min_tracked_pts_num: 90
 
 use_imu: true
-num_iterations: 10
+num_iterations: 12
 max_frame_count: 10
 
-initial_exposure_time_us: 6000
+initial_exposure_time_us: 8000
 
-visual_factor_weight: 250.0
+visual_factor_weight: 360.0
 
 estimate_ba_init: false
 init_ba: [0.10, -0.15, 0.0]
@@ -71,9 +72,6 @@ gyr_n: 2.6401761065710893e-03
 gyr_w: 7.0304129470456934e-05
 g_norm: 9.80
 
-# IMU intrinsic calibration (6-param, live depthai SDK ACCELEROMETER_RAW)
-# Model: a_cal = acc_correction_matrix @ (a_raw - acc_bias)
-# Calibrated 2026-06-07: 10 static segments, 3 axes, std=0.001
 acc_correction_matrix:
     - [0.99929582, 0.0, 0.0]
     - [0.0, 0.99813033, 0.0]

@@ -37,6 +37,8 @@ target_include_directories(
          $<INSTALL_INTERFACE:include>)
 
 # ── Tests ────────────────────────────────────────────────────────────────
+find_package(depthai CONFIG REQUIRED)
+
 list(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_SOURCE_DIR}/cmake")
 include(TasselTest)
 
@@ -50,6 +52,8 @@ tassel_add_tests(
   "${CMAKE_CURRENT_SOURCE_DIR}/tests"
   LINK_LIBS
   tassel_tools
+  HARDWARE_LIBS
+  depthai::core
   INCLUDE_DIRS
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_CURRENT_SOURCE_DIR}/include")

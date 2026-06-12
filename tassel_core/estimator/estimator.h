@@ -87,9 +87,6 @@ private:
     Eigen::Vector3d last_imu_acc_;
     Eigen::Vector3d last_imu_gyro_;
 
-    double init_ts_ = -1;
-    std::vector<tassel_utils::IMUMeasurement> imu_init_buf_;
-
     std::unique_ptr<MargLinData> marg_data_;
 
     // 动态初始化使用,存储sfm位姿以及imu在体坐标系下的速度

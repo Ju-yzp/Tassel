@@ -72,8 +72,9 @@ bool FeatureManager::checkKeyFrameByParallax(
 }
 
 void FeatureManager::triangulate(
-    const State& state, const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1) {
-    bool mono_triangulate = state.cur_frame_count > 0;
+    const State& state, const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1,
+    bool enable_mono) {
+    bool mono_triangulate = state.cur_frame_count > 0 && enable_mono;
     auto cs = state.get_compensated_state();
     for (auto& [id, feature] : features_) {
         feature.stereoTriangulate(state.ric, state.tic, ric1, tic1, min_depth_, max_depth_);
@@ -217,12 +218,13 @@ void FeatureManager::removeOutliers(const State& state) {
             error_sum += (uv_pixel - pt_meas).norm();
         }
 
-        double average_error = error_sum / static_cast<double>((observations.size() - 1));
+        double average_error = error_sum / static_cast<double>(observations.size());
         if (average_error > reprojection_error_thres_) {
             removed_ids.insert(id);
         }
     }
 
+    spdlog::info("Removing {} outlier features", static_cast<int>(removed_ids.size()));
     std::erase_if(features_, [&](const auto& item) { return removed_ids.count(item.first) > 0; });
 }
 
@@ -276,4 +278,6 @@ std::vector<Feature*> FeatureManager::collectOptimizedFeatures() {
     }
     return result;
 }
+
+void FeatureManager::reset(int parallax_thres) { parallax_thres_ = parallax_thres; }
 }  // namespace tassel_core

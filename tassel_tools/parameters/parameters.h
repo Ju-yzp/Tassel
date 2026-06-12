@@ -29,6 +29,7 @@ struct Parameters {
 
         reprojection_error_thres = parser.as<double>("reprojection_error_thres");
         pnp_reprojection_error_thres = parser.as<double>("pnp_reprojection_error_thres");
+        init_parallax_thres = parser.as<double>("init_parallax_thres");
         parallax_thres = parser.as<double>("parallax_thres");
         min_tracked_pts_num = parser.as<int>("min_tracked_pts_num");
         min_pnp_num = parser.as<int>("min_pnp_num");
@@ -93,7 +94,8 @@ struct Parameters {
     bool enable_statistics;
 
     double reprojection_error_thres;
-    double pnp_reprojection_error_thres;  // normalized-coordinate threshold for PnP
+    double pnp_reprojection_error_thres;
+    double init_parallax_thres;
     double parallax_thres;
     int min_tracked_pts_num;
     int min_pnp_num;

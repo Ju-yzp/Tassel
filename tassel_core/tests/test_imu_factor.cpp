@@ -49,7 +49,7 @@ class ImuFactorTest : public ::testing::Test {
 protected:
     void SetUp() override {
         imu_dt_ = 0.0025;
-        steps_per_frame_ = 27;
+        steps_per_frame_ = 67;  // 67 * 0.0025 ≈ 0.167s per frame, 6 frames ≈ 1s
         num_frames_ = 6;
 
         a_body_ = Eigen::Vector3d(0.3, -0.1, 0.05);

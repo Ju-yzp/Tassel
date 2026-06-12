@@ -181,12 +181,14 @@ int main(int argc, char** argv) {
     option.num_init_iterations = params.num_init_iterations;
     option.acc_correction_matrix = params.acc_correction_matrix;
     option.acc_bias = params.acc_bias;
+    option.parallax_thres = params.parallax_thres;
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count));
     state->visual_sqrt_info = Eigen::Matrix2d::Identity() * params.visual_factor_weight;
     auto feature_manager = std::make_shared<FeatureManager>(
-        params.reprojection_error_thres, params.pnp_reprojection_error_thres, params.parallax_thres,
-        params.tracked_times_thres, params.min_tracked_pts_num, params.min_pnp_num,
-        params.min_pnp_inliers_ratio, params.min_translation, params.min_depth, params.max_depth);
+        params.reprojection_error_thres, params.pnp_reprojection_error_thres,
+        params.init_parallax_thres, params.tracked_times_thres, params.min_tracked_pts_num,
+        params.min_pnp_num, params.min_pnp_inliers_ratio, params.min_translation, params.min_depth,
+        params.max_depth);
 
     Estimator estimator(option, state, feature_manager, ric, tic, ric1, tic1);
     estimator.setCamera(camera_ptr);

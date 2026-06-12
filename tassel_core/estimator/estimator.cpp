@@ -50,30 +50,14 @@ Estimator::Estimator(
     tassel_utils::G = Eigen::Vector3d(0, 0, option_.g_norm);
     cv::setNumThreads(option_.num_threads);
     noise_ = initNoise();
-    preintegrators_.resize(
-        state_->max_frame_count - 1,
-        MidPointIntegrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise_));
-    state_->cur_frame_count = 0;
-    state_->ric = ric_;
-    state_->tic = tic_;
-    Rs_.resize(state_->max_frame_count);
-    Ps_.resize(state_->max_frame_count);
-    Vs_.resize(state_->max_frame_count);
-    Rs_[0] = Eigen::Matrix3d::Identity();
-    Ps_[0] = Eigen::Vector3d::Zero();
-    Vs_[0] = Eigen::Vector3d::Zero();
-    if (option_.estimate_ba_init) {
-        state_->Bas[0] = option_.init_ba;
-    }
+    reset();
 }
 
 void Estimator::reset() {
     gravity_initialized_ = false;
-    init_ts_ = -1;
     last_ts_ = -1;
     last_imu_acc_ = Eigen::Vector3d::Zero();
     last_imu_gyro_ = Eigen::Vector3d::Zero();
-    imu_init_buf_.clear();
     preintegrators_.clear();
     preintegrators_.resize(
         state_->max_frame_count - 1,
@@ -90,9 +74,6 @@ void Estimator::reset() {
     marg_data_.reset();
     tassel_utils::G = Eigen::Vector3d(0, 0, option_.g_norm);
     state_->reset();
-    if (option_.estimate_ba_init) {
-        state_->Bas[0] = option_.init_ba;
-    }
     feature_manager_->reset();
 }
 
@@ -102,8 +83,7 @@ void Estimator::processMeasurement(
     int& frame_count = state_->cur_frame_count;
     if (last_ts_ < 0 && !imu_measurements.empty()) {
         last_ts_ = imu_measurements.back().timestamp;
-        last_imu_acc_ =
-            option_.acc_correction_matrix * (imu_measurements.back().acc - option_.acc_bias);
+        last_imu_acc_ = imu_measurements.back().acc - option_.acc_bias;
         last_imu_gyro_ = imu_measurements.back().gyro;
     }
 
@@ -120,7 +100,7 @@ void Estimator::processMeasurement(
         for (const auto& imu : imu_measurements) {
             // Apply accelerometer intrinsic calibration
             tassel_utils::IMUMeasurement imu_cal = imu;
-            imu_cal.acc = option_.acc_correction_matrix * (imu.acc - option_.acc_bias);
+            imu_cal.acc = imu.acc - option_.acc_bias;
             preintegrator.propagate(imu_cal);
 
             double dt = imu_cal.timestamp - last_ts_;
@@ -148,11 +128,10 @@ void Estimator::processMeasurement(
         state_->Vs[frame_count] = V;
     }
 
+    state_->acc_vec.push_back(last_imu_acc_);
+    state_->gyro_vec.push_back(last_imu_gyro_);
     if (is_keyframe) {
-        state_->acc_vec.push_back(last_imu_acc_);
-        state_->gyro_vec.push_back(last_imu_gyro_);
-
-        feature_manager_->triangulate(*state_, ric1_, tic1_);
+        feature_manager_->triangulate(*state_, ric1_, tic1_, gravity_initialized_);
         if (!gravity_initialized_) {
             if (!feature_manager_->initPoseByPNP(frame_count, Rs_, Ps_, ric_, tic_)) {
                 spdlog::warn("PnP failed, resetting initialization");
@@ -225,6 +204,8 @@ void Estimator::processMeasurement(
                         state_->Vs[i].x(), state_->Vs[i].y(), state_->Vs[i].z(), state_->Ps[i].x(),
                         state_->Ps[i].y(), state_->Ps[i].z());
                 }
+                feature_manager_->reset(option_.parallax_thres);
+                feature_manager_->triangulate(*state_, ric1_, tic1_, gravity_initialized_);
             }
             optimize();
             feature_manager_->removeOutliers(*state_);
@@ -247,15 +228,12 @@ void Estimator::processMeasurement(
     } else {
         state_->acc_vec.erase(state_->acc_vec.begin());
         state_->gyro_vec.erase(state_->gyro_vec.begin());
-        state_->acc_vec.push_back(last_imu_acc_);
-        state_->gyro_vec.push_back(last_imu_gyro_);
         if (frame_count == state_->max_frame_count - 1 && gravity_initialized_) {
             optimize();
             feature_manager_->removeOutliers(*state_);
         }
 
         feature_manager_->removeNewest(frame_count);
-        // slideWindow(false);
     }
 
     if (cloud_callback_ && gravity_initialized_) {
@@ -268,7 +246,6 @@ void Estimator::optimize() {
     double delay_time_pre = state_->delay_time;
 
     state_->stateToParams();
-    state_->saveStateWithLinearized();
     auto features = feature_manager_->collectOptimizedFeatures();
 
     ceres::Problem problem;
@@ -377,7 +354,7 @@ void Estimator::buildPrior() {
     state_->stateToParams();
 
     auto marg_features = feature_manager_->collectMarginalizationFeatures();
-
+    spdlog::info("{} feature marginals", static_cast<int>(marg_features.size()));
     std::vector<IntegratorBase<MidPointIntegrator>*> pint_ptrs;
     pint_ptrs.push_back(&preintegrators_[0]);
 
@@ -425,7 +402,7 @@ void Estimator::slideWindow() {
         preintegrators_[i] = std::move(preintegrators_[i + 1]);
     }
     // 重置最后一个预积分器
-    preintegrators_.back().reset(state_->Bas[n - 1], state_->Bgs[n - 1], noise_);
+    preintegrators_.back().reset(state_->Bas[n - 2], state_->Bgs[n - 2], noise_);
 
     state_->acc_vec.erase(state_->acc_vec.begin());
     state_->gyro_vec.erase(state_->gyro_vec.begin());
