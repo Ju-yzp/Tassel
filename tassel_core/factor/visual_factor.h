@@ -32,7 +32,7 @@ public:
         const Eigen::Vector3d& a_i_, const Eigen::Vector3d& a_j_, const double* v_i_,
         const double* v_j_, const double* bg_i_lin_, const double* bg_j_lin_,
         const double* ba_i_lin_, const double* ba_j_lin_, const Eigen::Matrix2d& sqrt_info_,
-        const CameraBase* camera);
+        const CameraBase* camera_);
 
     bool Evaluate(
         double const* const* parameters, double* residuals, double** jacobians) const override;

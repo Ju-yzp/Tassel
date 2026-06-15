@@ -198,7 +198,7 @@ TEST_F(VisualFactorTest, JacobianCheck) {
 
     double J0[12], J1[12], J2[2], J3[2];
     double* jac_ptrs[] = {J0, J1, J2, J3};
-    const double* params[] = {pose_i_, pose_j_, &inv_depth, &dt_val};
+    const double* params[] = {pose_i_, pose_j_, &dt_val, &inv_depth};
     double r[2];
     factor->Evaluate(params, r, jac_ptrs);
 
@@ -256,10 +256,10 @@ TEST_F(VisualFactorTest, JacobianCheck) {
     for (int c = 0; c < 6; ++c) check("J_pose_i", J0, c, num_pose(0, pose_i_, c), 6);
     std::cout << "--- pose_j (2x6) ---\n";
     for (int c = 0; c < 6; ++c) check("J_pose_j", J1, c, num_pose(1, pose_j_, c), 6);
-    std::cout << "--- inv_depth (2x1) ---\n";
-    check("J_inv_depth", J2, 0, num_scalar(2, inv_depth), 1);
     std::cout << "--- dt (2x1) ---\n";
-    check("J_dt", J3, 0, num_scalar(3, dt_val), 1);
+    check("J_dt", J2, 0, num_scalar(2, dt_val), 1);
+    std::cout << "--- inv_depth (2x1) ---\n";
+    check("J_inv_depth", J3, 0, num_scalar(3, inv_depth), 1);
 
     std::cout << "\ntotal bad (>0.5%): " << nbad << "\n";
     EXPECT_EQ(nbad, 0);
@@ -288,7 +288,7 @@ TEST_F(VisualFactorTest, TdConvergence) {
     std::vector<double> inv_depths(lms_.size());
     for (size_t k = 0; k < lms_.size(); ++k) {
         inv_depths[k] = lms_[k].inv_depth;
-        problem.AddResidualBlock(makeFactor(k), loss, pose_i_, pose_j_, &inv_depths[k], &td_opt);
+        problem.AddResidualBlock(makeFactor(k), loss, pose_i_, pose_j_, &td_opt, &inv_depths[k]);
     }
 
     ceres::Solver::Options opts;

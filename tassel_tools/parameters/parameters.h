@@ -60,17 +60,8 @@ struct Parameters {
         gyr_w = parser.as<double>("gyr_w");
         g_norm = parser.as<double>("g_norm");
 
-        estimate_ba_init = parser.as<bool>("estimate_ba_init");
-        init_ba = parser.as<Eigen::Vector3d>("init_ba");
-        min_rot_excitation = parser.as<double>("min_rot_excitation");
-        min_excited_frames = parser.as<int>("min_excited_frames");
         num_init_iterations = parser.as<int>("num_init_iterations");
 
-        try {
-            acc_correction_matrix = parser.as<Eigen::Matrix3d>("acc_correction_matrix");
-        } catch (const std::runtime_error&) {
-            acc_correction_matrix = Eigen::Matrix3d::Identity();
-        }
         try {
             acc_bias = parser.as<Eigen::Vector3d>("acc_bias");
         } catch (const std::runtime_error&) {
@@ -117,13 +108,8 @@ struct Parameters {
     double gyr_n, gyr_w;
     double g_norm;
 
-    Eigen::Matrix3d acc_correction_matrix = Eigen::Matrix3d::Identity();
     Eigen::Vector3d acc_bias = Eigen::Vector3d::Zero();
 
-    bool estimate_ba_init;
-    Eigen::Vector3d init_ba;
-    double min_rot_excitation;
-    int min_excited_frames;
     int num_init_iterations;
 };
 

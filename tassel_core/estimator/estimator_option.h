@@ -16,10 +16,6 @@ struct EstimatorOption {
 
     double g_norm = 9.8;
 
-    bool estimate_ba_init = false;
-    Eigen::Vector3d init_ba = Eigen::Vector3d::Zero();
-    double min_rot_excitation = 0.2;
-    int min_excited_frames = 3;
     int num_init_iterations = 2;
     double parallax_thres = 40.0;
 
@@ -28,8 +24,9 @@ struct EstimatorOption {
     double gyr_n = 0.001;
     double gyr_w = 0.0001;
 
-    Eigen::Matrix3d acc_correction_matrix = Eigen::Matrix3d::Identity();
     Eigen::Vector3d acc_bias = Eigen::Vector3d::Zero();
+
+    double gravity_diff_threshold = 0.10;
 };
 
 }  // namespace tassel_core

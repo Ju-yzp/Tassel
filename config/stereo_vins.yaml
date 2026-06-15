@@ -35,20 +35,21 @@ mask_radius: 15.0
 min_feature_num: 150
 
 flow_back: true
-max_square_move_dist: 0.8
-min_gradient: 20.0
+max_square_move_dist: 0.5
+min_gradient: 25.0
 enable_statistics: true
 
 reprojection_error_thres: 1.4
-pnp_reprojection_error_thres: 0.008
-init_parallax_thres: 60.0
+pnp_reprojection_error_thres: 0.006
+
+init_parallax_thres: 40.0
 parallax_thres: 20.0
 max_pnp_needed_num: 25
 tracked_times_thres: 3
 min_pnp_num: 8
-min_pnp_inliers_ratio: 0.80
+min_pnp_inliers_ratio: 0.75
 min_depth: 0.10
-max_depth: 5.0
+max_depth: 3.0
 min_translation: 0.07
 min_tracked_pts_num: 90
 
@@ -56,14 +57,10 @@ use_imu: true
 num_iterations: 12
 max_frame_count: 10
 
-initial_exposure_time_us: 8000
+initial_exposure_time_us: 9000
 
 visual_factor_weight: 360.0
 
-estimate_ba_init: false
-init_ba: [0.10, -0.15, 0.0]
-min_rot_excitation: 0.2
-min_excited_frames: 4
 num_init_iterations: 8
 
 acc_n: 1.9291286492253038e-02
@@ -72,8 +69,4 @@ gyr_n: 2.6401761065710893e-03
 gyr_w: 7.0304129470456934e-05
 g_norm: 9.80
 
-acc_correction_matrix:
-    - [0.99929582, 0.0, 0.0]
-    - [0.0, 0.99813033, 0.0]
-    - [0.0, 0.0, 0.99846098]
 acc_bias: [-0.07670646, -0.16838261, -0.11934545]

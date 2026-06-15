@@ -57,14 +57,14 @@ void LandmarkBlock::linearize(const Feature& feature, const State& state) {
         std::vector<double*> jacobians;
         jacobians.push_back(jacobian_pose_i.data());
         jacobians.push_back(jacobian_pose_j.data());
-        jacobians.push_back(jacobian_landmark.data());
         jacobians.push_back(jacobian_dt.data());
+        jacobians.push_back(jacobian_landmark.data());
 
         std::vector<double const*> parameters;
         parameters.push_back(state.params_pose[start_frame_id].data());
         parameters.push_back(state.params_pose[target_id].data());
-        parameters.push_back(&inv_depth);
         parameters.push_back(&state.param_delay_time);
+        parameters.push_back(&inv_depth);
 
         visual_factor->Evaluate(parameters.data(), residual.data(), jacobians.data());
         delete visual_factor;

@@ -58,7 +58,9 @@ private:
 
     void solveGyroBias();
 
-    Eigen::Vector3d solveGravityVelocity();
+    bool solveGravityVelocity(
+        Eigen::Vector3d& g, const std::vector<Eigen::Vector3d>& Ps_cam,
+        const std::vector<Eigen::Matrix3d>& Rs_cam);
 
     Eigen::Vector3d buildGVsOptimizeProblem(const Eigen::Vector3d& g_B0_init);
 

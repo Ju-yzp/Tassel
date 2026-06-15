@@ -38,8 +38,8 @@ bool VisualFactor::Evaluate(
     Eigen::Vector3d phi_j(parameters[1][3], parameters[1][4], parameters[1][5]);
     Eigen::Matrix3d R_j = Sophus::SO3d::exp(phi_j).matrix();
 
-    double inv_depth = parameters[2][0];
-    double dt = parameters[3][0];
+    double dt = parameters[2][0];
+    double inv_depth = parameters[3][0];
 
     Eigen::Vector3d V_i(v_i[0], v_i[1], v_i[2]);
     Eigen::Vector3d V_j(v_j[0], v_j[1], v_j[2]);
@@ -90,17 +90,17 @@ bool VisualFactor::Evaluate(
         }
 
         if (jacobians[2]) {
-            Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_inv_depth(jacobians[2]);
-            jacobian_inv_depth = -reduce * ric.transpose() * A_j * R_j.transpose() * R_i * A_i *
-                                 ric * (uv_i / (inv_depth * inv_depth));
-        }
-
-        if (jacobians[3]) {
-            Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_dt(jacobians[3]);
+            Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_dt(jacobians[2]);
             jacobian_dt = reduce * ric.transpose() *
                           (Sophus::SO3d::hat(bg_j - w_j) * pj_in_I +
                            A_j * R_j.transpose() *
                                (R_i * A_i * Sophus::SO3d::hat(w_i - bg_i) * pi_in_I + V_i - V_j));
+        }
+
+        if (jacobians[3]) {
+            Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_inv_depth(jacobians[3]);
+            jacobian_inv_depth = -reduce * ric.transpose() * A_j * R_j.transpose() * R_i * A_i *
+                                 ric * (pi_in_C / inv_depth);
         }
     }
     return true;

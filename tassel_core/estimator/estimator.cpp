@@ -21,20 +21,7 @@
 #include "factor/visual_factor.h"
 
 namespace tassel_core {
-namespace {
-
-bool hasEnoughExcitation(
-    const std::vector<MidPointIntegrator>& preints, int n_pairs, int min_frames,
-    double rot_thresh_rad) {
-    int count = 0;
-    for (int i = 0; i < n_pairs; ++i) {
-        double angle = Sophus::SO3d(preints[i].final_delta_q).log().norm();
-        if (angle > rot_thresh_rad) ++count;
-    }
-    return count >= min_frames;
-}
-
-}  // namespace
+namespace {}  // namespace
 
 Estimator::Estimator(
     const EstimatorOption& option, std::shared_ptr<State> state, std::shared_ptr<FeatureManager> fm,
@@ -133,8 +120,8 @@ void Estimator::processMeasurement(
     if (is_keyframe) {
         feature_manager_->triangulate(*state_, ric1_, tic1_, gravity_initialized_);
         if (!gravity_initialized_) {
-            if (!feature_manager_->initPoseByPNP(frame_count, Rs_, Ps_, ric_, tic_)) {
-                spdlog::warn("PnP failed, resetting initialization");
+            if (!feature_manager_->solvePose(frame_count, Rs_, Ps_)) {
+                spdlog::warn("solvePose failed, resetting initialization");
                 reset();
                 return;
             }
@@ -142,32 +129,31 @@ void Estimator::processMeasurement(
 
         if (frame_count == state_->max_frame_count - 1) {
             if (!gravity_initialized_) {
+                // Save camera poses before conversion.
+                // Ps_cam[k] is translation in camera-k frame (unit scale).
+                // Camera-k center in camera-0 frame: C_k = -Rs_cam[k]^T * Ps_cam[k]
+                std::vector<Eigen::Vector3d> Ps_cam(Ps_.begin(), Ps_.end());
+                std::vector<Eigen::Matrix3d> Rs_cam(Rs_.begin(), Rs_.end());
+
+                // Convert Rs_ to IMU frame:  R_imu = ric·Rs_cam^T·ric^T
+                // Ps_ stays as raw camera-k-frame translation (unit scale).
+                for (int i = 0; i <= frame_count; ++i) {
+                    Eigen::Matrix3d RsT = Rs_[i].transpose();
+                    Rs_[i] = ric_ * RsT * ric_.transpose();
+                }
+
                 solveGyroBias();
                 for (int i = 0; i < state_->cur_frame_count; ++i) {
                     preintegrators_[i].repropagate(state_->Bas[i], state_->Bgs[i], noise_);
                 }
 
-                static constexpr double kMinRotRad = 0.2;
-                static constexpr int kMinExcitedFrames = 3;
-                int n_pairs = state_->cur_frame_count;
-
-                if (!hasEnoughExcitation(
-                        preintegrators_, n_pairs, option_.min_excited_frames,
-                        option_.min_rot_excitation)) {
-                    spdlog::warn(
-                        "Insufficient rotation excitation ({}/{} pairs > {:.0f}°). "
-                        "Please move the device to initialize.",
-                        std::count_if(
-                            preintegrators_.begin(), preintegrators_.begin() + n_pairs,
-                            [thresh = option_.min_rot_excitation](const auto& p) {
-                                return Sophus::SO3d(p.final_delta_q).log().norm() > thresh;
-                            }),
-                        n_pairs, option_.min_rot_excitation * 180.0 / M_PI);
+                Eigen::Vector3d g_B0;
+                if (!solveGravityVelocity(g_B0, Ps_cam, Rs_cam)) {
+                    spdlog::warn("LinearAlignment failed, resetting initialization");
                     reset();
                     return;
                 }
 
-                Eigen::Vector3d g_B0 = solveGravityVelocity();
                 Eigen::Vector3d G_body = buildGVsOptimizeProblem(g_B0);
 
                 // Gravity alignment: rotate world so that -G_body aligns with +Z (Z-up world)
@@ -232,7 +218,6 @@ void Estimator::processMeasurement(
             optimize();
             feature_manager_->removeOutliers(*state_);
         }
-
         feature_manager_->removeNewest(frame_count);
     }
 
@@ -306,8 +291,8 @@ void Estimator::optimize() {
                 state_->params_speed_bias[target_id].data() + 3, sqrt_info, state_->camera);
             problem.AddResidualBlock(
                 cost, loss, state_->params_pose[host_id].data(),
-                state_->params_pose[target_id].data(), &inv_depth_params[k],
-                &state_->param_delay_time);
+                state_->params_pose[target_id].data(), &state_->param_delay_time,
+                &inv_depth_params[k]);
         }
     }
 
@@ -427,8 +412,14 @@ void Estimator::solveGyroBias() {
     b.setZero();
     for (int i = 0; i < state_->cur_frame_count; ++i) {
         Eigen::Matrix3d R_ij = Rs_[i].transpose() * Rs_[i + 1];
-        auto preintegrator = preintegrators_[i];
-        Eigen::Matrix3d R_diff = preintegrator.final_delta_q.transpose() * R_ij;
+        Eigen::Quaterniond q_ij(R_ij);
+        q_ij.normalize();
+        R_ij = q_ij.toRotationMatrix();
+        auto& preintegrator = preintegrators_[i];
+        Eigen::Quaterniond q_delta(preintegrator.final_delta_q);
+        q_delta.normalize();
+        Eigen::Matrix3d delta_q = q_delta.toRotationMatrix();
+        Eigen::Matrix3d R_diff = delta_q.transpose() * R_ij;
         Eigen::Quaterniond q_diff(R_diff);
         q_diff.normalize();
         Eigen::Vector3d phi = Sophus::SO3d(q_diff).log();
@@ -442,86 +433,88 @@ void Estimator::solveGyroBias() {
     spdlog::info("Gyro bias solved: ({:.6f}, {:.6f}, {:.6f})", bg.x(), bg.y(), bg.z());
 }
 
-Eigen::Vector3d Estimator::solveGravityVelocity() {
-    // ── Linear least-squares for initial velocity + gravity ──────────────────
-    //
-    // World frame = IMU body frame at first keyframe (B0).
-    // V_i and g are expressed in B0.  Rs_[i] = R_{B0→Bi} rotates from Bi to B0.
-    //
-    // Body-frame formulation (ref: VINS-Fusion LinearAlignment):
-    // Preintegrated deltas δp, δv are in body frame i.  Rotate kinematic
-    // constraints by R_i^T for better numerical conditioning.
-    //
-    //   Position:  R_i^T·(Pⱼ-Pᵢ) - R_i^T·Vᵢ·dt - ½R_i^T·g·dt² = δp
-    //   Velocity:          R_i^T·Vⱼ - R_i^T·Vᵢ - R_i^T·g·dt  = δv
-    //
-    // Unknowns: x = [V₀, V₁, …, V_{n-1}, g]ᵀ   ∈ ℝ^{3n+3}
-    //
+bool Estimator::solveGravityVelocity(
+    Eigen::Vector3d& g, const std::vector<Eigen::Vector3d>& Ps_cam,
+    const std::vector<Eigen::Matrix3d>& Rs_cam) {
     int n_frames = state_->cur_frame_count + 1;
     int n_pairs = n_frames - 1;
-    int n_state = n_frames * 3 + 3;  // V (3n) + g (3)
 
-    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(n_state, n_state);
-    Eigen::VectorXd b = Eigen::VectorXd::Zero(n_state);
+    std::vector<Eigen::Vector3d> C(n_frames);
+    for (int i = 0; i < n_frames; ++i) {
+        C[i] = -Rs_cam[i].transpose() * Ps_cam[i];
+    }
+
+    int dim = 3 * (n_frames - 1) + 3 + 1;
+
+    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(dim, dim);
+    Eigen::VectorXd b = Eigen::VectorXd::Zero(dim);
 
     for (int i = 0; i < n_pairs; ++i) {
-        Eigen::Matrix3d R_i_T = Rs_[i].transpose();
+        Eigen::Matrix3d R_T = Rs_[i].transpose();
         double dt = preintegrators_[i].sum_dt;
-        const auto& pint = preintegrators_[i];
+        const auto& p = preintegrators_[i];
+        // Camera displacement in camera-0 frame (unit scale)
+        Eigen::Vector3d dC = C[i + 1] - C[i];
 
-        Eigen::Vector3d vis_dp = Ps_[i + 1] - Ps_[i];
+        int oVi = (i == 0) ? -1 : 3 * (i - 1);
+        int oVj = 3 * i;
+        int oG = 3 * (n_frames - 1);
+        int oS = oG + 3;
 
-        // 6×9 per-pair system: cols [0..2]=V_i, [3..5]=V_j, [6..8]=g
-        Eigen::Matrix<double, 6, 9> tmp_A = Eigen::Matrix<double, 6, 9>::Zero();
-        Eigen::Matrix<double, 6, 1> tmp_b = Eigen::Matrix<double, 6, 1>::Zero();
+        Eigen::Matrix<double, 3, Eigen::Dynamic> Ap(3, dim);
+        Ap.setZero();
+        if (oVi >= 0) Ap.block<3, 3>(0, oVi) = dt * R_T;
+        Ap.block<3, 3>(0, oG) = 0.5 * dt * dt * R_T;
+        Ap.block<3, 1>(0, oS) = -R_T * ric_ * dC / 100.0;
+        Eigen::Vector3d bp = -(p.final_delta_p + R_T * Rs_[i + 1] * tic_ - tic_);
 
-        // ---- position (3 rows, body frame i) ----
-        tmp_A.block<3, 3>(0, 0) = dt * R_i_T;             // V_i
-        tmp_A.block<3, 3>(0, 6) = 0.5 * dt * dt * R_i_T;  // g
-        tmp_b.segment<3>(0) = R_i_T * vis_dp - pint.final_delta_p;
+        Eigen::Matrix<double, 3, Eigen::Dynamic> Av(3, dim);
+        Av.setZero();
+        if (oVi >= 0) Av.block<3, 3>(0, oVi) = -R_T;
+        Av.block<3, 3>(0, oVj) = R_T;
+        Av.block<3, 3>(0, oG) = -dt * R_T;
+        Eigen::Vector3d bv = p.final_delta_v;
 
-        // ---- velocity (3 rows, body frame i) ----
-        tmp_A.block<3, 3>(3, 0) = -R_i_T;       // V_i
-        tmp_A.block<3, 3>(3, 3) = R_i_T;        // V_j
-        tmp_A.block<3, 3>(3, 6) = -dt * R_i_T;  // g
-        tmp_b.segment<3>(3) = pint.final_delta_v;
-
-        // H = tmp_A^T * tmp_A,  h = tmp_A^T * tmp_b
-        Eigen::Matrix<double, 9, 9> r_A = tmp_A.transpose() * tmp_A;
-        Eigen::Matrix<double, 9, 1> r_b = tmp_A.transpose() * tmp_b;
-
-        // Block-diagonal: V_i, V_j (6×6 at position i*3)
-        A.block<6, 6>(i * 3, i * 3) += r_A.topLeftCorner<6, 6>();
-        b.segment<6>(i * 3) += r_b.head<6>();
-
-        // Bottom-right: g (3×3)
-        A.bottomRightCorner<3, 3>() += r_A.bottomRightCorner<3, 3>();
-        b.tail<3>() += r_b.tail<3>();
-
-        // Cross-terms
-        A.block<6, 3>(i * 3, n_state - 3) += r_A.topRightCorner<6, 3>();
-        A.block<3, 6>(n_state - 3, i * 3) += r_A.bottomLeftCorner<3, 6>();
+        A.topLeftCorner(dim, dim) += Ap.transpose() * Ap;
+        b.head(dim) += Ap.transpose() * bp;
+        A.topLeftCorner(dim, dim) += Av.transpose() * Av;
+        b.head(dim) += Av.transpose() * bv;
     }
 
+    A = A * 1000.0;
+    b = b * 1000.0;
     Eigen::VectorXd x = A.ldlt().solve(b);
 
-    for (int i = 0; i < n_frames; ++i) {
-        state_->Vs[i] = x.segment<3>(i * 3);
+    double s = x(3 * (n_frames - 1) + 3) / 100.0;
+    g = x.segment<3>(3 * (n_frames - 1));
+
+    if (std::abs(g.norm() - option_.g_norm) > option_.gravity_diff_threshold || s < 0) {
+        spdlog::warn(
+            "LinearAlignment failed: |g|={:.3f} (target={:.3f}), s={:.3f}", g.norm(),
+            option_.g_norm, s);
+        return false;
     }
-    Eigen::Vector3d g_B0 = x.segment<3>(n_frames * 3);
+
+    state_->Vs[0].setZero();
+    for (int i = 1; i < n_frames; ++i) {
+        state_->Vs[i] = x.segment<3>(3 * (i - 1));
+    }
+
+    for (int i = 0; i <= state_->cur_frame_count; ++i) {
+        Ps_[i] = tic_ - Rs_[i] * tic_ - s * Rs_[i] * ric_ * Ps_cam[i];
+    }
 
     spdlog::info(
-        "solveGravityVelocity: |g|={:.4f} g_B0=({:.3f},{:.3f},{:.3f}) n_frames={}", g_B0.norm(),
-        g_B0.x(), g_B0.y(), g_B0.z(), n_frames);
+        "LinearAlignment: |g|={:.4f} g=({:.3f},{:.3f},{:.3f}) s={:.4f}", g.norm(), g.x(), g.y(),
+        g.z(), s);
 
-    return g_B0;
+    return true;
 }
 
 Eigen::Vector3d Estimator::buildGVsOptimizeProblem(const Eigen::Vector3d& g_B0_init) {
     int n_frames = state_->cur_frame_count + 1;
     int n_pairs = n_frames - 1;
 
-    // Build V_blocks from current state
     std::vector<std::array<double, 3>> V_blocks(n_frames);
     for (int i = 0; i < n_frames; ++i) {
         const Eigen::Vector3d& v = state_->Vs[i];
@@ -557,7 +550,6 @@ Eigen::Vector3d Estimator::buildGVsOptimizeProblem(const Eigen::Vector3d& g_B0_i
         ceres::Solver::Summary summary;
         ceres::Solve(opts, &init_problem, &summary);
 
-        // Recenter tangent at new optimal direction
         Eigen::Vector3d dg = tangent_base.transpose() * Eigen::Vector2d(w_block[0], w_block[1]);
         g0_dir = (g0_dir + dg).normalized();
         w_block[0] = w_block[1] = 0.0;
@@ -569,7 +561,6 @@ Eigen::Vector3d Estimator::buildGVsOptimizeProblem(const Eigen::Vector3d& g_B0_i
         }
     }
 
-    // Store refined velocities
     for (int i = 0; i < n_frames; ++i) {
         state_->Vs[i] = Eigen::Vector3d(V_blocks[i][0], V_blocks[i][1], V_blocks[i][2]);
     }

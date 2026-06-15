@@ -280,4 +280,74 @@ std::vector<Feature*> FeatureManager::collectOptimizedFeatures() {
 }
 
 void FeatureManager::reset(int parallax_thres) { parallax_thres_ = parallax_thres; }
+
+bool FeatureManager::solvePose(
+    int frame_count, std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps) {
+    if (frame_count < 1) {
+        return true;
+    }
+
+    int ref_frame = frame_count - 1;
+
+    std::vector<cv::Point2f> pts0, pts1;
+    for (const auto& [id, feature] : features_) {
+        int obs_idx_ref = ref_frame - static_cast<int>(feature.start_frame_id);
+        int obs_idx_cur = frame_count - static_cast<int>(feature.start_frame_id);
+        if (obs_idx_ref < 0 || obs_idx_cur < 1 ||
+            obs_idx_cur >= static_cast<int>(feature.observations.size())) {
+            continue;
+        }
+        const auto& uv_ref = feature.observations[obs_idx_ref].uv;
+        const auto& uv_cur = feature.observations[obs_idx_cur].uv;
+        pts0.emplace_back(uv_ref(0), uv_ref(1));
+        pts1.emplace_back(uv_cur(0), uv_cur(1));
+    }
+
+    if (pts0.size() < 8) {
+        spdlog::warn(
+            "solvePose: insufficient matches ({}) between frames {} and {}, need >= 8", pts0.size(),
+            ref_frame, frame_count);
+        return false;
+    }
+
+    cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
+    cv::Mat inlier_mask;
+    cv::Mat E = cv::findEssentialMat(pts0, pts1, K, cv::RANSAC, 0.999, 0.5, inlier_mask);
+
+    int inlier_count = cv::countNonZero(inlier_mask);
+    double inlier_ratio = static_cast<double>(inlier_count) / pts0.size();
+    spdlog::info(
+        "solvePose: frames {}→{} E inliers {}/{} ({:.1f}%)", ref_frame, frame_count, inlier_count,
+        pts0.size(), 100.0 * inlier_ratio);
+
+    if (inlier_count < 8 || inlier_ratio < 0.3) {
+        spdlog::warn(
+            "solvePose: too few E inliers ({}) or ratio {:.1f}%", inlier_count,
+            100.0 * inlier_ratio);
+        return false;
+    }
+
+    cv::Mat R_cv, t_cv;
+    cv::recoverPose(E, pts0, pts1, K, R_cv, t_cv, inlier_mask);
+
+    Eigen::Matrix3d R_rel;
+    Eigen::Vector3d t_rel;
+    cv::cv2eigen(R_cv, R_rel);
+    cv::cv2eigen(t_cv, t_rel);
+
+    if (t_rel.norm() < 0.01) {
+        spdlog::warn(
+            "solvePose: translation too small ({:.4f}), likely pure rotation or static scene",
+            t_rel.norm());
+        return false;
+    }
+
+    {
+        Eigen::Quaterniond q_rel(R_rel);
+        q_rel.normalize();
+        Rs[frame_count] = q_rel.toRotationMatrix() * Rs[ref_frame];
+    }
+    Ps[frame_count] = R_rel * Ps[ref_frame] + t_rel;
+    return true;
+}
 }  // namespace tassel_core

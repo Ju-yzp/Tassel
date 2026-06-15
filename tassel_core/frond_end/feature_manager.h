@@ -52,6 +52,9 @@ public:
 
     void reset(int parallax_thres);
 
+    bool solvePose(
+        int frame_count, std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps);
+
 private:
     double reprojection_error_thres_;
     double pnp_reprojection_error_thres_;
