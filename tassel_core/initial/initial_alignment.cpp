@@ -35,8 +35,6 @@ bool linearAlignment(
         Eigen::Vector3d Pi = Ps[i];
         Eigen::Vector3d Pj = Ps[j];
 
-        Eigen::Matrix3d R_bw_i = ricT * Ri.transpose();
-
         int col_Vi = i * 3;
 
         Eigen::Matrix<double, 6, 10> tmp_A;
@@ -44,14 +42,14 @@ bool linearAlignment(
         Eigen::Matrix<double, 6, 1> tmp_b;
         tmp_b.setZero();
 
-        tmp_A.block<3, 3>(0, 0) = dt * Eigen::Matrix3d::Identity();
-        tmp_A.block<3, 3>(0, 6) = 0.5 * dt * dt * R_bw_i;
-        tmp_A.block<3, 1>(0, 9) = -R_bw_i * (Pj - Pi) / 100.0;
-        tmp_b.block<3, 1>(0, 0) = -R_bw_i * (Rj - Ri) * ric * tic - delta_p;
+        tmp_A.block<3, 3>(0, 0) = -dt * ric * Rs[i].transpose() * ric.transpose();
+        tmp_A.block<3, 3>(0, 6) = 0.5 * dt * dt * ric * Rs[i].transpose() * ric.transpose();
+        tmp_A.block<3, 1>(0, 9) = ric * Rs[i].transpose() * (Pj - Pi) / 100.0;
+        tmp_b.block<3, 1>(0, 0) = ric * Ri.transpose() * Rj * tic - ric * tic + delta_p;
 
-        tmp_A.block<3, 3>(3, 0) = -Eigen::Matrix3d::Identity();
-        tmp_A.block<3, 3>(3, 3) = R_bw_i * Rj * ric;
-        tmp_A.block<3, 3>(3, 6) = -R_bw_i * dt;
+        tmp_A.block<3, 3>(3, 0) = -ric * Rs[i].transpose() * ric.transpose();
+        tmp_A.block<3, 3>(3, 3) = ric * Rs[i].transpose() * ric.transpose();
+        tmp_A.block<3, 3>(3, 6) = ric * Rs[i].transpose() * ric.transpose() * dt;
         tmp_b.block<3, 1>(3, 0) = delta_v;
 
         Eigen::Matrix<double, 10, 10> r_A = tmp_A.transpose() * tmp_A;
@@ -72,33 +70,26 @@ bool linearAlignment(
     s = x(n_state - 1) / 100.0;
     final_g = x.segment<3>(n_state - 4);
 
-    if (s <= 0 || std::abs(final_g.norm() - target_g_norm) > g_norm_thres) {
-        double v_min = std::numeric_limits<double>::max(), v_max = 0;
-        for (int i = 0; i < n_frames; ++i) {
-            double vn = x.segment<3>(i * 3).norm();
-            if (vn < v_min) v_min = vn;
-            if (vn > v_max) v_max = vn;
-        }
-        spdlog::warn(
-            "LinearAlignment failed: |g|={:.3f} g_dir=({:.2f},{:.2f},{:.2f}) s={:.4f} "
-            "V=[{:.2f},{:.2f}]",
-            final_g.norm(), final_g.x(), final_g.y(), final_g.z(), s, v_min, v_max);
-        return false;
-    }
-
-    for (int i = 0; i < n_frames; ++i) Vs[i] = x.segment<3>(i * 3);
-
     spdlog::info(
         "LinearAlignment: |g|={:.4f} g=({:.3f},{:.3f},{:.3f}) s={:.4f}", final_g.norm(),
         final_g.x(), final_g.y(), final_g.z(), s);
+    if (s <= 0 || std::abs(final_g.norm() - target_g_norm) > g_norm_thres) {
+        return false;
+    }
+
+    for (int i = 0; i < n_frames; ++i) {
+        Vs[i] = x.segment<3>(i * 3);
+    }
+
     return true;
 }
 
 void refineGravitySpeeds(
-    std::vector<Eigen::Vector3d>& Vs, const std::vector<Eigen::Matrix3d>& Rs_body,
-    const std::vector<Eigen::Vector3d>& Ps_body, const std::vector<Eigen::Vector3d>& delta_vs,
+    std::vector<Eigen::Vector3d>& Vs, const std::vector<Eigen::Matrix3d>& Rs,
+    const std::vector<Eigen::Vector3d>& Ps, const std::vector<Eigen::Vector3d>& delta_vs,
     const std::vector<Eigen::Vector3d>& delta_ps, const std::vector<double>& dts,
-    Eigen::Vector3d& G, double& s, double g_mag) {
+    Eigen::Vector3d& G, double& s, const Eigen::Matrix3d ric, const Eigen::Vector3d tic,
+    double g_mag) {
     int n_frames = static_cast<int>(Vs.size());
     int n_state = n_frames * 3 + 3;
     int col_dg = n_frames * 3;
@@ -119,8 +110,9 @@ void refineGravitySpeeds(
             double dt = dts[i];
             double dt2 = 0.5 * dt * dt;
 
-            Eigen::Matrix3d R_bw_i = Rs_body[i].transpose();
-            Eigen::Matrix<double, 3, 2> R_bw_i_L = R_bw_i * L;
+            Eigen::Matrix3d R = ric * Rs[i].transpose() * ric.transpose();
+            Eigen::Matrix3d R_trans = ric * Rs[i].transpose();
+            Eigen::Matrix<double, 3, 2> R_L = R * L;
 
             int col_Vi = i * 3;
             int col_Vj = j * 3;
@@ -128,17 +120,18 @@ void refineGravitySpeeds(
             Eigen::Matrix<double, 6, 9> tmp_A;
             tmp_A.setZero();
 
-            tmp_A.block<3, 3>(0, 0) = dt * Eigen::Matrix3d::Identity();
-            tmp_A.block<3, 2>(0, 6) = dt2 * R_bw_i_L;
-            tmp_A.block<3, 1>(0, 8) = -R_bw_i * (Ps_body[j] - Ps_body[i]) / 100.0;
+            tmp_A.block<3, 3>(0, 0) = -dt * R;
+            tmp_A.block<3, 2>(0, 6) = dt2 * R_L;
+            tmp_A.block<3, 1>(0, 8) = R_trans * (Ps[j] - Ps[i]) / 100.0;
 
-            tmp_A.block<3, 3>(3, 0) = -Eigen::Matrix3d::Identity();
-            tmp_A.block<3, 3>(3, 3) = R_bw_i * Rs_body[j];
-            tmp_A.block<3, 2>(3, 6) = -dt * R_bw_i_L;
+            tmp_A.block<3, 3>(3, 0) = -R;
+            tmp_A.block<3, 3>(3, 3) = R;
+            tmp_A.block<3, 2>(3, 6) = dt * R_L;
 
             Eigen::Matrix<double, 6, 1> tmp_b;
-            tmp_b.block<3, 1>(0, 0) = -delta_ps[i] - dt2 * R_bw_i * g0;
-            tmp_b.block<3, 1>(3, 0) = delta_vs[i] + dt * R_bw_i * g0;
+            tmp_b.block<3, 1>(0, 0) =
+                delta_ps[i] + R_trans * Rs[j] * tic - ric * tic - dt2 * R * g0;
+            tmp_b.block<3, 1>(3, 0) = delta_vs[i] - dt * R * g0;
 
             Eigen::Matrix<double, 9, 9> r_A = tmp_A.transpose() * tmp_A;
             Eigen::Matrix<double, 9, 1> r_b = tmp_A.transpose() * tmp_b;

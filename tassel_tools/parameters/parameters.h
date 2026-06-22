@@ -70,6 +70,7 @@ struct Parameters {
         num_threads = parser.as<int>("num_threads");
         init_time_span = parser.as<double>("init_time_span");
         gravity_diff_threshold = parser.as<double>("gravity_diff_threshold");
+        dt_gyro_threshold = parser.as<double>("dt_gyro_threshold");
         sfm_min_seed_pts = parser.as<int>("sfm_min_seed_pts");
         sfm_min_e_inliers = parser.as<int>("sfm_min_e_inliers");
         sfm_e_ransac_threshold = parser.as<double>("sfm_e_ransac_threshold");
@@ -131,6 +132,7 @@ struct Parameters {
     // ── 优化参数 ──────────────────────────────────────────────────────
     int num_threads = 1;
     double init_time_span = 5.0;
+    double dt_gyro_threshold = 0.7;
     double gravity_diff_threshold = 0.17;
 
     // ── SFM 阈值 ──────────────────────────────────────────────────────

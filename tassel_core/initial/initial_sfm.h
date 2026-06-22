@@ -82,12 +82,12 @@ private:
         PoseCandidate& selected);
 
     bool checkCheirality(
-        int seed_id, int other_id, const std::vector<Eigen::Quaterniond>& q_arr_rel,
+        int seed_id, int other_id, const std::vector<Eigen::Quaterniond>& q_cam_rel,
         const Eigen::Vector3d& T_dir, const std::vector<SFMFeature>& sfm_f);
 
     bool runBA(
         int frame_num, int seed_id, int other_id, const Eigen::Matrix3d& relative_R,
-        const Eigen::Vector3d& relative_T, std::vector<Eigen::Quaterniond>& q_arr_rel,
+        const Eigen::Vector3d& relative_T, std::vector<Eigen::Quaterniond>& q_cam_rel,
         std::vector<Eigen::Vector3d>& t_arr, std::vector<SFMFeature>& sfm_f,
         std::map<int, Eigen::Vector3d>& tracked_pts);
 

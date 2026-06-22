@@ -49,9 +49,6 @@ void Estimator::reset() {
     preintegrators_.resize(
         state_->max_frame_count - 1,
         MidPointIntegrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise_));
-    Rs_.clear();
-    Ps_.clear();
-    Vs_.clear();
     Rs_.resize(state_->max_frame_count, Eigen::Matrix3d::Identity());
     Ps_.resize(state_->max_frame_count, Eigen::Vector3d::Zero());
     Vs_.resize(state_->max_frame_count, Eigen::Vector3d::Zero());
@@ -71,6 +68,9 @@ void Estimator::processMeasurement(
         last_imu_gyro_ = imu_measurements.back().gyro;
     }
 
+    if (gravity_initialized_) {
+        return;
+    }
     bool is_keyframe = feature_manager_->checkParallax(frame_count, feature_frame);
 
     if (frame_count > 0) {
@@ -179,7 +179,7 @@ void Estimator::optimize() {
     problem.AddParameterBlock(&state_->param_delay_time, 1);
     bool set_dt_constant_flag = true;
     for (int i = 0; i < state_->cur_frame_count; ++i) {
-        if (state_->Vs[i].norm() > 2.0 && state_->gyro_vec[i].norm() > 0.7) {
+        if (state_->gyro_vec[i].norm() > params_.dt_gyro_threshold) {
             set_dt_constant_flag = false;
             break;
         }
@@ -263,7 +263,7 @@ void Estimator::optimize() {
         preintegrators_[i].repropagate(state_->Bas[i], state_->Bgs[i], noise_);
     }
 
-    spdlog::debug(
+    spdlog::info(
         "Ba {:.4f} {:.4f} {:.4f} Bg {:.4f} {:.4f} {:.4f} delay_time {:.2f} ms", state_->Bas[0].x(),
         state_->Bas[0].y(), state_->Bas[0].z(), state_->Bgs[0].x(), state_->Bgs[0].y(),
         state_->Bgs[0].z(), state_->param_delay_time * 1e3);
@@ -378,7 +378,6 @@ bool Estimator::tryInitialize() {
 
     Eigen::Vector3d g;
     double s;
-    Vs_.resize(n_frames);
     if (!linearAlignment(
             Rs_, Ps_, Vs_, delta_vs, delta_ps, dts, g, s, params_.ric, params_.tic,
             params_.gravity_diff_threshold, params_.g_norm)) {
@@ -386,23 +385,8 @@ bool Estimator::tryInitialize() {
         return false;
     }
 
-    std::vector<Eigen::Matrix3d> Rs_body(n_frames);
-    std::vector<Eigen::Vector3d> Ps_body(n_frames);
-    for (int i = 0; i < n_frames; ++i) {
-        Rs_body[i] = Rs_[i] * params_.ric;
-        Ps_body[i] = Ps_[i] - Rs_[i] * params_.ric * params_.tic;
-    }
-
-    refineGravitySpeeds(Vs_, Rs_body, Ps_body, delta_vs, delta_ps, dts, g, s, params_.g_norm);
-
-    for (int i = 0; i < n_frames; ++i) {
-        Ps_[i] = s * Ps_[i];
-        Ps_body[i] = Ps_[i] - Rs_[i] * params_.ric * params_.tic;
-    }
-
-    for (int i = 0; i < n_frames; ++i) {
-        state_->Vs[i] = Rs_body[i] * Vs_[i];
-    }
+    refineGravitySpeeds(
+        Vs_, Rs_, Ps_, delta_vs, delta_ps, dts, g, s, params_.ric, params_.tic, params_.g_norm);
 
     Eigen::Matrix3d R0 =
         Eigen::Quaterniond::FromTwoVectors((-g).normalized(), Eigen::Vector3d(0, 0, 1))
@@ -410,10 +394,12 @@ bool Estimator::tryInitialize() {
     double yaw = std::atan2(R0(1, 0), R0(0, 0));
     R0 = Eigen::AngleAxisd(-yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix() * R0;
     for (int i = 0; i <= frame_count; ++i) {
-        state_->Rs[i] = R0 * Rs_body[i];
-        state_->Rs[i] = Eigen::Quaterniond(state_->Rs[i]).normalized().toRotationMatrix();
-        state_->Ps[i] = R0 * Ps_body[i];
-        state_->Vs[i] = R0 * state_->Vs[i];
+        state_->Rs[i] = Eigen::Quaterniond(R0 * params_.ric * Rs_[i] * params_.ric.transpose())
+                            .normalized()
+                            .toRotationMatrix();
+        state_->Ps[i] =
+            R0 * (params_.ric * s * Ps_[i] + params_.ric * Rs_[i] * params_.tic - params_.tic);
+        state_->Vs[i] = R0 * Vs_[i];
     }
     tassel_utils::G = Eigen::Vector3d(0, 0, params_.g_norm);
     gravity_initialized_ = true;

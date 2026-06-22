@@ -17,11 +17,13 @@ bool linearAlignment(
     double g_norm_thres, double target_g_norm);
 
 // 重力方向 (2-DOF) + 速度 + 尺度的线性迭代精化，固定模长 g_mag
+// Rs/Ps: 相机系姿态与位置 (C0 参考系), Vs: IMU 体系速度, ric: R_I_C
 void refineGravitySpeeds(
-    std::vector<Eigen::Vector3d>& Vs, const std::vector<Eigen::Matrix3d>& Rs_body,
-    const std::vector<Eigen::Vector3d>& Ps_body, const std::vector<Eigen::Vector3d>& delta_v,
-    const std::vector<Eigen::Vector3d>& delta_p, const std::vector<double>& dt, Eigen::Vector3d& G,
-    double& s, double g_mag);
+    std::vector<Eigen::Vector3d>& Vs, const std::vector<Eigen::Matrix3d>& Rs,
+    const std::vector<Eigen::Vector3d>& Ps, const std::vector<Eigen::Vector3d>& delta_vs,
+    const std::vector<Eigen::Vector3d>& delta_ps, const std::vector<double>& dts,
+    Eigen::Vector3d& G, double& s, const Eigen::Matrix3d ric, const Eigen::Vector3d tic,
+    double g_mag);
 
 // 陀螺偏置求解
 Eigen::Vector3d solveGyroBias(

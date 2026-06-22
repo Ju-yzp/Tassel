@@ -195,9 +195,9 @@ bool InitialSFM::resolvePose(
 }
 
 bool InitialSFM::checkCheirality(
-    int seed_id, int other_id, const std::vector<Eigen::Quaterniond>& q_arr_rel,
+    int seed_id, int other_id, const std::vector<Eigen::Quaterniond>& q_cam_rel,
     const Eigen::Vector3d& T_dir, const std::vector<SFMFeature>& sfm_f) {
-    const Eigen::Quaterniond& q_other = q_arr_rel[other_id];
+    const Eigen::Quaterniond& q_other = q_cam_rel[other_id];
     std::vector<Eigen::Matrix<double, 3, 4>> P(2);
     P[0].block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
     P[0].block<3, 1>(0, 3) = Eigen::Vector3d::Zero();
@@ -232,7 +232,7 @@ bool InitialSFM::checkCheirality(
 
 bool InitialSFM::runBA(
     int frame_num, int seed_id, int other_id, const Eigen::Matrix3d& /*relative_R*/,
-    const Eigen::Vector3d& relative_T, std::vector<Eigen::Quaterniond>& q_arr_rel,
+    const Eigen::Vector3d& relative_T, std::vector<Eigen::Quaterniond>& q_cam_rel,
     std::vector<Eigen::Vector3d>& t_arr, std::vector<SFMFeature>& sfm_f,
     std::map<int, Eigen::Vector3d>& tracked_pts) {
     feature_num_ = static_cast<int>(sfm_f.size());
@@ -248,13 +248,13 @@ bool InitialSFM::runBA(
     std::vector<std::array<double, 3>> c_translation(frame_num);
     std::vector<Eigen::Matrix<double, 3, 4>> Pose(frame_num);
 
-    c_Quat[l] = q_arr_rel[l].inverse();
+    c_Quat[l] = q_cam_rel[l].inverse();
     c_Rotation[l] = c_Quat[l].toRotationMatrix();
     c_Translation[l] = -1 * (c_Rotation[l] * t_arr[l]);
     Pose[l].block<3, 3>(0, 0) = c_Rotation[l];
     Pose[l].block<3, 1>(0, 3) = c_Translation[l];
 
-    c_Quat[last] = q_arr_rel[last].inverse();
+    c_Quat[last] = q_cam_rel[last].inverse();
     c_Rotation[last] = c_Quat[last].toRotationMatrix();
     c_Translation[last] = -1 * (c_Rotation[last] * t_arr[last]);
     Pose[last].block<3, 3>(0, 0) = c_Rotation[last];
@@ -265,8 +265,8 @@ bool InitialSFM::runBA(
     for (int j = 0; j < feature_num_; j++) {
         if (!sfm_f[j].state) continue;
         Eigen::Vector3d X(sfm_f[j].position);
-        if ((X - t_arr[l]).dot(q_arr_rel[l].toRotationMatrix().col(2)) <= 0.1 ||
-            (X - t_arr[last]).dot(q_arr_rel[last].toRotationMatrix().col(2)) <= 0.1) {
+        if ((X - t_arr[l]).dot(q_cam_rel[l].toRotationMatrix().col(2)) <= 0.1 ||
+            (X - t_arr[last]).dot(q_cam_rel[last].toRotationMatrix().col(2)) <= 0.1) {
             sfm_f[j].state = false;
         }
     }
@@ -307,7 +307,7 @@ bool InitialSFM::runBA(
 
     for (int i = 0; i < frame_num; i++) {
         if (i == l || i == last) continue;
-        q_arr_rel[i] = c_Quat[i].inverse();
+        q_cam_rel[i] = c_Quat[i].inverse();
         t_arr[i] = -1 * (c_Quat[i] * c_Translation[i]);
     }
 
@@ -327,7 +327,7 @@ bool InitialSFM::runBA(
         bool ok = true;
         for (int k = 0; k < nobs; k++) {
             int fid = sfm_f[j].observation[k].first;
-            if ((point_3d - t_arr[fid]).dot(q_arr_rel[fid].toRotationMatrix().col(2)) < 0.1) {
+            if ((point_3d - t_arr[fid]).dot(q_cam_rel[fid].toRotationMatrix().col(2)) < 0.1) {
                 ok = false;
                 break;
             }
@@ -366,7 +366,7 @@ bool InitialSFM::runBA(
             Eigen::Vector3d X(sfm_f[i].position);
             for (int j = 0; j < static_cast<int>(sfm_f[i].observation.size()); j++) {
                 int frame_idx = sfm_f[i].observation[j].first;
-                if ((X - t_arr[frame_idx]).dot(q_arr_rel[frame_idx].toRotationMatrix().col(2)) <
+                if ((X - t_arr[frame_idx]).dot(q_cam_rel[frame_idx].toRotationMatrix().col(2)) <
                     0.1) {
                     ok = false;
                     break;
@@ -396,14 +396,14 @@ bool InitialSFM::runBA(
             summary.iterations.size(), summary.final_cost);
 
         for (int i = 0; i < frame_num; i++) {
-            q_arr_rel[i].w() = c_rotation[i][0];
-            q_arr_rel[i].x() = c_rotation[i][1];
-            q_arr_rel[i].y() = c_rotation[i][2];
-            q_arr_rel[i].z() = c_rotation[i][3];
-            q_arr_rel[i] = q_arr_rel[i].inverse();
+            q_cam_rel[i].w() = c_rotation[i][0];
+            q_cam_rel[i].x() = c_rotation[i][1];
+            q_cam_rel[i].y() = c_rotation[i][2];
+            q_cam_rel[i].z() = c_rotation[i][3];
+            q_cam_rel[i] = q_cam_rel[i].inverse();
         }
         for (int i = 0; i < frame_num; i++) {
-            t_arr[i] = -1 * (q_arr_rel[i] *
+            t_arr[i] = -1 * (q_cam_rel[i] *
                              Eigen::Vector3d(
                                  c_translation[i][0], c_translation[i][1], c_translation[i][2]));
         }
@@ -665,9 +665,9 @@ bool InitialSFM::construct(
     auto other_candidates = findParallaxFrames(seed_id, frame_num, all_frames, sfm_f);
     if (other_candidates.empty() || other_candidates[0].second < 10) return false;
 
-    std::vector<Eigen::Quaterniond> q_imu_w(frame_num);
+    std::vector<Eigen::Quaterniond> q_cam_i0(frame_num);
     for (int i = 0; i < frame_num; i++) {
-        q_imu_w[i] = Eigen::Quaterniond(cur_state.Rs[i] * ric).normalized();
+        q_cam_i0[i] = Eigen::Quaterniond(cur_state.Rs[i] * ric).normalized();
     }
 
     for (const auto& [other_id, common] : other_candidates) {
@@ -707,26 +707,26 @@ bool InitialSFM::construct(
         Eigen::Matrix3d R_sel = selected.R;
         Eigen::Vector3d t_sel = selected.t;
 
-        Eigen::Quaterniond q_seed_w = q_imu_w[seed_id];
-        std::vector<Eigen::Quaterniond> q_arr_rel(frame_num);
-        for (int i = 0; i < frame_num; i++) q_arr_rel[i] = q_seed_w.inverse() * q_imu_w[i];
+        Eigen::Quaterniond q_cam_seed = q_cam_i0[seed_id];
+        std::vector<Eigen::Quaterniond> q_cam_rel(frame_num);
+        for (int i = 0; i < frame_num; i++) q_cam_rel[i] = q_cam_seed.inverse() * q_cam_i0[i];
 
-        q_arr_rel[other_id] = Eigen::Quaterniond(tassel_utils::normalizeRot(R_sel.transpose()));
+        q_cam_rel[other_id] = Eigen::Quaterniond(tassel_utils::normalizeRot(R_sel.transpose()));
         Eigen::Vector3d T_dir = (-R_sel.transpose() * t_sel).normalized();
 
-        if (!checkCheirality(seed_id, other_id, q_arr_rel, T_dir, sfm_f)) continue;
+        if (!checkCheirality(seed_id, other_id, q_cam_rel, T_dir, sfm_f)) continue;
 
         std::vector<Eigen::Vector3d> t_arr(frame_num, Eigen::Vector3d::Zero());
         std::map<int, Eigen::Vector3d> tracked_pts;
         if (!runBA(
-                frame_num, seed_id, other_id, Eigen::Matrix3d::Identity(), T_dir, q_arr_rel, t_arr,
+                frame_num, seed_id, other_id, Eigen::Matrix3d::Identity(), T_dir, q_cam_rel, t_arr,
                 sfm_f, tracked_pts))
             continue;
 
         Rs_out.resize(frame_num);
         Ps_out.resize(frame_num);
         for (int i = 0; i < frame_num; i++) {
-            Rs_out[i] = q_arr_rel[i].toRotationMatrix();
+            Rs_out[i] = q_cam_rel[i].toRotationMatrix();
             Ps_out[i] = t_arr[i];
         }
 

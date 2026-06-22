@@ -73,6 +73,7 @@ acc_bias: [0.720, -0.022, -0.199]
 num_threads: 1
 init_time_span: 5.0
 gravity_diff_threshold: 0.17
+dt_gyro_threshold: 0.2
 sfm_min_seed_pts: 10
 sfm_min_e_inliers: 8
 sfm_e_ransac_threshold: 0.004
