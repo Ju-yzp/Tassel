@@ -13,15 +13,8 @@
 namespace tassel_core {
 class CameraBase;
 struct State {
-    State(
-        int max_frame_count_ = 10, bool use_imu_ = false,
-        Eigen::Matrix3d ric_ = Eigen::Matrix3d::Identity(),
-        Eigen::Vector3d tic_ = Eigen::Vector3d::Zero())
-        : max_frame_count(max_frame_count_),
-          cur_frame_count(0),
-          ric(ric_),
-          tic(tic_),
-          use_imu(use_imu_) {
+    State(int max_frame_count_ = 10, bool use_imu_ = false)
+        : max_frame_count(max_frame_count_), cur_frame_count(0), use_imu(use_imu_) {
         Rs.resize(max_frame_count, Eigen::Matrix3d::Identity());
         Ps.resize(max_frame_count, Eigen::Vector3d::Zero());
         Vs.resize(max_frame_count, Eigen::Vector3d::Zero());
@@ -135,10 +128,6 @@ struct State {
     int max_frame_count;
     int cur_frame_count;
     bool use_imu;
-
-    // 外参
-    Eigen::Matrix3d ric;
-    Eigen::Vector3d tic;
 
     // 位姿 / 速度 / 偏置 / 时间延迟
     std::vector<Eigen::Matrix3d> Rs;

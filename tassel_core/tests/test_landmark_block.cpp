@@ -4,7 +4,7 @@
 #include <Eigen/QR>
 #include <random>
 
-#include "factor/landmark_block.h"
+#include "marg/landmark_block.h"
 
 namespace tassel_core {
 namespace {

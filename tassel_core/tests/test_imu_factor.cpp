@@ -21,7 +21,7 @@
 
 #include "factor/imu_factor.h"
 #include "factor/integrator_base.h"
-#include "factor/se3_right_manifold.h"
+#include "tassel_utils/se3_right_manifold.h"
 #include "tassel_utils/types.h"
 
 namespace tassel_core {

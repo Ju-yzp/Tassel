@@ -7,10 +7,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "estimator/estimator_option.h"
 #include "factor/integrator_base.h"
-#include "factor/marg_lin_data.h"
 #include "frond_end/feature_manager.h"
+#include "marg/marg_lin_data.h"
+#include "parameters/parameters.h"
 #include "state/state.h"
 #include "tassel_utils/types.h"
 
@@ -25,12 +25,8 @@ class CameraBase;
 class Estimator {
 public:
     Estimator(
-        const EstimatorOption& option, std::shared_ptr<State> state,
-        std::shared_ptr<FeatureManager> fm,
-        const Eigen::Matrix3d& ric = Eigen::Matrix3d::Identity(),
-        const Eigen::Vector3d& tic = Eigen::Vector3d::Zero(),
-        const Eigen::Matrix3d& ric1 = Eigen::Matrix3d::Identity(),
-        const Eigen::Vector3d& tic1 = Eigen::Vector3d::Zero());
+        const tassel_tools::Parameters& params, std::shared_ptr<State> state,
+        std::shared_ptr<FeatureManager> fm);
 
     void processMeasurement(
         double ts, const std::unordered_map<int, FeaturePerFrame>& feature_frame,
@@ -56,24 +52,13 @@ private:
 
     void slideWindow();
 
-    void solveGyroBias();
-
-    bool solveGravityVelocity(
-        Eigen::Vector3d& g, const std::vector<Eigen::Vector3d>& Ps_cam,
-        const std::vector<Eigen::Matrix3d>& Rs_cam);
-
-    Eigen::Vector3d buildGVsOptimizeProblem(const Eigen::Vector3d& g_B0_init);
+    bool tryInitialize();
 
     Eigen::Matrix<double, 18, 18> initNoise() const;
 
-    EstimatorOption option_;
+    const tassel_tools::Parameters& params_;
     std::shared_ptr<State> state_;
     std::shared_ptr<FeatureManager> feature_manager_;
-
-    Eigen::Matrix3d ric_;
-    Eigen::Vector3d tic_;
-    Eigen::Matrix3d ric1_;
-    Eigen::Vector3d tic1_;
 
     const CameraBase* camera_ = nullptr;
 

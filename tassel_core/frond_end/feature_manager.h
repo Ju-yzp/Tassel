@@ -12,60 +12,63 @@
 namespace tassel_core {
 
 struct State;
+struct SFMFeature;
 
 class FeatureManager {
 public:
     FeatureManager(
-        double reprojection_error_thres, double pnp_reprojection_error_thres, double parallax_thres,
-        int tracked_times_thres, int min_tracked_pts_num, int min_pnp_pt_num,
-        double min_pnp_inliers_ratio, double min_translation, double min_depth = MIN_DISTANCE,
-        double max_depth = MAX_DISTANCE);
+        double reproj_err_thres, double pnp_reproj_err_thres, double parallax_thres,
+        int tracked_times_thres, int min_tracked_pts, int min_pnp_pts, double min_pnp_inliers_ratio,
+        double min_translation, double min_depth = MIN_DISTANCE, double max_depth = MAX_DISTANCE);
 
-    bool checkKeyFrameByParallax(
+    bool checkParallax(
         size_t frame_count, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
 
+    inline void invalidateDepths() {
+        for (auto& [id, feature] : features_) {
+            feature.estimated_depth = INVALID_DEPTH;
+        }
+    }
+
     void triangulate(
-        const State& state, const Eigen::Matrix3d& ric1 = Eigen::Matrix3d::Identity(),
-        const Eigen::Vector3d& tic1 = Eigen::Vector3d::Zero(), bool enable_mono = false);
+        const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
+        const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1);
 
-    bool initPoseByPNP(
-        int frame_count, std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps,
-        Eigen::Matrix3d ric, Eigen::Vector3d tic);
-
-    void removeOldest(const State& state);
+    void removeOldest(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
     void removeNewest(size_t frame_count);
 
-    void removeOutliers(const State& state);
+    void removeOutliers(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
     void reset();
 
-    std::vector<Feature*> collectOptimizedFeatures();
+    std::vector<Feature*> collectLandmarks();
 
-    std::vector<Feature*> collectMarginalizationFeatures();
+    std::vector<Feature*> collectMargFeatures();
 
-    std::vector<Eigen::Vector3d> getPointCloud(const State& state) const;
+    std::vector<Eigen::Vector3d> getPointCloud(
+        const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) const;
 
-    std::unordered_map<int, Feature>& testFeatures() { return features_; }
-
-    void removeMarginalizedFeatures();
+    void removeMargFeatures();
 
     void reset(int parallax_thres);
 
-    bool solvePose(
-        int frame_count, std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps);
+    std::vector<SFMFeature> collectSFMFeatures(int frame_num) const;
+
+    std::unordered_map<int, Feature>& features() { return features_; }
 
 private:
-    double reprojection_error_thres_;
-    double pnp_reprojection_error_thres_;
+    double reproj_err_thres_;
+
+    double pnp_reproj_err_thres_;
 
     double parallax_thres_;
 
     int tracked_times_thres_;
 
-    int min_tracked_pts_num_;
+    int min_tracked_pts_;
 
-    int min_pnp_pt_num_;
+    int min_pnp_pts_;
 
     double min_pnp_inliers_ratio_;
 

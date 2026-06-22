@@ -19,8 +19,8 @@
 #include <ceres/ceres.h>
 
 #include "cam/camera_rad_tan.h"
-#include "factor/se3_right_manifold.h"
 #include "factor/visual_factor.h"
+#include "tassel_utils/se3_right_manifold.h"
 #include "tassel_utils/types.h"
 
 namespace tassel_core {

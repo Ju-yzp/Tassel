@@ -13,7 +13,7 @@
 #include <sophus/so3.hpp>
 
 #include "factor/TwoViewFactor.h"
-#include "factor/se3_right_manifold.h"
+#include "tassel_utils/se3_right_manifold.h"
 
 namespace tassel_core {
 namespace {

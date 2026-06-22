@@ -16,6 +16,7 @@
 #include "cam/camera_base.h"
 #include "feature.h"
 #include "feature_manager.h"
+#include "initial/initial_sfm.h"
 #include "state/state.h"
 
 #include <spdlog/spdlog.h>
@@ -31,15 +32,15 @@ inline double computeParallax(const cv::Point2f& p1, const cv::Point2f& p2) {
 }  // namespace
 
 FeatureManager::FeatureManager(
-    double reprojection_error_thres, double pnp_reprojection_error_thres, double parallax_thres,
-    int tracked_times_thres, int min_tracked_pts_num, int min_pnp_pt_num,
-    double min_pnp_inliers_ratio, double min_translation, double min_depth, double max_depth)
-    : reprojection_error_thres_(reprojection_error_thres),
-      pnp_reprojection_error_thres_(pnp_reprojection_error_thres),
+    double reproj_err_thres, double pnp_reproj_err_thres, double parallax_thres,
+    int tracked_times_thres, int min_tracked_pts, int min_pnp_pts, double min_pnp_inliers_ratio,
+    double min_translation, double min_depth, double max_depth)
+    : reproj_err_thres_(reproj_err_thres),
+      pnp_reproj_err_thres_(pnp_reproj_err_thres),
       parallax_thres_(parallax_thres),
       tracked_times_thres_(tracked_times_thres),
-      min_tracked_pts_num_(min_tracked_pts_num),
-      min_pnp_pt_num_(min_pnp_pt_num),
+      min_tracked_pts_(min_tracked_pts),
+      min_pnp_pts_(min_pnp_pts),
       min_pnp_inliers_ratio_(min_pnp_inliers_ratio),
       min_translation_(min_translation),
       min_depth_(min_depth),
@@ -47,7 +48,7 @@ FeatureManager::FeatureManager(
     features_.reserve(1000);
 }
 
-bool FeatureManager::checkKeyFrameByParallax(
+bool FeatureManager::checkParallax(
     size_t frame_count, const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
     double parallax_sum = 0.0;
     double parallax_num = 0.0;
@@ -68,108 +69,28 @@ bool FeatureManager::checkKeyFrameByParallax(
 
     return (
         parallax_num == 0 || (parallax_sum / parallax_num) > parallax_thres_ ||
-        parallax_num < min_tracked_pts_num_);
+        parallax_num < min_tracked_pts_);
 }
 
 void FeatureManager::triangulate(
-    const State& state, const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1,
-    bool enable_mono) {
-    bool mono_triangulate = state.cur_frame_count > 0 && enable_mono;
+    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
+    const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1) {
     auto cs = state.get_compensated_state();
     for (auto& [id, feature] : features_) {
-        feature.stereoTriangulate(state.ric, state.tic, ric1, tic1, min_depth_, max_depth_);
-        if (mono_triangulate) {
-            feature.monoTriangulate(
-                cs, state.ric, state.tic, min_translation_, min_depth_, max_depth_);
-        }
+        feature.stereoTriangulate(ric, tic, ric1, tic1, min_depth_, max_depth_);
+        feature.monoTriangulate(cs, ric, tic, min_translation_, min_depth_, max_depth_);
     }
 }
 
-bool FeatureManager::initPoseByPNP(
-    int frame_count, std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps,
-    Eigen::Matrix3d ric, Eigen::Vector3d tic) {
-    if (frame_count <= 0) {
-        return true;
-    }
-
-    std::vector<cv::Point3f> object_pts;
-    std::vector<cv::Point2f> normalize_pts;
-    for (const auto& [id, feature] : features_) {
-        int start_frame_id = feature.start_frame_id;
-        if (start_frame_id < frame_count - 3) continue;
-        double depth = feature.estimated_depth;
-        int obs_idx = frame_count - start_frame_id;
-        if (obs_idx < 1 || obs_idx >= static_cast<int>(feature.observations.size()) ||
-            depth == INVALID_DEPTH) {
-            continue;
-        }
-        Eigen::Vector3d p_in_C = feature.observations[0].uv * depth;
-        Eigen::Vector3d p_in_I = ric * p_in_C + tic;
-        Eigen::Vector3d p_in_W = Rs[start_frame_id] * p_in_I + Ps[start_frame_id];
-        object_pts.emplace_back(p_in_W(0), p_in_W(1), p_in_W(2));
-        Eigen::Vector3d uv = feature.observations[obs_idx].uv;
-        normalize_pts.emplace_back(uv(0), uv(1));
-    }
-
-    if (static_cast<int>(object_pts.size()) < min_pnp_pt_num_) {
-        spdlog::error(
-            "Not enough points for PnP. Only {} points.", static_cast<int>(object_pts.size()));
-        return false;
-    }
-
-    Eigen::Matrix3d guess_R = Rs[frame_count - 1] * ric;
-    Eigen::Vector3d guess_P = Ps[frame_count - 1] + Rs[frame_count - 1] * tic;
-
-    cv::Mat R_cv, rvec, tvec;
-    guess_R.transposeInPlace();
-    guess_P = (-guess_R * guess_P).eval();
-    cv::eigen2cv(guess_R, R_cv);
-    cv::eigen2cv(guess_P, tvec);
-    cv::Rodrigues(R_cv, rvec);
-
-    cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
-    std::vector<int> inliers;
-    bool success = cv::solvePnPRansac(
-        object_pts, normalize_pts, K, cv::Mat(), rvec, tvec, true, 30,
-        pnp_reprojection_error_thres_, 0.90, inliers, cv::SOLVEPNP_EPNP);
-
-    double inlier_ratio =
-        static_cast<double>(inliers.size()) / static_cast<double>(object_pts.size());
-    spdlog::info(
-        "PNP: {} 3D pts, {} inliers ({:.1f}%)", object_pts.size(), inliers.size(),
-        100.0 * inlier_ratio);
-
-    if (success && inlier_ratio >= min_pnp_inliers_ratio_) {
-        cv::Mat R_result_cv;
-        cv::Rodrigues(rvec, R_result_cv);
-        cv::cv2eigen(R_result_cv, guess_R);
-        cv::cv2eigen(tvec, guess_P);
-
-        guess_R.transposeInPlace();
-        guess_P = (-guess_R * guess_P).eval();
-
-        Eigen::Quaterniond q_opt(guess_R);
-        q_opt.normalize();
-        Rs[frame_count] = q_opt.toRotationMatrix() * ric.transpose();
-        Ps[frame_count] = guess_P - Rs[frame_count] * tic;
-        spdlog::info("PNP success (camera pose)");
-        return true;
-    } else {
-        spdlog::error(
-            "PnP failed (success={}), inlier ratio: {:.1f}% < {:.0f}%", success,
-            100.0 * inlier_ratio, 100.0 * min_pnp_inliers_ratio_);
-        return false;
-    }
-}
-
-void FeatureManager::removeOldest(const State& state) {
+void FeatureManager::removeOldest(
+    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
     if (state.cur_frame_count > 1) {
         auto cs = state.get_compensated_state();
         std::erase_if(features_, [&](const auto& item) {
             return item.second.start_frame_id == 0 && item.second.observations.size() == 1;
         });
         for (auto& [id, feature] : features_) {
-            feature.removeOldest(cs.Rs[0], cs.Ps[0], cs.Rs[1], cs.Ps[1], cs.ric, cs.tic);
+            feature.removeOldest(cs.Rs[0], cs.Ps[0], cs.Rs[1], cs.Ps[1], ric, tic);
         }
 
         std::erase_if(
@@ -185,7 +106,8 @@ void FeatureManager::removeNewest(size_t frame_count) {
     std::erase_if(features_, [&](const auto& item) { return item.second.observations.empty(); });
 }
 
-void FeatureManager::removeOutliers(const State& state) {
+void FeatureManager::removeOutliers(
+    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
     auto cs = state.get_compensated_state();
     if (!cs.camera) {
         return;
@@ -202,14 +124,14 @@ void FeatureManager::removeOutliers(const State& state) {
 
         int start_frame_id = feature.start_frame_id;
         Eigen::Vector3d pi_in_C = depth * observations[0].uv;
-        Eigen::Vector3d pi_in_I = cs.ric * pi_in_C + cs.tic;
+        Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
         Eigen::Vector3d pi_in_W = cs.Rs[start_frame_id] * pi_in_I + cs.Ps[start_frame_id];
 
         double error_sum = 0.0;
         for (size_t k = 1; k < observations.size(); ++k) {
             int j = start_frame_id + static_cast<int>(k);
             Eigen::Vector3d pj_in_I = cs.Rs[j].transpose() * (pi_in_W - cs.Ps[j]);
-            Eigen::Vector3d pj_in_C = cs.ric.transpose() * (pj_in_I - cs.tic);
+            Eigen::Vector3d pj_in_C = ric.transpose() * (pj_in_I - tic);
 
             double inv_z = 1.0 / pj_in_C.z();
             Eigen::Vector2d uv_norm(pj_in_C.x() * inv_z, pj_in_C.y() * inv_z);
@@ -219,7 +141,7 @@ void FeatureManager::removeOutliers(const State& state) {
         }
 
         double average_error = error_sum / static_cast<double>(observations.size());
-        if (average_error > reprojection_error_thres_) {
+        if (average_error > reproj_err_thres_) {
             removed_ids.insert(id);
         }
     }
@@ -230,7 +152,7 @@ void FeatureManager::removeOutliers(const State& state) {
 
 void FeatureManager::reset() { features_.clear(); }
 
-std::vector<Feature*> FeatureManager::collectMarginalizationFeatures() {
+std::vector<Feature*> FeatureManager::collectMargFeatures() {
     std::vector<Feature*> result;
     for (auto& [id, feature] : features_) {
         bool is_marginalized =
@@ -243,11 +165,12 @@ std::vector<Feature*> FeatureManager::collectMarginalizationFeatures() {
     return result;
 }
 
-void FeatureManager::removeMarginalizedFeatures() {
+void FeatureManager::removeMargFeatures() {
     std::erase_if(features_, [&](const auto& item) { return item.second.start_frame_id == 0; });
 }
 
-std::vector<Eigen::Vector3d> FeatureManager::getPointCloud(const State& state) const {
+std::vector<Eigen::Vector3d> FeatureManager::getPointCloud(
+    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) const {
     auto cs = state.get_compensated_state();
     std::vector<Eigen::Vector3d> points;
     for (const auto& [id, feature] : features_) {
@@ -259,14 +182,14 @@ std::vector<Eigen::Vector3d> FeatureManager::getPointCloud(const State& state) c
             continue;
         }
         Eigen::Vector3d pt_in_C = feature.observations[0].uv * feature.estimated_depth;
-        Eigen::Vector3d pt_in_I = cs.ric * pt_in_C + cs.tic;
+        Eigen::Vector3d pt_in_I = ric * pt_in_C + tic;
         Eigen::Vector3d pt_in_W = cs.Rs[start_frame_id] * pt_in_I + cs.Ps[start_frame_id];
         points.push_back(pt_in_W);
     }
     return points;
 }
 
-std::vector<Feature*> FeatureManager::collectOptimizedFeatures() {
+std::vector<Feature*> FeatureManager::collectLandmarks() {
     std::vector<Feature*> result;
     for (auto& [id, feature] : features_) {
         if (feature.estimated_depth == INVALID_DEPTH ||
@@ -279,75 +202,26 @@ std::vector<Feature*> FeatureManager::collectOptimizedFeatures() {
     return result;
 }
 
-void FeatureManager::reset(int parallax_thres) { parallax_thres_ = parallax_thres; }
-
-bool FeatureManager::solvePose(
-    int frame_count, std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps) {
-    if (frame_count < 1) {
-        return true;
-    }
-
-    int ref_frame = frame_count - 1;
-
-    std::vector<cv::Point2f> pts0, pts1;
+std::vector<SFMFeature> FeatureManager::collectSFMFeatures(int frame_num) const {
+    std::vector<SFMFeature> sfm_features;
+    sfm_features.reserve(features_.size());
     for (const auto& [id, feature] : features_) {
-        int obs_idx_ref = ref_frame - static_cast<int>(feature.start_frame_id);
-        int obs_idx_cur = frame_count - static_cast<int>(feature.start_frame_id);
-        if (obs_idx_ref < 0 || obs_idx_cur < 1 ||
-            obs_idx_cur >= static_cast<int>(feature.observations.size())) {
-            continue;
+        SFMFeature sfm_f;
+        sfm_f.state = false;
+        sfm_f.id = id;
+        sfm_f.depth = 0;
+        sfm_f.position[0] = 0;
+        sfm_f.position[1] = 0;
+        sfm_f.position[2] = 0;
+        for (size_t k = 0; k < feature.observations.size(); k++) {
+            int abs_frame_id = static_cast<int>(feature.start_frame_id) + static_cast<int>(k);
+            if (abs_frame_id >= frame_num) continue;
+            Eigen::Vector2d uv_norm(feature.observations[k].uv(0), feature.observations[k].uv(1));
+            sfm_f.observation.emplace_back(abs_frame_id, uv_norm);
         }
-        const auto& uv_ref = feature.observations[obs_idx_ref].uv;
-        const auto& uv_cur = feature.observations[obs_idx_cur].uv;
-        pts0.emplace_back(uv_ref(0), uv_ref(1));
-        pts1.emplace_back(uv_cur(0), uv_cur(1));
+        sfm_features.push_back(std::move(sfm_f));
     }
-
-    if (pts0.size() < 8) {
-        spdlog::warn(
-            "solvePose: insufficient matches ({}) between frames {} and {}, need >= 8", pts0.size(),
-            ref_frame, frame_count);
-        return false;
-    }
-
-    cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
-    cv::Mat inlier_mask;
-    cv::Mat E = cv::findEssentialMat(pts0, pts1, K, cv::RANSAC, 0.999, 0.5, inlier_mask);
-
-    int inlier_count = cv::countNonZero(inlier_mask);
-    double inlier_ratio = static_cast<double>(inlier_count) / pts0.size();
-    spdlog::info(
-        "solvePose: frames {}→{} E inliers {}/{} ({:.1f}%)", ref_frame, frame_count, inlier_count,
-        pts0.size(), 100.0 * inlier_ratio);
-
-    if (inlier_count < 8 || inlier_ratio < 0.3) {
-        spdlog::warn(
-            "solvePose: too few E inliers ({}) or ratio {:.1f}%", inlier_count,
-            100.0 * inlier_ratio);
-        return false;
-    }
-
-    cv::Mat R_cv, t_cv;
-    cv::recoverPose(E, pts0, pts1, K, R_cv, t_cv, inlier_mask);
-
-    Eigen::Matrix3d R_rel;
-    Eigen::Vector3d t_rel;
-    cv::cv2eigen(R_cv, R_rel);
-    cv::cv2eigen(t_cv, t_rel);
-
-    if (t_rel.norm() < 0.01) {
-        spdlog::warn(
-            "solvePose: translation too small ({:.4f}), likely pure rotation or static scene",
-            t_rel.norm());
-        return false;
-    }
-
-    {
-        Eigen::Quaterniond q_rel(R_rel);
-        q_rel.normalize();
-        Rs[frame_count] = q_rel.toRotationMatrix() * Rs[ref_frame];
-    }
-    Ps[frame_count] = R_rel * Ps[ref_frame] + t_rel;
-    return true;
+    return sfm_features;
 }
+
 }  // namespace tassel_core

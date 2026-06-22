@@ -6,7 +6,6 @@
 
 #include "cam/camera_factory.h"
 #include "estimator/estimator.h"
-#include "estimator/estimator_option.h"
 #include "frond_end/feature_manager.h"
 #include "frond_end/feature_tracker.h"
 #include "parameters/parameters.h"
@@ -18,9 +17,6 @@
 #include <synchronizer.h>
 
 #include <depthai/depthai.hpp>
-
-Eigen::Matrix3d ric, ric1;
-Eigen::Vector3d tic, tic1;
 
 namespace {
 
@@ -47,19 +43,10 @@ std::vector<tassel_core::Camera> initializeCameras(const tassel_tools::Parameter
             params.cam_distort_map.find(id) == params.cam_distort_map.end()) {
             continue;
         }
-        Eigen::Matrix3d ric_temp = T_ci.block<3, 3>(0, 0);
-        Eigen::Vector3d tic_temp = T_ci.block<3, 1>(0, 3);
         cv::Mat k = params.cam_intrinsic_map.at(id);
         cv::Mat dist = params.cam_distort_map.at(id);
         result.emplace_back(
             std::make_unique<tassel_core::CameraRadTan>(k, dist, params.cols, params.rows));
-        if (id == 0) {
-            ric = ric_temp;
-            tic = tic_temp;
-        } else if (id == 1) {
-            ric1 = ric_temp;
-            tic1 = tic_temp;
-        }
     }
     return result;
 }
@@ -89,13 +76,13 @@ int main(int argc, char** argv) {
 
     auto mono_left = pipeline.create<dai::node::MonoCamera>();
     mono_left->setCamera("left");
-    mono_left->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
+    mono_left->setResolution(dai::MonoCameraProperties::SensorResolution::THE_720_P);
     mono_left->setFps(15);
     mono_left->initialControl.setManualExposure(params.initial_exposure_time_us, 1200);
 
     auto mono_right = pipeline.create<dai::node::MonoCamera>();
     mono_right->setCamera("right");
-    mono_right->setResolution(dai::MonoCameraProperties::SensorResolution::THE_480_P);
+    mono_right->setResolution(dai::MonoCameraProperties::SensorResolution::THE_720_P);
     mono_right->setFps(15);
     mono_right->initialControl.setManualExposure(params.initial_exposure_time_us, 1200);
 
@@ -151,8 +138,6 @@ int main(int argc, char** argv) {
             }
         });
 
-    std::cout << "[VO] Stereo-IMU Synchronizer running. Waiting for data..." << std::endl;
-
     auto cameras = initializeCameras(params);
     const tassel_core::CameraBase* camera_ptr = cameras[0].get();
 
@@ -165,27 +150,13 @@ int main(int argc, char** argv) {
         std::move(cameras[1]), params.per_grid_rows, params.per_grid_cols, params.edge_y,
         params.edge_x, params.mask_radius);
 
-    EstimatorOption option;
-    option.num_iterations = params.num_iterations;
-    option.min_depth = params.min_depth;
-    option.max_depth = params.max_depth;
-    option.acc_n = params.acc_n;
-    option.acc_w = params.acc_w;
-    option.gyr_n = params.gyr_n;
-    option.gyr_w = params.gyr_w;
-    option.g_norm = params.g_norm;
-    option.num_init_iterations = params.num_init_iterations;
-    option.acc_bias = params.acc_bias;
-    option.parallax_thres = params.parallax_thres;
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count));
-    state->visual_sqrt_info = Eigen::Matrix2d::Identity() * params.visual_factor_weight;
     auto feature_manager = std::make_shared<FeatureManager>(
-        params.reprojection_error_thres, params.pnp_reprojection_error_thres,
-        params.init_parallax_thres, params.tracked_times_thres, params.min_tracked_pts_num,
-        params.min_pnp_num, params.min_pnp_inliers_ratio, params.min_translation, params.min_depth,
-        params.max_depth);
+        params.reproj_err_thres, params.pnp_reproj_err_thres, params.parallax_thres,
+        params.tracked_times_thres, params.min_tracked_pts, params.min_pnp_pts,
+        params.min_pnp_inliers_ratio, params.min_translation, params.min_depth, params.max_depth);
 
-    Estimator estimator(option, state, feature_manager, ric, tic, ric1, tic1);
+    Estimator estimator(params, state, feature_manager);
     estimator.setCamera(camera_ptr);
     estimator.setPoseCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
         viewer->publishOdometry("odom/camera", pose.translation(), pose.unit_quaternion());

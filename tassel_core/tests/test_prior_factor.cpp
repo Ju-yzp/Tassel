@@ -5,10 +5,10 @@
 #include <Eigen/QR>
 #include <random>
 
-#include "factor/marg_helper.h"
-#include "factor/marg_lin_data.h"
 #include "factor/marginalization_prior_factor.h"
-#include "factor/se3_right_manifold.h"
+#include "marg/marg_helper.h"
+#include "marg/marg_lin_data.h"
+#include "tassel_utils/se3_right_manifold.h"
 
 namespace tassel_core {
 namespace {

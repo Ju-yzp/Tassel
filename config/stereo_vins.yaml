@@ -2,36 +2,36 @@
 cam0:
     camera_model: radtan
     T_cam_imu:
-        - [0.99999196, -0.00184713, -0.00356048, 0.00670155]
-        - [-0.00185624, -0.99999501, -0.00255627, 0.00589867]
-        - [-0.00355574, 0.00256286, -0.99999039, -0.00346072]
+        - [-0.00977443, 0.99994776, -0.00299082, 0.07059827]
+        - [0.99994922, 0.00976703, -0.00248047, -0.00039139]
+        - [-0.00245113, -0.00301491, -0.99999245, -0.00546604]
         - [0.0, 0.0, 0.0, 1.0]
-    distortion_coeffs: [0.009724719, -0.000986831, -0.000359909, 0.000183854]
+    distortion_coeffs: [0.00769261, -0.05540635, -1.368e-05, 0.00080198]
     intrinsics:
-        - [455.792984, 0.000000, 328.543398]
-        - [0.000000, 455.436223, 224.260803]
+        - [808.739536, 0.0, 615.788205]
+        - [0.0, 806.137546, 344.852773]
         - [0.0, 0.0, 1.0]
 
 cam1:
     camera_model: radtan
     T_cam_imu:
-        - [0.99997532, -0.00069011, -0.00699101, -0.06717406]
-        - [-0.00068000, -0.99999872, 0.00144792, 0.00585694]
-        - [-0.00699200, -0.00144313, -0.99997451, -0.00296146]
+        - [-0.00205114, 0.99998305, -0.00544840, -0.00487269]
+        - [0.99998103, 0.00201943, -0.00581922, -0.00069514]
+        - [-0.00580812, -0.00546023, -0.99996823, -0.00537052]
         - [0.0, 0.0, 0.0, 1.0]
-    distortion_coeffs: [0.021736064, -0.017403044, -0.000363312, -0.001028484]
+    distortion_coeffs: [0.00352322, -0.04856968, 9.228e-05, 0.00055914]
     intrinsics:
-        - [459.495739, 0.000000, 316.330754]
-        - [0.000000, 459.271937, 229.892695]
+        - [811.349145, 0.0, 634.047312]
+        - [0.0, 808.546599, 365.454054]
         - [0.0, 0.0, 1.0]
 
-rows: 480
-cols: 640
-per_grid_rows: 30
-per_grid_cols: 40
-edge_x: 15
-edge_y: 15
-mask_radius: 15.0
+rows: 720
+cols: 1280
+per_grid_rows: 60
+per_grid_cols: 80
+edge_x: 80
+edge_y: 50
+mask_radius: 40.0
 min_feature_num: 150
 
 flow_back: true
@@ -39,25 +39,24 @@ max_square_move_dist: 0.5
 min_gradient: 25.0
 enable_statistics: true
 
-reprojection_error_thres: 1.4
-pnp_reprojection_error_thres: 0.006
+reproj_err_thres: 2.5
+pnp_reproj_err_thres: 0.006
 
-init_parallax_thres: 40.0
 parallax_thres: 20.0
 max_pnp_needed_num: 25
 tracked_times_thres: 3
-min_pnp_num: 8
-min_pnp_inliers_ratio: 0.75
+min_pnp_pts: 8
+min_pnp_inliers_ratio: 0.5
 min_depth: 0.10
 max_depth: 3.0
-min_translation: 0.07
-min_tracked_pts_num: 90
+min_translation: 0.05
+min_tracked_pts: 90
 
 use_imu: true
-num_iterations: 12
+num_iterations: 16
 max_frame_count: 10
 
-initial_exposure_time_us: 9000
+initial_exposure_time_us: 6000
 
 visual_factor_weight: 360.0
 
@@ -67,6 +66,18 @@ acc_n: 1.9291286492253038e-02
 acc_w: 8.0363303593887979e-04
 gyr_n: 2.6401761065710893e-03
 gyr_w: 7.0304129470456934e-05
-g_norm: 9.80
+g_norm: 9.8035
 
-acc_bias: [-0.07670646, -0.16838261, -0.11934545]
+acc_bias: [0.720, -0.022, -0.199]
+
+num_threads: 1
+init_time_span: 5.0
+gravity_diff_threshold: 0.17
+sfm_min_seed_pts: 10
+sfm_min_e_inliers: 8
+sfm_e_ransac_threshold: 0.004
+sfm_min_pnp_pts: 10
+sfm_pnp_reproj_threshold: 0.03
+sfm_max_bad_pnp_ratio: 0.3
+sfm_ba_max_iterations: 30
+sfm_ba_num_threads: 5

@@ -7,7 +7,7 @@
 #include <array>
 #include <vector>
 
-#include "factor/marg_lin_data.h"
+#include "marg/marg_lin_data.h"
 
 namespace tassel_core {
 

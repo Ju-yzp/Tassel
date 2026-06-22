@@ -3,16 +3,20 @@ file(
   TASSEL_CORE_SRCS
   ${CMAKE_CURRENT_SOURCE_DIR}/frond_end/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/factor/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/marg/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/estimator/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/state/*.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/cam/*.cpp)
+  ${CMAKE_CURRENT_SOURCE_DIR}/cam/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/initial/*.cpp)
 add_library(tassel_core SHARED ${TASSEL_CORE_SRCS})
 
 target_link_libraries(tassel_core PUBLIC tassel_deps tassel_utils)
 
 target_include_directories(
-  tassel_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-                     $<INSTALL_INTERFACE:include>)
+  tassel_core
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/tassel_tools>
+         $<INSTALL_INTERFACE:include>)
 
 list(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_SOURCE_DIR}/cmake")
 include(TasselTest)
@@ -37,7 +41,8 @@ set(_ACTIVE_TESTS
     test_prior_factor
     test_landmark_block
     test_imu_factor
-    test_two_view_factor)
+    test_two_view_factor
+    test_reprojection_factor)
 foreach(_src ${_ALL_TEST_SRCS})
   get_filename_component(_name ${_src} NAME_WE)
   if(NOT _name IN_LIST _ACTIVE_TESTS)

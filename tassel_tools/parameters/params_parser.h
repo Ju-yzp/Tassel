@@ -17,8 +17,6 @@
 #include <string_view>
 #include <utility>
 
-#include "cam/camera_factory.h"
-
 namespace tassel_tools {
 namespace fs = std::filesystem;
 
@@ -115,15 +113,6 @@ public:
     template <typename T, typename... Args>
     requires(!IsMatrixType<T>) T as(Args&&... keys)
     const { return get_node(std::forward<Args>(keys)...).template as<T>(); }
-
-    template <typename... Args>
-    requires(IsStringLike<Args>&&...) tassel_core::Camera
-        as_camera(const std::string& model, int width, int height, Args&&... keys)
-    const {
-        auto k = as<cv::Mat>(keys..., "intrinsics");
-        auto d = as<cv::Mat>(keys..., "distortion_coeffs");
-        return tassel_core::CameraFactory::create(model, k, d, width, height);
-    }
 
 private:
     template <typename... Args>
