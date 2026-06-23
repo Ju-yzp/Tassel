@@ -48,7 +48,7 @@ min_pnp_pts: 8
 min_pnp_inliers_ratio: 0.5
 min_depth: 0.3
 max_depth: 3.0
-min_translation: 0.08
+min_translation: 0.05
 min_tracked_pts: 100
 
 use_imu: true
@@ -57,7 +57,7 @@ max_frame_count: 10
 
 initial_exposure_time_us: 10000
 
-visual_factor_weight: 600.0
+visual_factor_weight: 500.0
 
 num_init_iterations: 8
 

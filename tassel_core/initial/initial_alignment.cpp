@@ -45,7 +45,8 @@ bool linearAlignment(
         tmp_A.block<3, 3>(0, 0) = -dt * ric * Rs[i].transpose() * ric.transpose();
         tmp_A.block<3, 3>(0, 6) = 0.5 * dt * dt * ric * Rs[i].transpose() * ric.transpose();
         tmp_A.block<3, 1>(0, 9) = ric * Rs[i].transpose() * (Pj - Pi) / 100.0;
-        tmp_b.block<3, 1>(0, 0) = ric * Ri.transpose() * Rj * tic - ric * tic + delta_p;
+        tmp_b.block<3, 1>(0, 0) =
+            ric * Ri.transpose() * Rj * ric.transpose() * tic - ric * tic + delta_p;
 
         tmp_A.block<3, 3>(3, 0) = -ric * Rs[i].transpose() * ric.transpose();
         tmp_A.block<3, 3>(3, 3) = ric * Rs[i].transpose() * ric.transpose();

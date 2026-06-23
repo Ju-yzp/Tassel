@@ -397,7 +397,8 @@ bool Estimator::tryInitialize() {
                             .normalized()
                             .toRotationMatrix();
         state_->Ps[i] =
-            R0 * (params_.ric * s * Ps_[i] + params_.ric * Rs_[i] * params_.tic - params_.tic);
+            R0 * (params_.ric * s * Ps_[i] -
+                  params_.ric * Rs_[i] * params_.ric.transpose() * params_.tic + params_.tic);
         state_->Vs[i] = R0 * Vs_[i];
     }
 
