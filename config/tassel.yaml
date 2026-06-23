@@ -39,26 +39,25 @@ max_square_move_dist: 0.5
 min_gradient: 25.0
 enable_statistics: true
 
-reproj_err_thres: 2.5
-pnp_reproj_err_thres: 0.006
+reproj_err_thres: 1.7
 
-parallax_thres: 20.0
+parallax_thres: 25.0
 max_pnp_needed_num: 25
 tracked_times_thres: 3
 min_pnp_pts: 8
 min_pnp_inliers_ratio: 0.5
-min_depth: 0.10
+min_depth: 0.3
 max_depth: 3.0
-min_translation: 0.05
-min_tracked_pts: 90
+min_translation: 0.08
+min_tracked_pts: 100
 
 use_imu: true
 num_iterations: 16
 max_frame_count: 10
 
-initial_exposure_time_us: 6000
+initial_exposure_time_us: 10000
 
-visual_factor_weight: 360.0
+visual_factor_weight: 600.0
 
 num_init_iterations: 8
 
@@ -80,5 +79,5 @@ sfm_e_ransac_threshold: 0.004
 sfm_min_pnp_pts: 10
 sfm_pnp_reproj_threshold: 0.03
 sfm_max_bad_pnp_ratio: 0.3
-sfm_ba_max_iterations: 30
+sfm_ba_max_iterations: 10
 sfm_ba_num_threads: 5

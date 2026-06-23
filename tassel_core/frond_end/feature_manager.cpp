@@ -32,11 +32,10 @@ inline double computeParallax(const cv::Point2f& p1, const cv::Point2f& p2) {
 }  // namespace
 
 FeatureManager::FeatureManager(
-    double reproj_err_thres, double pnp_reproj_err_thres, double parallax_thres,
-    int tracked_times_thres, int min_tracked_pts, int min_pnp_pts, double min_pnp_inliers_ratio,
-    double min_translation, double min_depth, double max_depth)
+    double reproj_err_thres, double parallax_thres, int tracked_times_thres, int min_tracked_pts,
+    int min_pnp_pts, double min_pnp_inliers_ratio, double min_translation, double min_depth,
+    double max_depth)
     : reproj_err_thres_(reproj_err_thres),
-      pnp_reproj_err_thres_(pnp_reproj_err_thres),
       parallax_thres_(parallax_thres),
       tracked_times_thres_(tracked_times_thres),
       min_tracked_pts_(min_tracked_pts),

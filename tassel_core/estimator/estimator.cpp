@@ -68,9 +68,6 @@ void Estimator::processMeasurement(
         last_imu_gyro_ = imu_measurements.back().gyro;
     }
 
-    if (gravity_initialized_) {
-        return;
-    }
     bool is_keyframe = feature_manager_->checkParallax(frame_count, feature_frame);
 
     if (frame_count > 0) {
@@ -274,7 +271,7 @@ void Estimator::buildPrior() {
     state_->stateToParams();
 
     auto marg_features = feature_manager_->collectMargFeatures();
-    spdlog::debug("{} feature marginals", static_cast<int>(marg_features.size()));
+    spdlog::info("{} feature marginals", static_cast<int>(marg_features.size()));
     std::vector<IntegratorBase<MidPointIntegrator>*> pint_ptrs;
     pint_ptrs.push_back(&preintegrators_[0]);
 
@@ -303,8 +300,6 @@ void Estimator::buildPrior() {
         new_prior->linearization_speed_bias[i - 1] = state_->params_speed_bias[i];
     }
     marg_data_ = std::move(new_prior);
-    feature_manager_->removeMargFeatures();
-    spdlog::debug("Built prior: {} residuals, {} kept frames", marg_b.size(), n - 1);
 }
 
 void Estimator::slideWindow() {
@@ -389,10 +384,14 @@ bool Estimator::tryInitialize() {
         Vs_, Rs_, Ps_, delta_vs, delta_ps, dts, g, s, params_.ric, params_.tic, params_.g_norm);
 
     Eigen::Matrix3d R0 =
-        Eigen::Quaterniond::FromTwoVectors((-g).normalized(), Eigen::Vector3d(0, 0, 1))
+        Eigen::Quaterniond::FromTwoVectors((g).normalized(), Eigen::Vector3d(0, 0, 1))
             .toRotationMatrix();
     double yaw = std::atan2(R0(1, 0), R0(0, 0));
     R0 = Eigen::AngleAxisd(-yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix() * R0;
+
+    tassel_utils::G = Eigen::Vector3d(0, 0, params_.g_norm);
+    gravity_initialized_ = true;
+
     for (int i = 0; i <= frame_count; ++i) {
         state_->Rs[i] = Eigen::Quaterniond(R0 * params_.ric * Rs_[i] * params_.ric.transpose())
                             .normalized()
@@ -401,10 +400,16 @@ bool Estimator::tryInitialize() {
             R0 * (params_.ric * s * Ps_[i] + params_.ric * Rs_[i] * params_.tic - params_.tic);
         state_->Vs[i] = R0 * Vs_[i];
     }
-    tassel_utils::G = Eigen::Vector3d(0, 0, params_.g_norm);
-    gravity_initialized_ = true;
 
-    spdlog::info("VI init: |g|={:.4f} s={:.4f}", tassel_utils::G.norm(), s);
+    spdlog::info(
+        "VI init: |g|={:.4f} s={:.4f} R0_yaw={:.2f}°", tassel_utils::G.norm(), s,
+        yaw * 180.0 / M_PI);
+    for (int i = 0; i <= frame_count; ++i) {
+        spdlog::info(
+            "  frame[{}]: P=[{:.3f},{:.3f},{:.3f}] V=[{:.3f},{:.3f},{:.3f}]", i, state_->Ps[i].x(),
+            state_->Ps[i].y(), state_->Ps[i].z(), state_->Vs[i].x(), state_->Vs[i].y(),
+            state_->Vs[i].z());
+    }
     return true;
 }
 

@@ -28,7 +28,6 @@ struct Parameters {
         enable_statistics = parser.as<bool>("enable_statistics");
 
         reproj_err_thres = parser.as<double>("reproj_err_thres");
-        pnp_reproj_err_thres = parser.as<double>("pnp_reproj_err_thres");
         parallax_thres = parser.as<double>("parallax_thres");
         min_tracked_pts = parser.as<int>("min_tracked_pts");
         min_pnp_pts = parser.as<int>("min_pnp_pts");
@@ -97,7 +96,6 @@ struct Parameters {
     bool enable_statistics;
 
     double reproj_err_thres;
-    double pnp_reproj_err_thres;
     double parallax_thres;
     int min_tracked_pts;
     int min_pnp_pts;
@@ -123,19 +121,16 @@ struct Parameters {
 
     int num_init_iterations;
 
-    // ── 外参 ──────────────────────────────────────────────────────────
     Eigen::Matrix3d ric = Eigen::Matrix3d::Identity();
     Eigen::Vector3d tic = Eigen::Vector3d::Zero();
     Eigen::Matrix3d ric1 = Eigen::Matrix3d::Identity();
     Eigen::Vector3d tic1 = Eigen::Vector3d::Zero();
 
-    // ── 优化参数 ──────────────────────────────────────────────────────
     int num_threads = 1;
     double init_time_span = 5.0;
     double dt_gyro_threshold = 0.7;
     double gravity_diff_threshold = 0.17;
 
-    // ── SFM 阈值 ──────────────────────────────────────────────────────
     int sfm_min_seed_pts = 10;
     int sfm_min_e_inliers = 8;
     double sfm_e_ransac_threshold = 0.004;

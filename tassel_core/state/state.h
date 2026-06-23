@@ -13,8 +13,7 @@
 namespace tassel_core {
 class CameraBase;
 struct State {
-    State(int max_frame_count_ = 10, bool use_imu_ = false)
-        : max_frame_count(max_frame_count_), cur_frame_count(0), use_imu(use_imu_) {
+    State(int max_frame_count_ = 10) : max_frame_count(max_frame_count_), cur_frame_count(0) {
         Rs.resize(max_frame_count, Eigen::Matrix3d::Identity());
         Ps.resize(max_frame_count, Eigen::Vector3d::Zero());
         Vs.resize(max_frame_count, Eigen::Vector3d::Zero());
@@ -121,10 +120,6 @@ struct State {
         param_delay_time = 0.0;
     }
 
-    void saveState() {
-        storage_pose = params_pose;
-        storage_speed_bias = params_speed_bias;
-    }
     int max_frame_count;
     int cur_frame_count;
     bool use_imu;
@@ -151,10 +146,6 @@ struct State {
 
     //  视觉因子信息矩阵
     Eigen::Matrix2d visual_sqrt_info;
-
-    //
-    std::vector<std::array<double, 6>> storage_pose;
-    std::vector<std::array<double, 9>> storage_speed_bias;
 };
 
 }  // namespace tassel_core

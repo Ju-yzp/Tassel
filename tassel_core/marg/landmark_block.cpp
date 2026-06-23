@@ -81,6 +81,7 @@ void LandmarkBlock::linearize(
         storage_.block<2, 6>(row, target_id * dim_) = scale * jacobian_pose_j;
         storage_.block<2, 1>(row, lm_idx_) = scale * jacobian_landmark;
         storage_.block<2, 1>(row, res_idx_) = scale * residual;
+        break;
     }
 }
 

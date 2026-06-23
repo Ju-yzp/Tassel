@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
     using namespace tassel_core;
 
     tassel_tools::Parameters params(
-        (argc >= 2) ? argv[1] : "/home/adrewn/Tassel/config/stereo_vins.yaml");
+        (argc >= 2) ? argv[1] : "/home/adrewn/Tassel/config/tassel.yaml");
 
     rclcpp::init(argc, argv);
     auto viewer = std::make_shared<tassel_tools::Viewer>("world");
@@ -152,9 +152,9 @@ int main(int argc, char** argv) {
 
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count));
     auto feature_manager = std::make_shared<FeatureManager>(
-        params.reproj_err_thres, params.pnp_reproj_err_thres, params.parallax_thres,
-        params.tracked_times_thres, params.min_tracked_pts, params.min_pnp_pts,
-        params.min_pnp_inliers_ratio, params.min_translation, params.min_depth, params.max_depth);
+        params.reproj_err_thres, params.parallax_thres, params.tracked_times_thres,
+        params.min_tracked_pts, params.min_pnp_pts, params.min_pnp_inliers_ratio,
+        params.min_translation, params.min_depth, params.max_depth);
 
     Estimator estimator(params, state, feature_manager);
     estimator.setCamera(camera_ptr);
