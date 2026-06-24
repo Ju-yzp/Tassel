@@ -18,8 +18,8 @@ class FeatureManager {
 public:
     FeatureManager(
         double reproj_err_thres, double parallax_thres, int tracked_times_thres,
-        int min_tracked_pts, int min_pnp_pts, double min_pnp_inliers_ratio, double min_translation,
-        double min_depth = MIN_DISTANCE, double max_depth = MAX_DISTANCE);
+        int min_tracked_pts, double min_translation, double min_depth = MIN_DISTANCE,
+        double max_depth = MAX_DISTANCE);
 
     bool checkParallax(
         size_t frame_count, const std::unordered_map<int, FeaturePerFrame>& feature_frame);

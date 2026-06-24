@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 #include "factor/integrator_base.h"
@@ -48,6 +49,11 @@ public:
     void reset();
 
 private:
+    template <typename Integrator>
+    using IntegratorVector = std::vector<Integrator>;
+    using PreintegratorStorage =
+        std::variant<IntegratorVector<MidPointIntegrator>, IntegratorVector<EulerIntegrator>>;
+
     void buildPrior();
 
     void slideWindow();
@@ -55,6 +61,16 @@ private:
     bool tryInitialize();
 
     Eigen::Matrix<double, 18, 18> initNoise() const;
+
+    template <typename Fn>
+    decltype(auto) visitPreintegrators(Fn&& fn) {
+        return std::visit(std::forward<Fn>(fn), preintegrators_);
+    }
+
+    template <typename Fn>
+    decltype(auto) visitPreintegrators(Fn&& fn) const {
+        return std::visit(std::forward<Fn>(fn), preintegrators_);
+    }
 
     const tassel_tools::Parameters& params_;
     std::shared_ptr<State> state_;
@@ -69,7 +85,7 @@ private:
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
     std::function<void(double, const std::vector<Eigen::Vector3d>&)> cloud_callback_;
 
-    std::vector<MidPointIntegrator> preintegrators_;
+    PreintegratorStorage preintegrators_;
     double last_ts_ = -1;
     Eigen::Vector3d last_imu_acc_;
     Eigen::Vector3d last_imu_gyro_;

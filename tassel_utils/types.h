@@ -32,6 +32,11 @@ struct StereoObservation {
     inline void set_timestamp(double ts) { timestamp = ts; }
 };
 
+enum class IntegratorType {
+    kMidPoint,
+    kEuler,
+};
+
 // Callback types for estimator output
 using PoseCallback = std::function<void(const Eigen::Matrix3d&, const Eigen::Vector3d&)>;
 using PointCloudCallback = std::function<void(const std::vector<Eigen::Vector3d>&)>;

@@ -14,17 +14,21 @@ include_guard(GLOBAL)
 # CTest 标签: ctest -L software   — 仅运行软件测试 ctest -L hardware   — 仅运行硬件测试
 
 function(tassel_add_tests)
-  cmake_parse_arguments(ARG "" "TEST_DIR"
-                        "LINK_LIBS;INCLUDE_DIRS;HARDWARE_LIBS" ${ARGN})
+  cmake_parse_arguments(
+    ARG "" "TEST_DIR" "TEST_NAMES;LINK_LIBS;INCLUDE_DIRS;HARDWARE_LIBS" ${ARGN})
 
   if(NOT ARG_TEST_DIR)
     message(FATAL_ERROR "tassel_add_tests: TEST_DIR is required")
   endif()
 
-  file(GLOB TEST_SRCS "${ARG_TEST_DIR}/*.cpp")
+  file(GLOB TEST_SRCS CONFIGURE_DEPENDS "${ARG_TEST_DIR}/*.cpp")
 
   foreach(test_src ${TEST_SRCS})
     get_filename_component(target_name ${test_src} NAME_WE)
+
+    if(ARG_TEST_NAMES AND NOT target_name IN_LIST ARG_TEST_NAMES)
+      continue()
+    endif()
 
     file(READ ${test_src} _contents)
     string(REGEX MATCH "depthai" _is_hardware "${_contents}")

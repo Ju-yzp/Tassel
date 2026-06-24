@@ -29,6 +29,18 @@
 #include "initial/initial_sfm.h"
 
 namespace tassel_core {
+
+namespace {
+
+template <typename Integrator>
+std::vector<Integrator> makePreintegrators(
+    size_t count, const Eigen::Matrix<double, 18, 18>& noise) {
+    return std::vector<Integrator>(
+        count, Integrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise));
+}
+
+}  // namespace
+
 Estimator::Estimator(
     const tassel_tools::Parameters& params, std::shared_ptr<State> state,
     std::shared_ptr<FeatureManager> fm)
@@ -45,10 +57,16 @@ void Estimator::reset() {
     last_ts_ = -1;
     last_imu_acc_ = Eigen::Vector3d::Zero();
     last_imu_gyro_ = Eigen::Vector3d::Zero();
-    preintegrators_.clear();
-    preintegrators_.resize(
-        state_->max_frame_count - 1,
-        MidPointIntegrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise_));
+    switch (params_.integrator_type) {
+        case tassel_utils::IntegratorType::kMidPoint:
+            preintegrators_ =
+                makePreintegrators<MidPointIntegrator>(state_->max_frame_count - 1, noise_);
+            break;
+        case tassel_utils::IntegratorType::kEuler:
+            preintegrators_ =
+                makePreintegrators<EulerIntegrator>(state_->max_frame_count - 1, noise_);
+            break;
+    }
     Rs_.resize(state_->max_frame_count, Eigen::Matrix3d::Identity());
     Ps_.resize(state_->max_frame_count, Eigen::Vector3d::Zero());
     Vs_.resize(state_->max_frame_count, Eigen::Vector3d::Zero());
@@ -76,25 +94,27 @@ void Estimator::processMeasurement(
         Eigen::Vector3d V = state_->Vs[frame_count];
         Eigen::Vector3d Ba = state_->Bas[frame_count];
         Eigen::Vector3d Bg = state_->Bgs[frame_count];
-        auto& preintegrator = preintegrators_[frame_count - 1];
+        visitPreintegrators([&](auto& preintegrators) {
+            auto& preintegrator = preintegrators[frame_count - 1];
 
-        for (const auto& imu : imu_measurements) {
-            tassel_utils::IMUMeasurement imu_cal = imu;
-            imu_cal.acc = imu.acc - params_.acc_bias;
-            preintegrator.propagate(imu_cal);
+            for (const auto& imu : imu_measurements) {
+                tassel_utils::IMUMeasurement imu_cal = imu;
+                imu_cal.acc = imu.acc - params_.acc_bias;
+                preintegrator.propagate(imu_cal);
 
-            double dt = imu_cal.timestamp - last_ts_;
-            Eigen::Vector3d acc_0 = R * (last_imu_acc_ - Ba) - tassel_utils::G;
-            Eigen::Vector3d gyr = 0.5 * (last_imu_gyro_ + imu_cal.gyro) - Bg;
-            R = R * Sophus::SO3d::exp(gyr * dt).matrix();
-            Eigen::Vector3d acc_1 = R * (imu_cal.acc - Ba) - tassel_utils::G;
-            Eigen::Vector3d acc = 0.5 * (acc_0 + acc_1);
-            P += V * dt + 0.5 * acc * dt * dt;
-            V += acc * dt;
-            last_ts_ = imu_cal.timestamp;
-            last_imu_gyro_ = imu_cal.gyro;
-            last_imu_acc_ = imu_cal.acc;
-        }
+                double dt = imu_cal.timestamp - last_ts_;
+                Eigen::Vector3d acc_0 = R * (last_imu_acc_ - Ba) - tassel_utils::G;
+                Eigen::Vector3d gyr = 0.5 * (last_imu_gyro_ + imu_cal.gyro) - Bg;
+                R = R * Sophus::SO3d::exp(gyr * dt).matrix();
+                Eigen::Vector3d acc_1 = R * (imu_cal.acc - Ba) - tassel_utils::G;
+                Eigen::Vector3d acc = 0.5 * (acc_0 + acc_1);
+                P += V * dt + 0.5 * acc * dt * dt;
+                V += acc * dt;
+                last_ts_ = imu_cal.timestamp;
+                last_imu_gyro_ = imu_cal.gyro;
+                last_imu_acc_ = imu_cal.acc;
+            }
+        });
 
         Eigen::Quaterniond q(R);
         q.normalize();
@@ -133,10 +153,12 @@ void Estimator::processMeasurement(
             state_->Bas[frame_count] = state_->Bas[frame_count - 1];
             state_->Bgs[frame_count] = state_->Bgs[frame_count - 1];
             int next_idx = frame_count - 1;
-            if (next_idx < static_cast<int>(preintegrators_.size())) {
-                preintegrators_[next_idx].reset(
-                    state_->Bas[frame_count - 1], state_->Bgs[frame_count - 1], noise_);
-            }
+            visitPreintegrators([&](auto& preintegrators) {
+                if (next_idx < static_cast<int>(preintegrators.size())) {
+                    preintegrators[next_idx].reset(
+                        state_->Bas[frame_count - 1], state_->Bgs[frame_count - 1], noise_);
+                }
+            });
         }
     } else {
         state_->acc_vec.erase(state_->acc_vec.begin());
@@ -150,6 +172,7 @@ void Estimator::processMeasurement(
 
     if (cloud_callback_ && gravity_initialized_) {
         auto pts = feature_manager_->getPointCloud(*state_, params_.ric, params_.tic);
+        spdlog::info("{} valid points", static_cast<int>(pts.size()));
         cloud_callback_(ts, pts);
     }
     if (pose_callback_ && gravity_initialized_) {
@@ -228,15 +251,18 @@ void Estimator::optimize() {
         }
     }
 
-    for (int i = 0; i < state_->cur_frame_count; ++i) {
-        if (preintegrators_[i].buffer.size() < 2) continue;
-        auto pint_ptr =
-            std::shared_ptr<MidPointIntegrator>(&preintegrators_[i], [](MidPointIntegrator*) {});
-        auto* imu_cost = new IMUFactor<MidPointIntegrator>(pint_ptr);
-        problem.AddResidualBlock(
-            imu_cost, nullptr, state_->params_pose[i].data(), state_->params_speed_bias[i].data(),
-            state_->params_pose[i + 1].data(), state_->params_speed_bias[i + 1].data());
-    }
+    visitPreintegrators([&](auto& preintegrators) {
+        using Integrator = typename std::decay_t<decltype(preintegrators)>::value_type;
+        for (int i = 0; i < state_->cur_frame_count; ++i) {
+            if (preintegrators[i].buffer.size() < 2) continue;
+            auto pint_ptr = std::shared_ptr<Integrator>(&preintegrators[i], [](Integrator*) {});
+            auto* imu_cost = new IMUFactor<Integrator>(pint_ptr);
+            problem.AddResidualBlock(
+                imu_cost, nullptr, state_->params_pose[i].data(),
+                state_->params_speed_bias[i].data(), state_->params_pose[i + 1].data(),
+                state_->params_speed_bias[i + 1].data());
+        }
+    });
 
     ceres::Solver::Options opts;
     opts.linear_solver_type = ceres::DENSE_SCHUR;
@@ -256,9 +282,11 @@ void Estimator::optimize() {
         features[k]->estimated_depth = d;
     }
 
-    for (int i = 0; i < preintegrators_.size(); ++i) {
-        preintegrators_[i].repropagate(state_->Bas[i], state_->Bgs[i], noise_);
-    }
+    visitPreintegrators([&](auto& preintegrators) {
+        for (int i = 0; i < static_cast<int>(preintegrators.size()); ++i) {
+            preintegrators[i].repropagate(state_->Bas[i], state_->Bgs[i], noise_);
+        }
+    });
 
     spdlog::info(
         "Ba {:.4f} {:.4f} {:.4f} Bg {:.4f} {:.4f} {:.4f} delay_time {:.2f} ms", state_->Bas[0].x(),
@@ -272,34 +300,37 @@ void Estimator::buildPrior() {
 
     auto marg_features = feature_manager_->collectMargFeatures();
     spdlog::info("{} feature marginals", static_cast<int>(marg_features.size()));
-    std::vector<IntegratorBase<MidPointIntegrator>*> pint_ptrs;
-    pint_ptrs.push_back(&preintegrators_[0]);
+    visitPreintegrators([&](auto& preintegrators) {
+        using Integrator = typename std::decay_t<decltype(preintegrators)>::value_type;
+        std::vector<IntegratorBase<Integrator>*> pint_ptrs;
+        pint_ptrs.push_back(&preintegrators[0]);
 
-    auto marg = MarginlizationSqrt<MidPointIntegrator>(
-        std::move(marg_features), std::make_unique<ceres::HuberLoss>(1.0), state_, pint_ptrs,
-        params_.ric, params_.tic, marg_data_.get());
-    marg.allocate();
-    marg.linearize();
-    marg.performQRAll();
+        auto marg = MarginlizationSqrt<Integrator>(
+            marg_features, std::make_unique<ceres::HuberLoss>(1.0), state_, pint_ptrs, params_.ric,
+            params_.tic, marg_data_.get());
+        marg.allocate();
+        marg.linearize();
+        marg.performQRAll();
 
-    Eigen::MatrixXd Q2Jp;
-    Eigen::VectorXd Q2r;
-    marg.get_dense_Jp_b(Q2Jp, Q2r);
+        Eigen::MatrixXd Q2Jp;
+        Eigen::VectorXd Q2r;
+        marg.get_dense_Jp_b(Q2Jp, Q2r);
 
-    Eigen::MatrixXd marg_H;
-    Eigen::VectorXd marg_b;
-    MargHelper::marginalizeSqrtToSqrt(15, (n - 1) * 15, Q2Jp, Q2r, marg_H, marg_b);
+        Eigen::MatrixXd marg_H;
+        Eigen::VectorXd marg_b;
+        MargHelper::marginalizeSqrtToSqrt(15, (n - 1) * 15, Q2Jp, Q2r, marg_H, marg_b);
 
-    auto new_prior = std::make_unique<MargLinData>();
-    new_prior->H = marg_H;
-    new_prior->b = marg_b;
-    new_prior->linearization_poses.resize(n - 1);
-    new_prior->linearization_speed_bias.resize(n - 1);
-    for (int i = 1; i < n; ++i) {
-        new_prior->linearization_poses[i - 1] = state_->params_pose[i];
-        new_prior->linearization_speed_bias[i - 1] = state_->params_speed_bias[i];
-    }
-    marg_data_ = std::move(new_prior);
+        auto new_prior = std::make_unique<MargLinData>();
+        new_prior->H = marg_H;
+        new_prior->b = marg_b;
+        new_prior->linearization_poses.resize(n - 1);
+        new_prior->linearization_speed_bias.resize(n - 1);
+        for (int i = 1; i < n; ++i) {
+            new_prior->linearization_poses[i - 1] = state_->params_pose[i];
+            new_prior->linearization_speed_bias[i - 1] = state_->params_speed_bias[i];
+        }
+        marg_data_ = std::move(new_prior);
+    });
 }
 
 void Estimator::slideWindow() {
@@ -313,11 +344,12 @@ void Estimator::slideWindow() {
         state_->Bgs[i] = state_->Bgs[i + 1];
     }
     // 滑动预积分器
-    for (int i = 0; i < static_cast<int>(preintegrators_.size()) - 1; ++i) {
-        preintegrators_[i] = std::move(preintegrators_[i + 1]);
-    }
-    // 重置最后一个预积分器
-    preintegrators_.back().reset(state_->Bas[n - 2], state_->Bgs[n - 2], noise_);
+    visitPreintegrators([&](auto& preintegrators) {
+        for (int i = 0; i < static_cast<int>(preintegrators.size()) - 1; ++i) {
+            preintegrators[i] = std::move(preintegrators[i + 1]);
+        }
+        preintegrators.back().reset(state_->Bas[n - 2], state_->Bgs[n - 2], noise_);
+    });
 
     state_->acc_vec.erase(state_->acc_vec.begin());
     state_->gyro_vec.erase(state_->gyro_vec.begin());
@@ -351,25 +383,31 @@ bool Estimator::tryInitialize() {
 
     {
         std::vector<Eigen::Matrix3d> dq_dbgs, delta_qs;
-        for (int i = 0; i < frame_count; ++i) {
-            dq_dbgs.push_back(preintegrators_[i].get_dq_dbg());
-            delta_qs.push_back(preintegrators_[i].final_delta_q);
-        }
+        visitPreintegrators([&](const auto& preintegrators) {
+            for (int i = 0; i < frame_count; ++i) {
+                dq_dbgs.push_back(preintegrators[i].get_dq_dbg());
+                delta_qs.push_back(preintegrators[i].final_delta_q);
+            }
+        });
         Eigen::Vector3d bg = solveGyroBias(Rs_, dq_dbgs, delta_qs, params_.ric);
         for (int i = 0; i < frame_count; ++i) state_->Bgs[i] = bg;
     }
 
-    for (int i = 0; i < frame_count; ++i) {
-        preintegrators_[i].repropagate(state_->Bas[i], state_->Bgs[i], noise_);
-    }
+    visitPreintegrators([&](auto& preintegrators) {
+        for (int i = 0; i < frame_count; ++i) {
+            preintegrators[i].repropagate(state_->Bas[i], state_->Bgs[i], noise_);
+        }
+    });
 
     std::vector<Eigen::Vector3d> delta_ps, delta_vs;
     std::vector<double> dts;
-    for (int i = 0; i < n_frames - 1; ++i) {
-        delta_ps.push_back(preintegrators_[i].final_delta_p);
-        delta_vs.push_back(preintegrators_[i].final_delta_v);
-        dts.push_back(preintegrators_[i].sum_dt);
-    }
+    visitPreintegrators([&](const auto& preintegrators) {
+        for (int i = 0; i < n_frames - 1; ++i) {
+            delta_ps.push_back(preintegrators[i].final_delta_p);
+            delta_vs.push_back(preintegrators[i].final_delta_v);
+            dts.push_back(preintegrators[i].sum_dt);
+        }
+    });
 
     Eigen::Vector3d g;
     double s;

@@ -50,7 +50,7 @@ void Feature::monoTriangulate(
         return;
     }
 
-    Eigen::Matrix3d reference_r = state.Rs[start_frame_id];
+    Eigen::Matrix3d reference_r = state.Rs[start_frame_id] * ric;
     Eigen::Vector3d reference_t = reference_r * tic + state.Ps[start_frame_id];
 
     std::vector<Eigen::Matrix<double, 3, 4>> poses;
@@ -58,8 +58,6 @@ void Feature::monoTriangulate(
 
     int cur_frame_id = start_frame_id;
     for (auto& observation : observations) {
-        if (cur_frame_id >= state.cur_frame_count) break;
-
         Eigen::Matrix3d cur_r = state.Rs[cur_frame_id] * ric;
         Eigen::Vector3d cur_t = state.Rs[cur_frame_id] * tic + state.Ps[cur_frame_id];
         Eigen::Matrix3d dr = cur_r.transpose() * reference_r;
@@ -75,7 +73,7 @@ void Feature::monoTriangulate(
         ++cur_frame_id;
     }
 
-    if (poses.size() < 2) return;
+    if (poses.size() < 1) return;
 
     double cond;
     Eigen::Vector4d h = tassel_utils::triangulateMultiView(poses, uvs, &cond);

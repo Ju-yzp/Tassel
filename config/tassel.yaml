@@ -36,28 +36,25 @@ min_feature_num: 150
 
 flow_back: true
 max_square_move_dist: 0.5
-min_gradient: 25.0
+min_gradient: 20.0
 enable_statistics: true
 
-reproj_err_thres: 1.7
+reproj_err_thres: 1.4
 
-parallax_thres: 25.0
-max_pnp_needed_num: 25
+parallax_thres: 20.0
 tracked_times_thres: 3
-min_pnp_pts: 8
-min_pnp_inliers_ratio: 0.5
 min_depth: 0.3
-max_depth: 3.0
-min_translation: 0.05
-min_tracked_pts: 100
+max_depth: 5.0
+min_translation: 0.06
+min_tracked_pts: 50
 
-use_imu: true
 num_iterations: 16
 max_frame_count: 10
+integrator_type: midpoint
 
-initial_exposure_time_us: 10000
+initial_exposure_time_us: 6000
 
-visual_factor_weight: 500.0
+visual_factor_weight: 600.0
 
 num_init_iterations: 8
 
@@ -71,7 +68,7 @@ acc_bias: [0.720, -0.022, -0.199]
 
 num_threads: 1
 init_time_span: 5.0
-gravity_diff_threshold: 0.17
+gravity_diff_threshold: 0.21
 dt_gyro_threshold: 0.2
 sfm_min_seed_pts: 10
 sfm_min_e_inliers: 8

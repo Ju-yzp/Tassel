@@ -153,8 +153,7 @@ int main(int argc, char** argv) {
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count));
     auto feature_manager = std::make_shared<FeatureManager>(
         params.reproj_err_thres, params.parallax_thres, params.tracked_times_thres,
-        params.min_tracked_pts, params.min_pnp_pts, params.min_pnp_inliers_ratio,
-        params.min_translation, params.min_depth, params.max_depth);
+        params.min_tracked_pts, params.min_translation, params.min_depth, params.max_depth);
 
     Estimator estimator(params, state, feature_manager);
     estimator.setCamera(camera_ptr);

@@ -3,7 +3,9 @@
 #include <spdlog/spdlog.h>
 
 #include <Eigen/Core>
+#include <Eigen/SVD>
 #include <cstddef>
+#include <limits>
 #include <sophus/so3.hpp>
 #include <vector>
 
@@ -66,6 +68,22 @@ bool linearAlignment(
 
     A = A * 1000.0;
     b = b * 1000.0;
+
+    Eigen::JacobiSVD<Eigen::MatrixXd> svd(A);
+    const Eigen::VectorXd singular_values = svd.singularValues();
+    const double max_singular = singular_values.size() > 0 ? singular_values(0) : 0.0;
+    const double min_singular =
+        singular_values.size() > 0 ? singular_values(singular_values.size() - 1) : 0.0;
+    const double rank_tolerance =
+        std::numeric_limits<double>::epsilon() * static_cast<double>(A.rows()) * max_singular;
+    const int rank = static_cast<int>((singular_values.array() > rank_tolerance).count());
+    if (rank < A.rows()) {
+        spdlog::warn(
+            "LinearAlignment: no unique solution, A is rank deficient rank={}/{} "
+            "sigma_min={:.6e} sigma_max={:.6e} tol={:.6e}",
+            rank, A.rows(), min_singular, max_singular, rank_tolerance);
+    }
+
     Eigen::VectorXd x = A.ldlt().solve(b);
 
     s = x(n_state - 1) / 100.0;
@@ -131,7 +149,7 @@ void refineGravitySpeeds(
 
             Eigen::Matrix<double, 6, 1> tmp_b;
             tmp_b.block<3, 1>(0, 0) =
-                delta_ps[i] + R_trans * Rs[j] * tic - ric * tic - dt2 * R * g0;
+                delta_ps[i] + R_trans * Rs[j] * ric.transpose() * tic - ric * tic - dt2 * R * g0;
             tmp_b.block<3, 1>(3, 0) = delta_vs[i] - dt * R * g0;
 
             Eigen::Matrix<double, 9, 9> r_A = tmp_A.transpose() * tmp_A;

@@ -2,11 +2,15 @@
 #define TASSEL_TOOLS_PARAMETERS_PARAMETERS_H_
 
 #include <Eigen/Core>
+#include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <map>
 #include <opencv2/core.hpp>
+#include <string>
 
 #include "parameters/params_parser.h"
+#include "tassel_utils/types.h"
 
 namespace tassel_tools {
 
@@ -30,9 +34,7 @@ struct Parameters {
         reproj_err_thres = parser.as<double>("reproj_err_thres");
         parallax_thres = parser.as<double>("parallax_thres");
         min_tracked_pts = parser.as<int>("min_tracked_pts");
-        min_pnp_pts = parser.as<int>("min_pnp_pts");
         tracked_times_thres = parser.as<int>("tracked_times_thres");
-        min_pnp_inliers_ratio = parser.as<double>("min_pnp_inliers_ratio");
         min_translation = parser.as<double>("min_translation");
         min_depth = parser.as<double>("min_depth");
         max_depth = parser.as<double>("max_depth");
@@ -49,7 +51,6 @@ struct Parameters {
         ric1 = T_cam_imu_map[1].block<3, 3>(0, 0);
         tic1 = T_cam_imu_map[1].block<3, 1>(0, 3);
 
-        use_imu = parser.as<bool>("use_imu");
         num_iterations = parser.as<int>("num_iterations");
         max_frame_count = parser.as<size_t>("max_frame_count");
 
@@ -78,6 +79,8 @@ struct Parameters {
         sfm_max_bad_pnp_ratio = parser.as<double>("sfm_max_bad_pnp_ratio");
         sfm_ba_max_iterations = parser.as<int>("sfm_ba_max_iterations");
         sfm_ba_num_threads = parser.as<int>("sfm_ba_num_threads");
+
+        integrator_type = parseIntegratorType(parser.as<std::string>("integrator_type"));
     }
 
     std::map<size_t, Eigen::Matrix4d> T_cam_imu_map;
@@ -98,13 +101,10 @@ struct Parameters {
     double reproj_err_thres;
     double parallax_thres;
     int min_tracked_pts;
-    int min_pnp_pts;
-    double min_pnp_inliers_ratio;
     double min_translation;
     double min_depth;
     double max_depth;
 
-    bool use_imu;
     int num_iterations;
     int tracked_times_thres;
     size_t max_frame_count;
@@ -139,6 +139,39 @@ struct Parameters {
     double sfm_max_bad_pnp_ratio = 0.3;
     int sfm_ba_max_iterations = 30;
     int sfm_ba_num_threads = 5;
+
+    tassel_utils::IntegratorType integrator_type = tassel_utils::IntegratorType::kMidPoint;
+
+private:
+    static std::string normalizeToken(std::string value) {
+        const auto first = std::find_if_not(
+            value.begin(), value.end(), [](unsigned char ch) { return std::isspace(ch); });
+        const auto last = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char ch) {
+                              return std::isspace(ch);
+                          }).base();
+        if (first >= last) {
+            return "";
+        }
+        value = std::string(first, last);
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return value;
+    }
+
+    static tassel_utils::IntegratorType parseIntegratorType(
+        const std::string& integrator_name_raw) {
+        const std::string integrator_name = normalizeToken(integrator_name_raw);
+        if (integrator_name == "midpoint") {
+            return tassel_utils::IntegratorType::kMidPoint;
+        }
+        if (integrator_name == "euler") {
+            return tassel_utils::IntegratorType::kEuler;
+        }
+        throw std::runtime_error(
+            "Invalid integrator_type: \"" + integrator_name_raw +
+            "\". Supported values: midpoint, euler");
+    }
 };
 
 }  // namespace tassel_tools
