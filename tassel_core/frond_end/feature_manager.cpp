@@ -73,7 +73,7 @@ void FeatureManager::triangulate(
     const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1) {
     auto cs = state.get_compensated_state();
     for (auto& [id, feature] : features_) {
-        // feature.stereoTriangulate(ric, tic, ric1, tic1, min_depth_, max_depth_);
+        feature.stereoTriangulate(ric, tic, ric1, tic1, min_depth_, max_depth_);
         feature.monoTriangulate(cs, ric, tic, min_translation_, min_depth_, max_depth_);
     }
 }

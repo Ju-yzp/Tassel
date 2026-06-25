@@ -54,7 +54,7 @@ integrator_type: midpoint
 
 initial_exposure_time_us: 6000
 
-visual_factor_weight: 600.0
+visual_factor_weight: 400.0
 
 num_init_iterations: 8
 

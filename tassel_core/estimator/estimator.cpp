@@ -220,7 +220,8 @@ void Estimator::optimize() {
         problem.AddResidualBlock(prior_cost, nullptr, prior_blocks);
     }
 
-    ceres::LossFunction* loss = new ceres::HuberLoss(1.0);
+    ceres::LossFunction* loss =
+        new ceres::HuberLoss(params_.visual_factor_weight * params_.visual_factor_weight);
     std::vector<double> inv_depth_params(features.size());
     for (size_t k = 0; k < features.size(); ++k) {
         double d = features[k]->estimated_depth;
@@ -306,8 +307,10 @@ void Estimator::buildPrior() {
         pint_ptrs.push_back(&preintegrators[0]);
 
         auto marg = MarginlizationSqrt<Integrator>(
-            marg_features, std::make_unique<ceres::HuberLoss>(1.0), state_, pint_ptrs, params_.ric,
-            params_.tic, marg_data_.get());
+            marg_features,
+            std::make_unique<ceres::HuberLoss>(
+                params_.visual_factor_weight * params_.visual_factor_weight),
+            state_, pint_ptrs, params_.ric, params_.tic, marg_data_.get());
         marg.allocate();
         marg.linearize();
         marg.performQRAll();
