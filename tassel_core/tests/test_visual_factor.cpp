@@ -1,10 +1,17 @@
 // =============================================================================
-// test_visual_factor.cpp — VisualFactor Jacobian verification & convergence
-// =============================================================================
+// test_visual_factor.cpp
 //
-// IMU 400Hz trajectory → camera at IMU sample time k_cam_i + td (query state)
-// Observations generated from query state (exact), factor uses td compensation
-// approximation to reconstruct query state from camera-time state.
+// Purpose:
+//   验证 VisualFactor 的解析雅各比和时间延迟 td 的优化反馈。
+//
+// Test design:
+//   使用 imu_test_utils 生成 400Hz IMU 轨迹; 观测由 camera-time state 加真实 td 后的
+//   query state 精确投影生成, factor 端从 camera-time state、IMU 读数和 td 近似恢复
+//   query state。单因子检查雅各比, 多 landmark 优化检查 td 收敛。
+//
+// Pass criteria:
+//   位姿、速度、偏置、逆深度和 td 的解析雅各比通过数值微分检查; Ceres 优化后 td
+//   明显靠近构造数据时使用的真实延迟。
 // =============================================================================
 
 #include <gtest/gtest.h>
@@ -14,65 +21,16 @@
 #include <iostream>
 #include <vector>
 
-#include <sophus/so3.hpp>
-
 #include <ceres/ceres.h>
+#include <sophus/so3.hpp>
 
 #include "cam/camera_rad_tan.h"
 #include "factor/visual_factor.h"
+#include "imu_test_utils.h"
 #include "tassel_utils/se3_right_manifold.h"
-#include "tassel_utils/types.h"
 
 namespace tassel_core {
 namespace {
-
-struct ImuState {
-    double ts;
-    Eigen::Matrix3d R;
-    Eigen::Vector3d P, V;
-    Eigen::Vector3d gyro, acc;
-    Eigen::Vector3d Ba, Bg;
-};
-
-struct StateTimeline {
-    double imu_dt;
-    std::vector<ImuState> states;
-    const ImuState& at_index(int k) const { return states[k]; }
-};
-
-StateTimeline generateImuTimeline(
-    double duration, double imu_dt, const Eigen::Vector3d& a_body, const Eigen::Vector3d& w_body,
-    const Eigen::Vector3d& Ba, const Eigen::Vector3d& Bg) {
-    int total_steps = static_cast<int>(duration / imu_dt) + 1;
-    StateTimeline tl;
-    tl.imu_dt = imu_dt;
-
-    Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
-    Eigen::Vector3d P = Eigen::Vector3d::Zero();
-    Eigen::Vector3d V = Eigen::Vector3d::Zero();
-
-    for (int k = 0; k < total_steps; ++k) {
-        ImuState s;
-        s.ts = k * imu_dt;
-        s.R = R;
-        s.P = P;
-        s.V = V;
-        s.Ba = Ba;
-        s.Bg = Bg;
-        s.acc = a_body + R.transpose() * tassel_utils::G + Ba;
-        s.gyro = w_body + Bg;
-        tl.states.push_back(s);
-
-        double dt2 = imu_dt * 0.5;
-        Eigen::Matrix3d Rmid = R * Sophus::SO3d::exp(w_body * dt2).matrix();
-        Eigen::Vector3d V_next = V + Rmid * a_body * imu_dt;
-        Eigen::Vector3d P_next = P + (V + V_next) * dt2;
-        R = R * Sophus::SO3d::exp(w_body * imu_dt).matrix();
-        P = P_next;
-        V = V_next;
-    }
-    return tl;
-}
 
 // =============================================================================
 // VisualFactorTest
@@ -96,7 +54,7 @@ protected:
         double imu_dt = 0.0025;
         Eigen::Vector3d a_body(0.3, -0.1, 0.05);
         Eigen::Vector3d w_body(0.1, 0.3, 0.4);
-        timeline_ = generateImuTimeline(2.0, imu_dt, a_body, w_body, Ba_, Bg_);
+        timeline_ = test::generateConstantMotionTimeline(2.0, imu_dt, a_body, w_body, Ba_, Bg_);
 
         int cam_skip = 27;
         int k_ci = 200, k_cj = k_ci + cam_skip;
@@ -162,7 +120,7 @@ protected:
     }
 
     // --- data ---
-    StateTimeline timeline_;
+    test::ImuTimeline timeline_;
     Eigen::Matrix3d ric_;
     Eigen::Vector3d tic_;
     Eigen::Vector3d Ba_, Bg_;

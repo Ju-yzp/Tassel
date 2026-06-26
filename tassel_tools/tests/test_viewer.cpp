@@ -1,8 +1,22 @@
+// =============================================================================
+// test_viewer.cpp
+//
+// Purpose:
+//   手动检查 Viewer 的 odometry、path、image、point cloud 和 error 发布接口。
+//
+// Test design:
+//   构造一个椭圆轨道运动模型, 持续发布相机位姿、路径、合成图像、点云和误差曲线,
+//   用 ROS2/RViz 等外部工具观察 topic 是否正确更新。
+//
+// Pass criteria:
+//   这是依赖 ROS2 可视化环境的 smoke test; 各 topic 能持续发布且可视化结果随时间
+//   平滑变化。
+// =============================================================================
+
 #include "viewer/viewer.h"
 
 #include <algorithm>
 
-// [0] 轨道辅助类 — 不放入库中，由测试自行模拟
 class EllipticalOrbit {
 public:
     EllipticalOrbit(double a, double b, double omega, const Eigen::Vector3d& normal)
@@ -79,7 +93,6 @@ int main(int argc, char** argv) {
         auto ori = orbit.orientation(t);
         auto ang_vel = orbit.angularVelocity();
 
-        // synthetic image
         canvas.setTo(cv::Scalar(30, 30, 30));
         double dist = pos.norm();
         int proj_r = static_cast<int>(fx * sphere_r / dist);

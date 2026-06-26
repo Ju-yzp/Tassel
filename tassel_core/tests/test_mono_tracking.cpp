@@ -1,3 +1,18 @@
+// =============================================================================
+// test_mono_tracking.cpp
+//
+// Purpose:
+//   手动检查单目 FeatureTracker 在 OAK 左目实时图像上的跟踪效果。
+//
+// Test design:
+//   启动 DepthAI 左目 mono pipeline, 使用固定 RadTan 内参初始化单相机 tracker,
+//   连续执行 monoTracking 并在 OpenCV 窗口中绘制跟踪结果。
+//
+// Pass criteria:
+//   这是依赖硬件和显示环境的 smoke test; 能稳定显示图像、提取并跟踪特征点,
+//   按 Esc 可退出。
+// =============================================================================
+
 #include <depthai/depthai.hpp>
 
 #include <opencv2/highgui.hpp>

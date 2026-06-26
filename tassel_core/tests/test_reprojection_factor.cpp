@@ -1,10 +1,15 @@
 // =============================================================================
-// test_reprojection_factor.cpp — ReprojectionFactor Jacobian verification
-// =============================================================================
+// test_reprojection_factor.cpp
 //
-// 随机生成相机位姿 + 3D点 → 投影得到观测 →
-// 对 q 使用 QuaternionManifold::Plus 在切空间做数值微分，
-// 对 t、X 使用欧氏扰动，验证手推解析雅各比
+// Purpose:
+//   验证 ReprojectionFactor 对四元数位姿、平移和三维点的解析雅各比。
+//
+// Test design:
+//   随机生成相机位姿和 3D 点, 投影得到无噪声观测; 四元数使用
+//   ceres::QuaternionManifold::Plus 在切空间做中心差分, 平移和点使用欧氏扰动。
+//
+// Pass criteria:
+//   解析雅各比经 PlusJacobian 投影到切空间后, 与数值雅各比的相对误差小于容差。
 // =============================================================================
 
 #include <gtest/gtest.h>

@@ -1,3 +1,18 @@
+// =============================================================================
+// test_estimator.cpp
+//
+// Purpose:
+//   端到端检查 OAK-D 双目图像、IMU、同步器、前端、估计器和 viewer 的工程连接。
+//
+// Test design:
+//   从配置文件读取相机与估计器参数, 启动 DepthAI stereo+IMU pipeline, 将双目观测
+//   与 IMU slice 送入同步器, 再驱动 Estimator 与可视化发布链路。
+//
+// Pass criteria:
+//   这是依赖硬件的手动集成测试; 能持续接收传感器数据、完成同步、更新估计器并
+//   正常发布可视化信息即认为链路可用。
+// =============================================================================
+
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -156,6 +171,7 @@ int main(int argc, char** argv) {
         params.min_tracked_pts, params.min_translation, params.min_depth, params.max_depth);
 
     Estimator estimator(params, state, feature_manager);
+    state->camera = camera_ptr;
     estimator.setCamera(camera_ptr);
     estimator.setPoseCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
         viewer->publishOdometry("odom/camera", pose.translation(), pose.unit_quaternion());

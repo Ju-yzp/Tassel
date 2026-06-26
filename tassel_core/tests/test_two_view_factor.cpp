@@ -1,11 +1,23 @@
 // =============================================================================
-// test_two_view_factor.cpp — TwoViewFactor Jacobian verification + td convergence
+// test_two_view_factor.cpp
+//
+// Purpose:
+//   验证 TwoViewFactor 的 bearing 约束雅各比, 以及时间延迟 td 在多帧约束下的收敛。
+//
+// Test design:
+//   使用 imu_test_utils 生成带外参的 IMU/camera 轨迹, 从同一个世界点生成两帧单位
+//   bearing 观测。单因子用中心差分检查雅各比; 多帧部分构造共享 td 的 Ceres 问题,
+//   观察 td 是否被 two-view residual 拉回真实值。
+//
+// Pass criteria:
+//   解析雅各比与数值雅各比一致, 多帧优化后 td 接近数据生成时的真实延迟。
 // =============================================================================
 
 #include <gtest/gtest.h>
 
 #include <Eigen/Geometry>
 #include <cmath>
+#include <functional>
 #include <iostream>
 #include <vector>
 
@@ -13,6 +25,7 @@
 #include <sophus/so3.hpp>
 
 #include "factor/TwoViewFactor.h"
+#include "imu_test_utils.h"
 #include "tassel_utils/se3_right_manifold.h"
 
 namespace tassel_core {
@@ -20,117 +33,6 @@ namespace {
 
 static constexpr double kG = 9.81;
 static const Eigen::Vector3d kGravity(0, 0, -kG);
-
-// ----- IMU sample --------------------------------------------------------------
-
-struct ImuSample {
-    double ts;
-    Eigen::Vector3d P, V;
-    Eigen::Matrix3d R;
-    Eigen::Vector3d gyro, acc;  // biased measurements
-};
-
-// ----- mid-point trajectory generation (250 Hz) ---------------------------------
-
-std::vector<ImuSample> generateTrajectory(
-    double duration, double imu_dt, const Eigen::Vector3d& a_body, const Eigen::Vector3d& w_body,
-    const Eigen::Vector3d& ba, const Eigen::Vector3d& bg) {
-    std::vector<ImuSample> traj;
-    int N = static_cast<int>(duration / imu_dt) + 1;
-
-    Eigen::Vector3d P = Eigen::Vector3d::Zero();
-    Eigen::Vector3d V = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
-
-    for (int k = 0; k < N; ++k) {
-        ImuSample s;
-        s.ts = k * imu_dt;
-        s.R = R;
-        s.P = P;
-        s.V = V;
-        s.gyro = w_body + bg;
-        s.acc = a_body + R.transpose() * (-kGravity) + ba;
-        traj.push_back(s);
-
-        double dt2 = imu_dt * 0.5;
-        Eigen::Matrix3d Rmid = R * Sophus::SO3d::exp(w_body * dt2).matrix();
-        Eigen::Vector3d V_next = V + Rmid * a_body * imu_dt;
-        Eigen::Vector3d P_next = P + (V + V_next) * dt2;
-        R = R * Sophus::SO3d::exp(w_body * imu_dt).matrix();
-        P = P_next;
-        V = V_next;
-    }
-    return traj;
-}
-
-// ----- linear interpolation ----------------------------------------------------
-
-ImuSample interpolateSample(const std::vector<ImuSample>& traj, double t) {
-    double imu_dt = traj[1].ts - traj[0].ts;
-    int i0 = static_cast<int>(std::floor(t / imu_dt));
-    int i1 = i0 + 1;
-    if (i0 < 0) {
-        i0 = 0;
-        i1 = 0;
-    }
-    if (i1 >= static_cast<int>(traj.size())) {
-        i0 = traj.size() - 1;
-        i1 = i0;
-    }
-
-    const auto& s0 = traj[i0];
-    const auto& s1 = traj[i1];
-    double alpha = (i1 > i0) ? (t - s0.ts) / (s1.ts - s0.ts) : 0.0;
-    double a = std::max(0.0, std::min(1.0, alpha));
-
-    ImuSample s;
-    s.ts = t;
-    s.P = (1 - a) * s0.P + a * s1.P;
-    s.V = (1 - a) * s0.V + a * s1.V;
-    s.gyro = (1 - a) * s0.gyro + a * s1.gyro;
-    s.acc = (1 - a) * s0.acc + a * s1.acc;
-    Eigen::Quaterniond q0(s0.R), q1(s1.R);
-    s.R = Eigen::Quaterniond(q0.slerp(a, q1)).toRotationMatrix();
-    return s;
-}
-
-// ----- mid-point integration: parameter time → camera time ----------------------
-
-struct CameraState {
-    Eigen::Matrix3d R;
-    Eigen::Vector3d P;
-};
-
-CameraState integrateImu(
-    const std::vector<ImuSample>& traj, double t_param, double t_cam, const Eigen::Vector3d& bg,
-    const Eigen::Vector3d& ba) {
-    double imu_dt = traj[1].ts - traj[0].ts;
-    ImuSample s0 = interpolateSample(traj, t_param);
-    Eigen::Vector3d P = s0.P, V = s0.V;
-    Eigen::Matrix3d R = s0.R;
-    double t = t_param;
-
-    while (t < t_cam - 1e-9) {
-        double next_imu = std::ceil((t + 1e-9) / imu_dt) * imu_dt;
-        double t_next = std::min(next_imu, t_cam);
-        double dt = t_next - t;
-        if (dt < 1e-9) break;
-
-        ImuSample prev = interpolateSample(traj, t);
-        ImuSample next = interpolateSample(traj, t_next);
-
-        Eigen::Vector3d gyro = 0.5 * (prev.gyro + next.gyro) - bg;
-        Eigen::Vector3d prev_acc = R * (prev.acc - ba);
-        Eigen::Vector3d next_acc = R * Sophus::SO3d::exp(gyro * dt).matrix() * (next.acc - ba);
-        Eigen::Vector3d acc_mid = 0.5 * (prev_acc + next_acc);
-
-        P = P + V * dt + 0.5 * acc_mid * dt * dt;
-        V = V + acc_mid * dt;
-        R = R * Sophus::SO3d::exp(gyro * dt).matrix();
-        t = t_next;
-    }
-    return {R, P};
-}
 
 // ----- single-frame setup helper ------------------------------------------------
 
@@ -143,17 +45,17 @@ struct FrameData {
 };
 
 FrameData setupFrame(
-    const std::vector<ImuSample>& traj, double t_cam, double td, const Eigen::Vector3d& Bg,
+    const test::ImuTimeline& traj, double t_cam, double td, const Eigen::Vector3d& Bg,
     const Eigen::Vector3d& Ba, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
     const Eigen::Vector3d& P_w) {
     double t_imu = t_cam - td;
-    CameraState imu_cam = integrateImu(traj, t_imu, t_cam, Bg, Ba);
+    test::CameraState imu_cam = test::integrateImu(traj, t_imu, t_cam, Bg, Ba);
 
-    CameraState cs;
+    test::CameraState cs;
     cs.R = imu_cam.R * ric;
     cs.P = imu_cam.P + imu_cam.R * tic;
 
-    ImuSample param = interpolateSample(traj, t_imu);
+    test::ImuSample param = test::interpolateSample(traj, t_imu);
 
     FrameData fd;
     fd.P = param.P;
@@ -189,7 +91,8 @@ protected:
 
         Eigen::Vector3d a_body(0.5, -0.3, 2.0);
         Eigen::Vector3d w_body(0.8, 1.2, 0.6);
-        traj_ = generateTrajectory(2.0, 0.004, a_body, w_body, Ba_, Bg_);
+        traj_ =
+            test::generateConstantMotionTimeline(2.0, 0.004, a_body, w_body, Ba_, Bg_, -kGravity);
 
         // 3D point
         Eigen::Vector3d P_w(0.5, -0.1, 20.0);
@@ -206,7 +109,7 @@ protected:
         ba_arr_[2] = Ba_.z();
     }
 
-    std::vector<ImuSample> traj_;
+    test::ImuTimeline traj_;
     Eigen::Matrix3d ric_;
     Eigen::Vector3d tic_;
     Eigen::Vector3d Ba_, Bg_;
@@ -301,7 +204,8 @@ TEST(TwoViewFactorTest, MultiFrameTdConvergence) {
     Eigen::Vector3d Ba(0.08, -0.04, 0.03), Bg(0.012, -0.006, 0.004);
     double bg[3] = {Bg.x(), Bg.y(), Bg.z()}, ba[3] = {Ba.x(), Ba.y(), Ba.z()};
 
-    auto traj = generateTrajectory(2.0, 0.004, {0.5, -0.3, 2.0}, {0.8, 1.2, 0.6}, Ba, Bg);
+    auto traj = test::generateConstantMotionTimeline(
+        2.0, 0.004, {0.5, -0.3, 2.0}, {0.8, 1.2, 0.6}, Ba, Bg, -kGravity);
     Eigen::Vector3d P_w(0.5, -0.1, 20.0);
 
     const int N = 10;

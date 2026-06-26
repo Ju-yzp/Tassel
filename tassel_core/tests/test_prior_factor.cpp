@@ -1,3 +1,19 @@
+// =============================================================================
+// test_prior_factor.cpp
+//
+// Purpose:
+//   验证平方根边缘化输出和 MarginalizationPriorFactor 的残差/雅各比一致性。
+//
+// Test design:
+//   对 MargHelper::marginalizeSqrtToSqrt 使用 Eigen HouseholderQR 构造参考结果;
+//   对 prior factor 使用人工线性化数据, 分别检查残差计算、参数块布局和 manifold
+//   下的数值雅各比。
+//
+// Pass criteria:
+//   消元后的 sqrt_H/sqrt_b 与 QR 参考一致, prior factor residual 与线性模型一致,
+//   解析雅各比通过数值微分检查。
+// =============================================================================
+
 #include <gtest/gtest.h>
 
 #include <ceres/ceres.h>

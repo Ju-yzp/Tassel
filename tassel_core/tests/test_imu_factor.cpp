@@ -1,10 +1,17 @@
 // =============================================================================
-// test_imu_factor.cpp — IMU factor Jacobian verification & bias recovery
-// =============================================================================
+// test_imu_factor.cpp
 //
-// 生成含偏置游走的 IMU 轨迹 → 用错误偏置做预积分 →
-// 1. 数值微分验证 IMU 因子雅各比
-// 2. 固定位姿+速度, 优化偏置, 验证偏置向真值移动
+// Purpose:
+//   验证 IMU factor 的解析雅各比, 并检查偏置状态在优化中是否朝真实值收敛。
+//
+// Test design:
+//   使用 imu_test_utils 生成常加速度/常角速度轨迹, 再加入逐帧变化的真实偏置;
+//   预积分时故意使用错误 base bias。单因子部分用中心差分检查雅各比, 优化部分
+//   固定位姿和速度, 只让 bias 由残差反馈。
+//
+// Pass criteria:
+//   解析雅各比与数值雅各比在相对容差内一致, 优化后的加速度计和陀螺仪偏置比
+//   初值更接近真实偏置。
 // =============================================================================
 
 #include <gtest/gtest.h>
@@ -15,14 +22,13 @@
 #include <random>
 #include <vector>
 
-#include <sophus/so3.hpp>
-
 #include <ceres/ceres.h>
+#include <sophus/so3.hpp>
 
 #include "factor/imu_factor.h"
 #include "factor/integrator_base.h"
+#include "imu_test_utils.h"
 #include "tassel_utils/se3_right_manifold.h"
-#include "tassel_utils/types.h"
 
 namespace tassel_core {
 namespace {
@@ -83,32 +89,17 @@ protected:
 
         // 生成 IMU 轨迹
         int total_steps = num_frames_ * steps_per_frame_ + 1;
-        imu_states_.resize(total_steps);
-
-        Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
-        Eigen::Vector3d P = Eigen::Vector3d::Zero();
-        Eigen::Vector3d V = Eigen::Vector3d::Zero();
-
+        imu_timeline_ = test::generateConstantMotionTimeline(
+            total_steps * imu_dt_, imu_dt_, a_body_, w_body_, Eigen::Vector3d::Zero(),
+            Eigen::Vector3d::Zero());
+        imu_timeline_.states.resize(total_steps);
         for (int k = 0; k < total_steps; ++k) {
-            int f = std::min(k / steps_per_frame_, num_frames_ - 1);
-            ImuState s;
-            s.ts = k * imu_dt_;
-            s.R = R;
-            s.P = P;
-            s.V = V;
-            s.Ba = Ba_true_[f];
-            s.Bg = Bg_true_[f];
-            s.gyro = w_body_ + s.Bg;
-            s.acc = a_body_ + R.transpose() * tassel_utils::G + s.Ba;
-            imu_states_[k] = s;
-
-            if (k < total_steps - 1) {
-                double dt2 = imu_dt_ * 0.5;
-                Eigen::Matrix3d Rmid = R * Sophus::SO3d::exp(w_body_ * dt2).matrix();
-                V = V + Rmid * a_body_ * imu_dt_;
-                P = P + (imu_states_[k].V + V) * dt2;
-                R = R * Sophus::SO3d::exp(w_body_ * imu_dt_).matrix();
-            }
+            const int f = std::min(k / steps_per_frame_, num_frames_ - 1);
+            auto& sample = imu_timeline_.states[k];
+            sample.Ba = Ba_true_[f];
+            sample.Bg = Bg_true_[f];
+            sample.acc = a_body_ + sample.R.transpose() * tassel_utils::G + sample.Ba;
+            sample.gyro = w_body_ + sample.Bg;
         }
 
         // 提取帧状态
@@ -117,9 +108,9 @@ protected:
         frames_V_.resize(num_frames_);
         for (int f = 0; f < num_frames_; ++f) {
             int k = f * steps_per_frame_;
-            frames_R_[f] = imu_states_[k].R;
-            frames_P_[f] = imu_states_[k].P;
-            frames_V_[f] = imu_states_[k].V;
+            frames_R_[f] = imu_timeline_.states[k].R;
+            frames_P_[f] = imu_timeline_.states[k].P;
+            frames_V_[f] = imu_timeline_.states[k].V;
         }
 
         // 预积分 (线性化点 = base bias, 模拟未标定偏置)
@@ -129,9 +120,9 @@ protected:
             int start = f * steps_per_frame_, end = (f + 1) * steps_per_frame_;
             for (int k = start; k <= end; ++k) {
                 tassel_utils::IMUMeasurement m;
-                m.timestamp = imu_states_[k].ts;
-                m.acc = imu_states_[k].acc;
-                m.gyro = imu_states_[k].gyro;
+                m.timestamp = imu_timeline_.states[k].ts;
+                m.acc = imu_timeline_.states[k].acc;
+                m.gyro = imu_timeline_.states[k].gyro;
                 preints_[f]->propagate(m);
             }
         }
@@ -155,20 +146,13 @@ protected:
         }
     }
 
-    // --- data ---
-    struct ImuState {
-        double ts;
-        Eigen::Matrix3d R;
-        Eigen::Vector3d P, V, gyro, acc, Ba, Bg;
-    };
-
     double imu_dt_;
     int steps_per_frame_, num_frames_;
     Eigen::Vector3d a_body_, w_body_, Ba_base_, Bg_base_;
     Eigen::Matrix<double, 18, 18> noise_;
 
     std::vector<Eigen::Vector3d> Ba_true_, Bg_true_;
-    std::vector<ImuState> imu_states_;
+    test::ImuTimeline imu_timeline_;
     std::vector<Eigen::Matrix3d> frames_R_;
     std::vector<Eigen::Vector3d> frames_P_, frames_V_;
     std::vector<std::shared_ptr<MidPointIntegrator>> preints_;

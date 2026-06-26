@@ -43,7 +43,7 @@ public:
             cv_pts.emplace_back(static_cast<float>(p.x()), static_cast<float>(p.y()));
         std::vector<cv::Point2f> cv_out;
         cv::Mat I = cv::Mat::eye(3, 3, CV_64F);
-        cv::fisheye::undistortPoints(cv_pts, cv_out, k_, dist_coeffs_, I, k_);
+        cv::fisheye::undistortPoints(cv_pts, cv_out, k_, dist_coeffs_, I, I);
         std::vector<Eigen::Vector2d> out;
         out.reserve(cv_out.size());
         for (const auto& p : cv_out) out.emplace_back(p.x, p.y);

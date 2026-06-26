@@ -1,3 +1,17 @@
+// =============================================================================
+// test_params_parser.cpp
+//
+// Purpose:
+//   验证 ParamsParser 从 YAML 读取标量、Eigen 矩阵、cv::Mat 和嵌套字段的行为。
+//
+// Test design:
+//   使用与测试文件同目录的 test_params.yaml 作为固定输入, 覆盖 flat sequence、
+//   nested matrix、不同目标类型转换以及缺失字段/非法尺寸等错误路径。
+//
+// Pass criteria:
+//   合法字段解析为预期数值和矩阵尺寸, 非法或不匹配字段抛出预期异常。
+// =============================================================================
+
 #include <gtest/gtest.h>
 
 #include <Eigen/Core>
@@ -133,7 +147,6 @@ TEST_F(ParamsParserTest, ThrowsOnMissingNestedKey) {
 }
 
 TEST_F(ParamsParserTest, PrintedContent) {
-    // Verify the parser correctly reads and can be printed
     std::ostringstream oss;
     oss << "int_val: " << parser_->as<int>("int_val") << "\n"
         << "double_val: " << parser_->as<double>("double_val") << "\n"
@@ -149,6 +162,5 @@ TEST_F(ParamsParserTest, PrintedContent) {
     EXPECT_NE(out.find("string_val: hello_tassel"), std::string::npos);
     EXPECT_NE(out.find("nested inner.value: 777"), std::string::npos);
 
-    // also print to stdout for visual inspection
     std::cout << "\n─── ParamsParser read results ───\n" << out << "\n\n";
 }

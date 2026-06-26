@@ -1,3 +1,18 @@
+// =============================================================================
+// test_camera.cpp
+//
+// Purpose:
+//   验证相机模型的参数检查、畸变/去畸变一致性和解析雅各比。
+//
+// Test design:
+//   使用固定 RadTan 与 Equidistant 内参/畸变参数构造相机; 用 OpenCV 结果作为
+//   去畸变参考, 用中心差分作为 distort 对归一化坐标和相机参数的雅各比参考。
+//
+// Pass criteria:
+//   相机工厂能正确创建对象, 非法参数会被拒绝, 投影往返误差与解析雅各比误差
+//   均落在测试容差内。
+// =============================================================================
+
 #include <gtest/gtest.h>
 
 #include <opencv2/calib3d.hpp>
@@ -20,6 +35,7 @@ cv::Mat equi_D = (cv::Mat_<double>(1, 4) << 0.1, 0.01, 0.001, 0.0001);
 
 const int kWidth = 640;
 const int kHeight = 480;
+const std::vector<Eigen::Vector2d> kPixels = {{350, 200}, {150, 300}, {500, 400}, {320, 240}};
 
 // ── Numerical differentiation helpers for Jacobian verification ────────────
 
@@ -32,6 +48,24 @@ Eigen::Matrix2d numerical_dzn(
         J.col(i) = (cam->distort(uv_norm + d) - cam->distort(uv_norm - d)) / (2.0 * eps);
     }
     return J;
+}
+
+void expectVectorNear(const Eigen::Vector2d& a, const Eigen::Vector2d& b, double tol) {
+    EXPECT_NEAR(a(0), b(0), tol);
+    EXPECT_NEAR(a(1), b(1), tol);
+}
+
+void expectMatrixNear(
+    const Eigen::MatrixXd& analytic, const Eigen::MatrixXd& numeric, double tol,
+    const Eigen::Vector2d& uv) {
+    ASSERT_EQ(analytic.rows(), numeric.rows());
+    ASSERT_EQ(analytic.cols(), numeric.cols());
+    for (int r = 0; r < analytic.rows(); ++r) {
+        for (int c = 0; c < analytic.cols(); ++c) {
+            EXPECT_NEAR(analytic(r, c), numeric(r, c), tol)
+                << "uv=(" << uv(0) << ", " << uv(1) << ") elem(" << r << "," << c << ")";
+        }
+    }
 }
 
 template <typename CamType>
@@ -77,6 +111,65 @@ Eigen::Matrix<double, 2, 8> numerical_dzeta(
     return J;
 }
 
+template <typename UndistortFn>
+void expectUndistortMatchesOpenCV(
+    tassel_core::CameraBase* cam, const cv::Mat& K, const cv::Mat& D,
+    const std::vector<Eigen::Vector2d>& pixels, UndistortFn&& undistort) {
+    auto uv_norm = cam->undistort(pixels);
+    cv::Mat I = cv::Mat::eye(3, 3, CV_64F);
+    for (size_t i = 0; i < pixels.size(); ++i) {
+        std::vector<cv::Point2f> cv_in = {
+            cv::Point2f(static_cast<float>(pixels[i](0)), static_cast<float>(pixels[i](1)))};
+        std::vector<cv::Point2f> cv_out;
+        undistort(cv_in, cv_out, K, D, I);
+        expectVectorNear(uv_norm[i], Eigen::Vector2d(cv_out[0].x, cv_out[0].y), 1e-6);
+    }
+}
+
+void expectPixelRoundTrip(tassel_core::CameraBase* cam) {
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> dx(0, kWidth);
+    std::uniform_real_distribution<double> dy(0, kHeight);
+
+    for (int i = 0; i < 50; ++i) {
+        Eigen::Vector2d pixel_raw(dx(rng), dy(rng));
+        expectVectorNear(pixel_raw, cam->distort(cam->undistort(pixel_raw)), 0.5);
+    }
+}
+
+void expectDznMatchesFiniteDiff(tassel_core::CameraBase* cam, bool skip_center = false) {
+    constexpr double kEps = 1e-6;
+    constexpr double kTol = 1e-4;
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> rnd(-1.2, 1.2);
+
+    for (int k = 0; k < 20; ++k) {
+        Eigen::Vector2d uv(rnd(rng), rnd(rng));
+        if (skip_center && uv.norm() < 0.01) continue;
+        Eigen::MatrixXd H_analytic;
+        cam->get_jacobian_dzn(uv, H_analytic);
+        expectMatrixNear(H_analytic, numerical_dzn(cam, uv, kEps), kTol, uv);
+    }
+}
+
+template <typename CamType>
+void expectDzetaMatchesFiniteDiff(
+    tassel_core::CameraBase* cam, const cv::Mat& K, const cv::Mat& D, bool skip_center = false) {
+    constexpr double kEps = 1e-5;
+    constexpr double kTol = 1e-4;
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> rnd(-1.2, 1.2);
+
+    for (int k = 0; k < 15; ++k) {
+        Eigen::Vector2d uv(rnd(rng), rnd(rng));
+        if (skip_center && uv.norm() < 0.01) continue;
+        Eigen::MatrixXd H_analytic;
+        cam->get_jacobian_dzeta(uv, H_analytic);
+        expectMatrixNear(
+            H_analytic, numerical_dzeta<CamType>(K, D, kWidth, kHeight, uv, kEps), kTol, uv);
+    }
+}
+
 }  // namespace
 
 TEST(CameraRadTan, ThrowsOnInvalidIntrinsicsSize) {
@@ -110,89 +203,23 @@ protected:
         cam_ = std::make_unique<tassel_core::CameraRadTan>(radtan_K, radtan_D, kWidth, kHeight);
     }
 
-    Eigen::Vector2d normalize(const Eigen::Vector2d& pixel) {
-        double fx = radtan_K.at<double>(0, 0);
-        double fy = radtan_K.at<double>(1, 1);
-        double cx = radtan_K.at<double>(0, 2);
-        double cy = radtan_K.at<double>(1, 2);
-        return Eigen::Vector2d((pixel(0) - cx) / fx, (pixel(1) - cy) / fy);
-    }
-
     tassel_core::Camera cam_;
 };
 
 TEST_F(CameraRadTanTest, UndistortMatchesOpenCV) {
-    std::vector<Eigen::Vector2d> pixels = {
-        {350, 200},
-        {150, 300},
-        {500, 400},
-        {320, 225},
-    };
-    auto uv_norm = cam_->undistort(pixels);
-    for (size_t i = 0; i < pixels.size(); ++i) {
-        std::vector<cv::Point2f> cv_in = {
-            cv::Point2f(static_cast<float>(pixels[i](0)), static_cast<float>(pixels[i](1)))};
-        std::vector<cv::Point2f> cv_out;
-        cv::Mat I = cv::Mat::eye(3, 3, CV_64F);
-        cv::undistortPoints(cv_in, cv_out, radtan_K, radtan_D, I);
-        EXPECT_NEAR(uv_norm[i](0), cv_out[0].x, 1e-6);
-        EXPECT_NEAR(uv_norm[i](1), cv_out[0].y, 1e-6);
-    }
+    expectUndistortMatchesOpenCV(
+        cam_.get(), radtan_K, radtan_D, kPixels,
+        [](auto& cv_in, auto& cv_out, const auto& K, const auto& D, const auto& I) {
+            cv::undistortPoints(cv_in, cv_out, K, D, I);
+        });
 }
 
-TEST_F(CameraRadTanTest, PixelRoundTrip) {
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<double> dx(0, kWidth);
-    std::uniform_real_distribution<double> dy(0, kHeight);
+TEST_F(CameraRadTanTest, PixelRoundTrip) { expectPixelRoundTrip(cam_.get()); }
 
-    for (int i = 0; i < 50; ++i) {
-        Eigen::Vector2d pixel_raw(dx(rng), dy(rng));
-        Eigen::Vector2d norm_undist = cam_->undistort(pixel_raw);
-        Eigen::Vector2d pixel_redist = cam_->distort(norm_undist);
-        EXPECT_NEAR(pixel_raw(0), pixel_redist(0), 0.5);
-        EXPECT_NEAR(pixel_raw(1), pixel_redist(1), 0.5);
-    }
-}
-
-TEST_F(CameraRadTanTest, JacobianDZN) {
-    const double eps = 1e-6;
-    const double tol = 1e-4;
-
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<double> rnd(-1.2, 1.2);
-
-    for (int k = 0; k < 20; ++k) {
-        Eigen::Vector2d uv(rnd(rng), rnd(rng));
-        Eigen::MatrixXd H_analytic;
-        cam_->get_jacobian_dzn(uv, H_analytic);
-        Eigen::Matrix2d H_num = numerical_dzn(cam_.get(), uv, eps);
-
-        for (int i = 0; i < 2; ++i)
-            for (int j = 0; j < 2; ++j)
-                EXPECT_NEAR(H_analytic(i, j), H_num(i, j), tol)
-                    << "uv=(" << uv(0) << ", " << uv(1) << ") elem(" << i << "," << j << ")";
-    }
-}
+TEST_F(CameraRadTanTest, JacobianDZN) { expectDznMatchesFiniteDiff(cam_.get()); }
 
 TEST_F(CameraRadTanTest, JacobianDZeta) {
-    const double eps = 1e-5;
-    const double tol = 1e-4;
-
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<double> rnd(-1.2, 1.2);
-
-    for (int k = 0; k < 15; ++k) {
-        Eigen::Vector2d uv(rnd(rng), rnd(rng));
-        Eigen::MatrixXd H_analytic;
-        cam_->get_jacobian_dzeta(uv, H_analytic);
-        Eigen::Matrix<double, 2, 8> H_num = numerical_dzeta<tassel_core::CameraRadTan>(
-            radtan_K, radtan_D, kWidth, kHeight, uv, eps);
-
-        for (int i = 0; i < 2; ++i)
-            for (int j = 0; j < 8; ++j)
-                EXPECT_NEAR(H_analytic(i, j), H_num(i, j), tol)
-                    << "uv=(" << uv(0) << ", " << uv(1) << ") elem(" << i << "," << j << ")";
-    }
+    expectDzetaMatchesFiniteDiff<tassel_core::CameraRadTan>(cam_.get(), radtan_K, radtan_D);
 }
 
 // ── CameraEqui ─────────────────────────────────────────────────────────────
@@ -203,49 +230,18 @@ protected:
         cam_ = std::make_unique<tassel_core::CameraEqui>(equi_K, equi_D, kWidth, kHeight);
     }
 
-    Eigen::Vector2d normalize(const Eigen::Vector2d& pixel) {
-        double fx = equi_K.at<double>(0, 0);
-        double fy = equi_K.at<double>(1, 1);
-        double cx = equi_K.at<double>(0, 2);
-        double cy = equi_K.at<double>(1, 2);
-        return Eigen::Vector2d((pixel(0) - cx) / fx, (pixel(1) - cy) / fy);
-    }
-
     tassel_core::Camera cam_;
 };
 
 TEST_F(CameraEquiTest, UndistortMatchesOpenCV) {
-    std::vector<Eigen::Vector2d> pixels = {
-        {350, 200},
-        {150, 300},
-        {500, 400},
-        {320, 240},
-    };
-    auto uv_norm = cam_->undistort(pixels);
-    for (size_t i = 0; i < pixels.size(); ++i) {
-        std::vector<cv::Point2f> cv_in = {
-            cv::Point2f(static_cast<float>(pixels[i](0)), static_cast<float>(pixels[i](1)))};
-        std::vector<cv::Point2f> cv_out;
-        cv::Mat I = cv::Mat::eye(3, 3, CV_64F);
-        cv::fisheye::undistortPoints(cv_in, cv_out, equi_K, equi_D, I);
-        EXPECT_NEAR(uv_norm[i](0), cv_out[0].x, 1e-6);
-        EXPECT_NEAR(uv_norm[i](1), cv_out[0].y, 1e-6);
-    }
+    expectUndistortMatchesOpenCV(
+        cam_.get(), equi_K, equi_D, kPixels,
+        [](auto& cv_in, auto& cv_out, const auto& K, const auto& D, const auto& I) {
+            cv::fisheye::undistortPoints(cv_in, cv_out, K, D, I);
+        });
 }
 
-TEST_F(CameraEquiTest, PixelRoundTrip) {
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<double> dx(0, kWidth);
-    std::uniform_real_distribution<double> dy(0, kHeight);
-
-    for (int i = 0; i < 50; ++i) {
-        Eigen::Vector2d pixel_raw(dx(rng), dy(rng));
-        Eigen::Vector2d norm_undist = cam_->undistort(pixel_raw);
-        Eigen::Vector2d pixel_redist = cam_->distort(norm_undist);
-        EXPECT_NEAR(pixel_raw(0), pixel_redist(0), 0.5);
-        EXPECT_NEAR(pixel_raw(1), pixel_redist(1), 0.5);
-    }
-}
+TEST_F(CameraEquiTest, PixelRoundTrip) { expectPixelRoundTrip(cam_.get()); }
 
 TEST_F(CameraEquiTest, ZeroDistortionRoundTrip) {
     cv::Mat zero_D = (cv::Mat_<double>(1, 4) << 0.0, 0.0, 0.0, 0.0);
@@ -256,53 +252,18 @@ TEST_F(CameraEquiTest, ZeroDistortionRoundTrip) {
     };
     for (const auto& uv_norm : norms) {
         Eigen::Vector2d uv_dist = cam_zero.distort(uv_norm);
-        Eigen::Vector2d uv_norm_back = normalize(uv_dist);
+        Eigen::Vector2d uv_norm_back(
+            (uv_dist(0) - equi_K.at<double>(0, 2)) / equi_K.at<double>(0, 0),
+            (uv_dist(1) - equi_K.at<double>(1, 2)) / equi_K.at<double>(1, 1));
         EXPECT_NEAR(uv_norm(0), uv_norm_back(0), 1e-6);
         EXPECT_NEAR(uv_norm(1), uv_norm_back(1), 1e-6);
     }
 }
 
-TEST_F(CameraEquiTest, JacobianDZN) {
-    const double eps = 1e-6;
-    const double tol = 1e-4;
-
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<double> rnd(-1.2, 1.2);
-
-    for (int k = 0; k < 20; ++k) {
-        Eigen::Vector2d uv(rnd(rng), rnd(rng));
-        if (uv.norm() < 0.01) continue;  // skip singularity at r=0
-        Eigen::MatrixXd H_analytic;
-        cam_->get_jacobian_dzn(uv, H_analytic);
-        Eigen::Matrix2d H_num = numerical_dzn(cam_.get(), uv, eps);
-
-        for (int i = 0; i < 2; ++i)
-            for (int j = 0; j < 2; ++j)
-                EXPECT_NEAR(H_analytic(i, j), H_num(i, j), tol)
-                    << "uv=(" << uv(0) << ", " << uv(1) << ") elem(" << i << "," << j << ")";
-    }
-}
+TEST_F(CameraEquiTest, JacobianDZN) { expectDznMatchesFiniteDiff(cam_.get(), true); }
 
 TEST_F(CameraEquiTest, JacobianDZeta) {
-    const double eps = 1e-5;
-    const double tol = 1e-4;
-
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<double> rnd(-1.2, 1.2);
-
-    for (int k = 0; k < 15; ++k) {
-        Eigen::Vector2d uv(rnd(rng), rnd(rng));
-        if (uv.norm() < 0.01) continue;  // skip singularity at r=0
-        Eigen::MatrixXd H_analytic;
-        cam_->get_jacobian_dzeta(uv, H_analytic);
-        Eigen::Matrix<double, 2, 8> H_num =
-            numerical_dzeta<tassel_core::CameraEqui>(equi_K, equi_D, kWidth, kHeight, uv, eps);
-
-        for (int i = 0; i < 2; ++i)
-            for (int j = 0; j < 8; ++j)
-                EXPECT_NEAR(H_analytic(i, j), H_num(i, j), tol)
-                    << "uv=(" << uv(0) << ", " << uv(1) << ") elem(" << i << "," << j << ")";
-    }
+    expectDzetaMatchesFiniteDiff<tassel_core::CameraEqui>(cam_.get(), equi_K, equi_D, true);
 }
 
 TEST(CameraEqui, FourCoefDistortionIsValid) {

@@ -1,3 +1,18 @@
+// =============================================================================
+// test_stereo_tracking.cpp
+//
+// Purpose:
+//   手动检查双目 FeatureTracker 在 OAK 左右目实时图像上的匹配和跟踪效果。
+//
+// Test design:
+//   启动 DepthAI 左右 mono pipeline, 用左右相机各自的 RadTan 标定参数初始化 tracker,
+//   连续执行 stereoTracking 并把左右结果拼接显示。
+//
+// Pass criteria:
+//   这是依赖硬件和显示环境的 smoke test; 左右图像能同步显示, 特征匹配/跟踪结果
+//   稳定可见, 按 Esc 可退出。
+// =============================================================================
+
 #include <depthai/depthai.hpp>
 
 #include <opencv2/highgui.hpp>

@@ -1,3 +1,18 @@
+// =============================================================================
+// test_landmark_block.cpp
+//
+// Purpose:
+//   验证 LandmarkBlock 的存储布局、landmark 列 QR 消元和消元后稠密系统提取。
+//
+// Test design:
+//   构造不同帧数/观测数/状态维度的随机块, 对内部 storage 执行 QR; 同时用直接
+//   稠密计算作为参考, 检查 landmark 列被消掉、范数保持和边界尺寸处理。
+//
+// Pass criteria:
+//   分配尺寸正确, QR 后 landmark 非 pivot 行接近 0, Frobenius 范数保持, 提取出的
+//   kept system 与参考计算一致, 压力测试不触发维度错误。
+// =============================================================================
+
 #include <gtest/gtest.h>
 
 #include <Eigen/Core>
@@ -136,7 +151,6 @@ TEST_F(LandmarkBlockTest, QRGivensRotationExact) {
 
     int lm = lb.get_landmark_index();
     int res = lb.get_residual_index();
-    int pad = lb.get_padding_index();
 
     s(0, 0) = 1;
     s(0, lm) = 2;
