@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include <Eigen/SVD>
+#include <cmath>
 #include <vector>
 
 #include "state/state.h"
@@ -51,36 +52,51 @@ void Feature::monoTriangulate(
     }
 
     Eigen::Matrix3d reference_r = state.Rs[start_frame_id] * ric;
-    Eigen::Vector3d reference_t = reference_r * tic + state.Ps[start_frame_id];
+    Eigen::Vector3d reference_t = state.Rs[start_frame_id] * tic + state.Ps[start_frame_id];
+    Eigen::Vector3d reference_ray = observations[0].uv.normalized();
 
     std::vector<Eigen::Matrix<double, 3, 4>> poses;
     std::vector<Eigen::Vector2d> uvs;
+    poses.reserve(observations.size());
+    uvs.reserve(observations.size());
 
-    int cur_frame_id = start_frame_id;
-    for (auto& observation : observations) {
+    Eigen::Matrix<double, 3, 4> reference_pose = Eigen::Matrix<double, 3, 4>::Identity();
+    poses.push_back(reference_pose);
+    uvs.push_back(observations[0].uv.head<2>());
+
+    for (size_t obs_idx = 1; obs_idx < observations.size(); ++obs_idx) {
+        const auto& observation = observations[obs_idx];
+        int cur_frame_id = static_cast<int>(start_frame_id + obs_idx);
         Eigen::Matrix3d cur_r = state.Rs[cur_frame_id] * ric;
         Eigen::Vector3d cur_t = state.Rs[cur_frame_id] * tic + state.Ps[cur_frame_id];
         Eigen::Matrix3d dr = cur_r.transpose() * reference_r;
         Eigen::Vector3d dt = cur_r.transpose() * (reference_t - cur_t);
+        Eigen::Vector3d t_ref_cur = reference_r.transpose() * (cur_t - reference_t);
+        Eigen::Vector3d transverse_t = t_ref_cur - reference_ray * reference_ray.dot(t_ref_cur);
 
-        if (dt.norm() > min_translation) {
+        if (transverse_t.norm() > min_translation) {
             Eigen::Matrix<double, 3, 4> pose;
             pose.block<3, 3>(0, 0) = dr;
             pose.block<3, 1>(0, 3) = dt;
             poses.push_back(pose);
             uvs.push_back(observation.uv.head<2>());
         }
-        ++cur_frame_id;
     }
 
-    if (poses.size() < 1) return;
+    if (poses.size() < 2) return;
 
     double cond;
     Eigen::Vector4d h = tassel_utils::triangulateMultiView(poses, uvs, &cond);
-    if (cond < 1e6) {
-        Eigen::Vector3d p = tassel_utils::dehomogenize(h);
-        if (p.z() > min_depth && p.z() < max_depth) {
-            estimated_depth = p.z();
+    if (std::isfinite(cond) && cond < 1e6 && std::abs(h(3)) > 1e-12) {
+        Eigen::Vector3d p_ref = tassel_utils::dehomogenize(h);
+        bool positive_depth =
+            std::isfinite(p_ref.z()) && p_ref.z() > min_depth && p_ref.z() < max_depth;
+        for (const auto& pose : poses) {
+            Eigen::Vector3d p_cur = pose.block<3, 3>(0, 0) * p_ref + pose.block<3, 1>(0, 3);
+            positive_depth = positive_depth && std::isfinite(p_cur.z()) && p_cur.z() > min_depth;
+        }
+        if (positive_depth) {
+            estimated_depth = p_ref.z();
         }
     }
 }

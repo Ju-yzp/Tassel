@@ -29,6 +29,12 @@ inline double computeParallax(const cv::Point2f& p1, const cv::Point2f& p2) {
     double dy = p1.y - p2.y;
     return sqrt(dx * dx + dy * dy);
 }
+
+inline bool canUseFeature(const Feature& feature, int tracked_times_thres) {
+    const int obs_num = static_cast<int>(feature.observations.size());
+    return feature.estimated_depth != INVALID_DEPTH && obs_num >= 2 &&
+           (feature.has_been_used || obs_num >= tracked_times_thres);
+}
 }  // namespace
 
 FeatureManager::FeatureManager(
@@ -74,7 +80,7 @@ void FeatureManager::triangulate(
     auto cs = state.get_compensated_state();
     for (auto& [id, feature] : features_) {
         feature.stereoTriangulate(ric, tic, ric1, tic1, min_depth_, max_depth_);
-        feature.monoTriangulate(cs, ric, tic, min_translation_, min_depth_, max_depth_);
+        // feature.monoTriangulate(cs, ric, tic, min_translation_, min_depth_, max_depth_);
     }
 }
 
@@ -151,12 +157,11 @@ void FeatureManager::reset() { features_.clear(); }
 std::vector<Feature*> FeatureManager::collectMargFeatures() {
     std::vector<Feature*> result;
     for (auto& [id, feature] : features_) {
-        bool is_marginalized =
-            !((feature.start_frame_id != 0) || (feature.estimated_depth == INVALID_DEPTH) ||
-              (static_cast<int>(feature.observations.size()) < tracked_times_thres_));
-        if (is_marginalized) {
-            result.push_back(&feature);
+        if (feature.start_frame_id != 0 || !canUseFeature(feature, tracked_times_thres_)) {
+            continue;
         }
+        feature.has_been_used = true;
+        result.push_back(&feature);
     }
     return result;
 }
@@ -188,11 +193,10 @@ std::vector<Eigen::Vector3d> FeatureManager::getPointCloud(
 std::vector<Feature*> FeatureManager::collectLandmarks() {
     std::vector<Feature*> result;
     for (auto& [id, feature] : features_) {
-        if (feature.estimated_depth == INVALID_DEPTH ||
-            static_cast<int>(feature.observations.size()) < tracked_times_thres_) {
+        if (!canUseFeature(feature, tracked_times_thres_)) {
             continue;
         }
-        ++feature.optimized_count;
+        feature.has_been_used = true;
         result.push_back(&feature);
     }
     return result;

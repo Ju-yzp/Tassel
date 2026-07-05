@@ -220,8 +220,8 @@ void Estimator::optimize() {
         problem.AddResidualBlock(prior_cost, nullptr, prior_blocks);
     }
 
-    ceres::LossFunction* loss =
-        new ceres::HuberLoss(params_.visual_factor_weight * params_.visual_factor_weight);
+    const double visual_huber_delta = params_.reproj_huber_thres * params_.visual_factor_weight;
+    ceres::LossFunction* loss = new ceres::HuberLoss(visual_huber_delta);
     std::vector<double> inv_depth_params(features.size());
     for (size_t k = 0; k < features.size(); ++k) {
         double d = features[k]->estimated_depth;
@@ -255,7 +255,7 @@ void Estimator::optimize() {
     visitPreintegrators([&](auto& preintegrators) {
         using Integrator = typename std::decay_t<decltype(preintegrators)>::value_type;
         for (int i = 0; i < state_->cur_frame_count; ++i) {
-            if (preintegrators[i].buffer.size() < 2) continue;
+            if (preintegrators[i].buffer.size() < 2 || preintegrators[i].sum_dt > 2.0) continue;
             auto pint_ptr = std::shared_ptr<Integrator>(&preintegrators[i], [](Integrator*) {});
             auto* imu_cost = new IMUFactor<Integrator>(pint_ptr);
             problem.AddResidualBlock(
@@ -298,6 +298,7 @@ void Estimator::optimize() {
 void Estimator::buildPrior() {
     const int n = state_->max_frame_count;
     state_->stateToParams();
+    const double visual_huber_delta = params_.reproj_huber_thres * params_.visual_factor_weight;
 
     auto marg_features = feature_manager_->collectMargFeatures();
     spdlog::info("{} feature marginals", static_cast<int>(marg_features.size()));
@@ -307,10 +308,8 @@ void Estimator::buildPrior() {
         pint_ptrs.push_back(&preintegrators[0]);
 
         auto marg = MarginlizationSqrt<Integrator>(
-            marg_features,
-            std::make_unique<ceres::HuberLoss>(
-                params_.visual_factor_weight * params_.visual_factor_weight),
-            state_, pint_ptrs, params_.ric, params_.tic, marg_data_.get());
+            marg_features, std::make_unique<ceres::HuberLoss>(visual_huber_delta), state_,
+            pint_ptrs, params_.ric, params_.tic, marg_data_.get());
         marg.allocate();
         marg.linearize();
         marg.performQRAll();

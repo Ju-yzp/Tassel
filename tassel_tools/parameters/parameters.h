@@ -50,6 +50,7 @@ struct Parameters {
 
     // Landmark and keyframe management: consumed by FeatureManager.
     double reproj_err_thres;
+    double reproj_huber_thres;
     double parallax_thres;
     int min_tracked_pts;
     int tracked_times_thres;
@@ -121,6 +122,7 @@ private:
 
     void loadFeatureManager(ParamsParser& parser) {
         reproj_err_thres = parser.as<double>("reproj_err_thres");
+        reproj_huber_thres = parser.as<double>("reproj_huber_thres");
         parallax_thres = parser.as<double>("parallax_thres");
         min_tracked_pts = parser.as<int>("min_tracked_pts");
         tracked_times_thres = parser.as<int>("tracked_times_thres");

@@ -1,0 +1,81 @@
+---
+cam0:
+    camera_model: radtan
+    T_cam_imu:
+        - [0.0148655429818, 0.999557249008, -0.0257744366974, 0.0652229095355]
+        - [-0.999880929699, 0.0149672133247, 0.00375618835797, -0.0207063854927]
+        - [0.00414029679422, 0.025715529948, 0.999660727178, -0.00805460246003]
+        - [0.0, 0.0, 0.0, 1.0]
+    distortion_coeffs: [-0.28340811, 0.07395907, 0.00019359, 1.76187114e-05]
+    intrinsics:
+        - [458.654, 0.0, 367.215]
+        - [0.0, 457.296, 248.375]
+        - [0.0, 0.0, 1.0]
+
+cam1:
+    camera_model: radtan
+    T_cam_imu:
+        - [0.0125552670891, 0.999598781151, -0.0253898008917, -0.0449019806825]
+        - [-0.999755099723, 0.0130119051815, 0.0179005838253, -0.0205697712589]
+        - [0.0182237714554, 0.0251588363116, 0.999517347078, -0.00863813512603]
+        - [0.0, 0.0, 0.0, 1.0]
+    distortion_coeffs: [-0.28368365, 0.07451284, -0.00010473, -3.55590700e-05]
+    intrinsics:
+        - [457.587, 0.0, 379.999]
+        - [0.0, 456.134, 255.238]
+        - [0.0, 0.0, 1.0]
+
+rows: 480
+cols: 752
+per_grid_rows: 40
+per_grid_cols: 50
+edge_x: 40
+edge_y: 30
+mask_radius: 25.0
+min_feature_num: 150
+
+flow_back: true
+max_square_move_dist: 1.0
+min_gradient: 10.0
+enable_statistics: true
+
+reproj_err_thres: 2.0
+reproj_huber_thres: 1.0
+
+parallax_thres: 20.0
+tracked_times_thres: 3
+min_depth: 0.2
+max_depth: 7.0
+min_translation: 0.06
+min_tracked_pts: 90
+
+num_iterations: 7
+max_frame_count: 10
+integrator_type: midpoint
+
+initial_exposure_time_us: 6000
+
+visual_factor_weight: 300.0
+
+num_init_iterations: 8
+
+acc_n: 2.0000e-3
+acc_w: 3.0000e-3
+gyr_n: 1.6968e-4
+gyr_w: 1.9393e-5
+g_norm: 9.81
+
+acc_bias: [0.0, 0.0, 0.0]
+
+num_threads: 1
+init_time_span: 5.0
+gravity_diff_threshold: 0.21
+dt_gyro_threshold: 0.3
+sfm_min_seed_pts: 10
+sfm_min_e_inliers: 8
+sfm_e_ransac_threshold: 0.004
+sfm_min_pnp_pts: 10
+sfm_pnp_reproj_threshold: 0.03
+sfm_max_bad_pnp_ratio: 0.3
+sfm_ba_max_iterations: 10
+sfm_ba_num_threads: 5

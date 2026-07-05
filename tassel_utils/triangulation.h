@@ -3,6 +3,7 @@
 
 #include <Eigen/Core>
 #include <Eigen/SVD>
+#include <limits>
 #include <vector>
 
 namespace tassel_utils {
@@ -28,6 +29,10 @@ inline Eigen::Vector4d triangulateTwoView(
 inline Eigen::Vector4d triangulateMultiView(
     const std::vector<Eigen::Matrix<double, 3, 4>>& poses, const std::vector<Eigen::Vector2d>& uvs,
     double* cond = nullptr) {
+    if (poses.size() != uvs.size() || uvs.size() < 2) {
+        if (cond) *cond = std::numeric_limits<double>::infinity();
+        return Eigen::Vector4d::Constant(std::numeric_limits<double>::quiet_NaN());
+    }
     int n = static_cast<int>(uvs.size());
     Eigen::MatrixXd A(2 * n, 4);
     for (int i = 0; i < n; ++i) {

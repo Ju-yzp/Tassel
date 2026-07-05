@@ -39,50 +39,47 @@ void LandmarkBlock::linearize(
     Eigen::Matrix<double, 2, 1> residual;
 
     Eigen::Matrix2d sqrt_info = state.visual_sqrt_info;
-    for (int offset = 1; offset < static_cast<int>(observations.size()); ++offset) {
-        int target_id = start_frame_id + offset;
-        Eigen::Vector2d pt_j(observations[offset].pt.x, observations[offset].pt.y);
-        double inv_depth = 1.0 / depth;
-        auto visual_factor = new VisualFactor(
-            uv_i, pt_j, ric, tic, state.gyro_vec[start_frame_id], state.gyro_vec[target_id],
-            state.acc_vec[start_frame_id], state.acc_vec[target_id],
-            state.params_speed_bias[start_frame_id].data(),
-            state.params_speed_bias[target_id].data(),
-            state.params_speed_bias[start_frame_id].data() + 6,
-            state.params_speed_bias[target_id].data() + 6,
-            state.params_speed_bias[start_frame_id].data() + 3,
-            state.params_speed_bias[target_id].data() + 3, sqrt_info, state.camera);
+    int offset = 1;
+    int target_id = start_frame_id + offset;
+    Eigen::Vector2d pt_j(observations[offset].pt.x, observations[offset].pt.y);
+    double inv_depth = 1.0 / depth;
+    auto visual_factor = new VisualFactor(
+        uv_i, pt_j, ric, tic, state.gyro_vec[start_frame_id], state.gyro_vec[target_id],
+        state.acc_vec[start_frame_id], state.acc_vec[target_id],
+        state.params_speed_bias[start_frame_id].data(), state.params_speed_bias[target_id].data(),
+        state.params_speed_bias[start_frame_id].data() + 6,
+        state.params_speed_bias[target_id].data() + 6,
+        state.params_speed_bias[start_frame_id].data() + 3,
+        state.params_speed_bias[target_id].data() + 3, sqrt_info, state.camera);
 
-        std::vector<double*> jacobians;
-        jacobians.push_back(jacobian_pose_i.data());
-        jacobians.push_back(jacobian_pose_j.data());
-        jacobians.push_back(jacobian_dt.data());
-        jacobians.push_back(jacobian_landmark.data());
+    std::vector<double*> jacobians;
+    jacobians.push_back(jacobian_pose_i.data());
+    jacobians.push_back(jacobian_pose_j.data());
+    jacobians.push_back(jacobian_dt.data());
+    jacobians.push_back(jacobian_landmark.data());
 
-        std::vector<double const*> parameters;
-        parameters.push_back(state.params_pose[start_frame_id].data());
-        parameters.push_back(state.params_pose[target_id].data());
-        parameters.push_back(&state.param_delay_time);
-        parameters.push_back(&inv_depth);
+    std::vector<double const*> parameters;
+    parameters.push_back(state.params_pose[start_frame_id].data());
+    parameters.push_back(state.params_pose[target_id].data());
+    parameters.push_back(&state.param_delay_time);
+    parameters.push_back(&inv_depth);
 
-        visual_factor->Evaluate(parameters.data(), residual.data(), jacobians.data());
-        delete visual_factor;
+    visual_factor->Evaluate(parameters.data(), residual.data(), jacobians.data());
+    delete visual_factor;
 
-        double sqrt_loss = 1.0;
-        if (loss_) {
-            double s = residual.squaredNorm();
-            double rho[3];
-            loss_->Evaluate(s, rho);
-            sqrt_loss = std::sqrt(rho[1]);
-        }
-        double scale = sqrt_loss;
-        int row = (offset - 1) * 2;
-        storage_.block<2, 6>(row, start_frame_id * dim_) = scale * jacobian_pose_i;
-        storage_.block<2, 6>(row, target_id * dim_) = scale * jacobian_pose_j;
-        storage_.block<2, 1>(row, lm_idx_) = scale * jacobian_landmark;
-        storage_.block<2, 1>(row, res_idx_) = scale * residual;
-        break;
+    double sqrt_loss = 1.0;
+    if (loss_) {
+        double s = residual.squaredNorm();
+        double rho[3];
+        loss_->Evaluate(s, rho);
+        sqrt_loss = std::sqrt(rho[1]);
     }
+    double scale = sqrt_loss;
+    int row = (offset - 1) * 2;
+    storage_.block<2, 6>(row, start_frame_id * dim_) = scale * jacobian_pose_i;
+    storage_.block<2, 6>(row, target_id * dim_) = scale * jacobian_pose_j;
+    storage_.block<2, 1>(row, lm_idx_) = scale * jacobian_landmark;
+    storage_.block<2, 1>(row, res_idx_) = scale * residual;
 }
 
 void LandmarkBlock::performQR() {
@@ -106,6 +103,9 @@ void LandmarkBlock::performQR() {
 void LandmarkBlock::get_dense_Q2Jp_Q2r(
     Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r, int start_row) const {
     int kept_rows = num_rows_ - 1;
+    if (kept_rows <= 0) {
+        return;
+    }
     Q2r.segment(start_row, kept_rows) = storage_.col(res_idx_).tail(kept_rows);
     Q2Jp.block(start_row, 0, kept_rows, padding_idx_) =
         storage_.block(1, 0, kept_rows, padding_idx_);

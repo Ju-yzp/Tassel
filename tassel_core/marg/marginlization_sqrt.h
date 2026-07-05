@@ -38,9 +38,11 @@ public:
     }
 
     void allocate() {
-        landmark_blocks_.resize(marg_features_.size());
+        landmark_blocks_.clear();
+        landmark_blocks_.reserve(marg_features_.size());
         for (size_t idx = 0; idx < marg_features_.size(); ++idx) {
-            auto& lmb = landmark_blocks_[idx];
+            landmark_blocks_.emplace_back(preintegrators_.empty() ? 6 : 15, loss_function_.get());
+            auto& lmb = landmark_blocks_.back();
             lmb.allocate(
                 state_->max_frame_count,
                 static_cast<int>(marg_features_[idx]->observations.size()) - 1,

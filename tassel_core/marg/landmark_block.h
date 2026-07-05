@@ -25,7 +25,7 @@ public:
 
     inline int get_num_rows() const { return num_rows_; }
 
-    inline int get_kept_rows() const { return num_rows_ - 1; }
+    inline int get_kept_rows() const { return std::max(num_rows_ - 1, 0); }
 
     inline int get_padding_index() const { return padding_idx_; }
 
