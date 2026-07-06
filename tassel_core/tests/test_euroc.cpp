@@ -273,6 +273,19 @@ std::vector<tassel_utils::IMUMeasurement> loadImuCsv(const fs::path& csv_path) {
     return measurements;
 }
 
+fs::path resolveSequenceDir(const fs::path& sequence_dir) {
+    if (fs::exists(sequence_dir / "mav0" / "cam0" / "data.csv")) {
+        return sequence_dir;
+    }
+
+    const fs::path nested_sequence_dir = sequence_dir / sequence_dir.filename();
+    if (fs::exists(nested_sequence_dir / "mav0" / "cam0" / "data.csv")) {
+        return nested_sequence_dir;
+    }
+
+    return sequence_dir;
+}
+
 std::vector<StereoFrame> makeStereoFrames(const fs::path& sequence_dir) {
     const fs::path cam0_dir = sequence_dir / "mav0" / "cam0";
     const fs::path cam1_dir = sequence_dir / "mav0" / "cam1";
@@ -328,24 +341,25 @@ int main(int argc, char** argv) {
         (argc >= 2) ? fs::path(argv[1]) : fs::path("/home/adrewn/Tassel/config/euroc.yaml");
     const fs::path sequence_dir = (argc >= 3) ? fs::path(argv[2])
                                               : fs::path(
-                                                    "/home/adrewn/Tassel/dataset/"
+                                                    "/home/adrewn/Tassel/datasets/"
                                                     "machine_hall/MH_01_easy");
     const size_t max_frames = (argc >= 4) ? static_cast<size_t>(std::stoul(argv[3])) : 0;
     const double replay_hz = (argc >= 5) ? std::stod(argv[4]) : 20.0;
 
-    if (!fs::exists(sequence_dir / "mav0" / "cam0" / "data.csv")) {
+    const fs::path resolved_sequence_dir = resolveSequenceDir(sequence_dir);
+    if (!fs::exists(resolved_sequence_dir / "mav0" / "cam0" / "data.csv")) {
         std::cerr << "[EuRoC] sequence is not extracted: " << sequence_dir << "\n"
-                  << "        unzip " << (sequence_dir / "MH_01_easy.zip") << " -d " << sequence_dir
-                  << "\n";
+                  << "        expected mav0/cam0/data.csv directly under the sequence directory "
+                     "or under a same-named child directory\n";
         return 0;
     }
 
     tassel_tools::Parameters params(config_path.string());
-    auto frames = makeStereoFrames(sequence_dir);
-    auto imu_measurements = loadImuCsv(sequence_dir / "mav0" / "imu0" / "data.csv");
+    auto frames = makeStereoFrames(resolved_sequence_dir);
+    auto imu_measurements = loadImuCsv(resolved_sequence_dir / "mav0" / "imu0" / "data.csv");
 
     if (frames.empty() || imu_measurements.empty()) {
-        std::cerr << "[EuRoC] empty stereo or IMU stream under " << sequence_dir << "\n";
+        std::cerr << "[EuRoC] empty stereo or IMU stream under " << resolved_sequence_dir << "\n";
         return 1;
     }
 

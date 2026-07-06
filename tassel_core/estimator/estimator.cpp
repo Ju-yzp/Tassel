@@ -1,6 +1,7 @@
 #include "estimator.h"
 
 #include <Eigen/Core>
+#include <Eigen/Eigenvalues>
 #include <Eigen/Geometry>
 #include <Eigen/SparseCore>
 
@@ -9,12 +10,15 @@
 #include <ceres/problem.h>
 #include <ceres/rotation.h>
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <cstddef>
+#include <iomanip>
 #include <opencv2/calib3d.hpp>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/core/types.hpp>
 #include <sophus/se3.hpp>
 #include <sophus/so3.hpp>
+#include <sstream>
 #include <vector>
 
 #include "factor/imu_factor.h"
@@ -37,6 +41,114 @@ std::vector<Integrator> makePreintegrators(
     size_t count, const Eigen::Matrix<double, 18, 18>& noise) {
     return std::vector<Integrator>(
         count, Integrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise));
+}
+
+std::string formatVec(const Eigen::Vector3d& v) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(3) << "[" << v.x() << "," << v.y() << "," << v.z()
+        << "]";
+    return oss.str();
+}
+
+template <typename Integrator>
+std::string formatImuCovarianceDiagnostics(
+    const State& state, const std::vector<Integrator>& preintegrators) {
+    std::ostringstream oss;
+    oss << "\n"
+        << "edge  dt     dq      dv      wdq      ratio   raw_dv             pred_dv            "
+           "corr_dv            dBa\n"
+        << "----  -----  ------  ------  -------  ------  -----------------  -----------------  "
+           "-----------------  -----------------";
+    for (int i = 0; i < state.cur_frame_count; ++i) {
+        const auto& preintegrator = preintegrators[i];
+        if (preintegrator.buffer.size() < 2 || preintegrator.sum_dt > 2.0) {
+            continue;
+        }
+
+        const Eigen::Vector3d P_i(
+            state.params_pose[i][0], state.params_pose[i][1], state.params_pose[i][2]);
+        const Eigen::Vector3d phi_i(
+            state.params_pose[i][3], state.params_pose[i][4], state.params_pose[i][5]);
+        const Eigen::Matrix3d R_i = Sophus::SO3d::exp(phi_i).matrix();
+
+        const Eigen::Vector3d P_j(
+            state.params_pose[i + 1][0], state.params_pose[i + 1][1], state.params_pose[i + 1][2]);
+        const Eigen::Vector3d phi_j(
+            state.params_pose[i + 1][3], state.params_pose[i + 1][4], state.params_pose[i + 1][5]);
+        const Eigen::Matrix3d R_j = Sophus::SO3d::exp(phi_j).matrix();
+
+        const Eigen::Vector3d V_i(
+            state.params_speed_bias[i][0], state.params_speed_bias[i][1],
+            state.params_speed_bias[i][2]);
+        const Eigen::Vector3d Ba_i(
+            state.params_speed_bias[i][3], state.params_speed_bias[i][4],
+            state.params_speed_bias[i][5]);
+        const Eigen::Vector3d Bg_i(
+            state.params_speed_bias[i][6], state.params_speed_bias[i][7],
+            state.params_speed_bias[i][8]);
+        const Eigen::Vector3d V_j(
+            state.params_speed_bias[i + 1][0], state.params_speed_bias[i + 1][1],
+            state.params_speed_bias[i + 1][2]);
+        const Eigen::Vector3d Ba_j(
+            state.params_speed_bias[i + 1][3], state.params_speed_bias[i + 1][4],
+            state.params_speed_bias[i + 1][5]);
+        const Eigen::Vector3d Bg_j(
+            state.params_speed_bias[i + 1][6], state.params_speed_bias[i + 1][7],
+            state.params_speed_bias[i + 1][8]);
+
+        const Eigen::Vector3d dba = Ba_i - preintegrator.ba_linearized;
+        const Eigen::Vector3d dbg = Bg_i - preintegrator.bg_linearized;
+        const Eigen::Vector3d dv_dba = preintegrator.get_dv_dba() * dba;
+        const Eigen::Vector3d dv_dbg = preintegrator.get_dv_dbg() * dbg;
+        const Eigen::Matrix3d corrected_delta_q =
+            preintegrator.final_delta_q *
+            Sophus::SO3d::exp(preintegrator.get_dq_dbg() * dbg).matrix();
+        const Eigen::Vector3d corrected_delta_v = preintegrator.final_delta_v + dv_dba + dv_dbg;
+        const Eigen::Vector3d corrected_delta_p = preintegrator.final_delta_p +
+                                                  preintegrator.get_dp_dba() * dba +
+                                                  preintegrator.get_dp_dbg() * dbg;
+
+        const double dt = preintegrator.sum_dt;
+        const double imu_dt =
+            dt / static_cast<double>(std::max<size_t>(1, preintegrator.buffer.size() - 1));
+        Eigen::Matrix<double, 15, 1> raw_residual;
+        raw_residual.template block<3, 1>(0, 0) =
+            R_i.transpose() * (0.5 * tassel_utils::G * dt * dt + P_j - P_i - V_i * dt) -
+            corrected_delta_p;
+        raw_residual.template block<3, 1>(3, 0) =
+            Sophus::SO3d(corrected_delta_q.inverse() * (R_i.inverse() * R_j)).log();
+        const Eigen::Vector3d predicted_delta_v =
+            R_i.transpose() * (tassel_utils::G * dt + V_j - V_i);
+        raw_residual.template block<3, 1>(6, 0) = predicted_delta_v - corrected_delta_v;
+        raw_residual.template block<3, 1>(9, 0) = Ba_j - Ba_i;
+        raw_residual.template block<3, 1>(12, 0) = Bg_j - Bg_i;
+
+        const Eigen::Matrix<double, 15, 15> cov_inv = preintegrator.covariance.inverse();
+        const Eigen::Matrix<double, 15, 15> sqrt_info =
+            Eigen::LLT<Eigen::Matrix<double, 15, 15>>(cov_inv).matrixL().transpose();
+        const Eigen::Matrix<double, 15, 1> white_residual = sqrt_info * raw_residual;
+
+        const Eigen::Vector3d cov_dq_diag =
+            preintegrator.covariance.diagonal().template segment<3>(3);
+        const double gyr_var = preintegrator.noise.template block<3, 3>(3, 3).diagonal().mean();
+        const double dq_cov_density_model = 0.5 * gyr_var * dt;
+        const double dq_cov_mean = cov_dq_diag.mean();
+
+        const double raw_dq_norm = raw_residual.template block<3, 1>(3, 0).norm();
+        const double raw_dv_norm = raw_residual.template block<3, 1>(6, 0).norm();
+        if (raw_dq_norm > 5e-2 || raw_dv_norm > 5e-2 || i == 0) {
+            oss << "\n"
+                << std::setw(4) << i << "  " << std::fixed << std::setprecision(3) << std::setw(5)
+                << dt << "  " << std::scientific << std::setprecision(1) << std::setw(6)
+                << raw_dq_norm << "  " << std::setw(6) << raw_dv_norm << "  " << std::setw(7)
+                << white_residual.template block<3, 1>(3, 0).norm() << "  " << std::fixed
+                << std::setprecision(3) << std::setw(6) << dq_cov_mean / dq_cov_density_model
+                << "  " << std::setw(17) << formatVec(raw_residual.template block<3, 1>(6, 0))
+                << "  " << std::setw(17) << formatVec(predicted_delta_v) << "  " << std::setw(17)
+                << formatVec(corrected_delta_v) << "  " << std::setw(17) << formatVec(dba);
+        }
+    }
+    return oss.str();
 }
 
 }  // namespace
@@ -265,6 +377,11 @@ void Estimator::optimize() {
         }
     });
 
+    visitPreintegrators([&](const auto& preintegrators) {
+        spdlog::info(
+            "IMU diag before solve: {}", formatImuCovarianceDiagnostics(*state_, preintegrators));
+    });
+
     ceres::Solver::Options opts;
     opts.linear_solver_type = ceres::DENSE_SCHUR;
     opts.max_num_iterations = params_.num_iterations;
@@ -274,6 +391,11 @@ void Estimator::optimize() {
 
     ceres::Solver::Summary summary;
     ceres::Solve(opts, &problem, &summary);
+
+    visitPreintegrators([&](const auto& preintegrators) {
+        spdlog::info(
+            "IMU diag after solve: {}", formatImuCovarianceDiagnostics(*state_, preintegrators));
+    });
 
     state_->paramsToState();
 

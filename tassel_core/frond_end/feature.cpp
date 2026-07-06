@@ -83,7 +83,7 @@ void Feature::monoTriangulate(
         }
     }
 
-    if (poses.size() < 2) return;
+    if (poses.size() < 1) return;
 
     double cond;
     Eigen::Vector4d h = tassel_utils::triangulateMultiView(poses, uvs, &cond);

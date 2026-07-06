@@ -30,20 +30,9 @@ endif()
 include(GoogleTest)
 
 message(STATUS "tassel_core tests:")
-set(TASSEL_CORE_ACTIVE_TESTS
-    test_estimator
-    test_camera
-    test_visual_factor
-    test_prior_factor
-    test_landmark_block
-    test_imu_factor
-    test_two_view_factor
-    test_reprojection_factor)
 tassel_add_tests(
   TEST_DIR
   "${CMAKE_CURRENT_SOURCE_DIR}/tests"
-  TEST_NAMES
-  ${TASSEL_CORE_ACTIVE_TESTS}
   LINK_LIBS
   tassel_core
   tassel_tools

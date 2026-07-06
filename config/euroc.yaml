@@ -45,9 +45,9 @@ reproj_huber_thres: 1.0
 parallax_thres: 20.0
 tracked_times_thres: 3
 min_depth: 0.2
-max_depth: 7.0
+max_depth: 10.0
 min_translation: 0.06
-min_tracked_pts: 90
+min_tracked_pts: 70
 
 num_iterations: 7
 max_frame_count: 10
@@ -59,10 +59,10 @@ visual_factor_weight: 300.0
 
 num_init_iterations: 8
 
-acc_n: 2.0000e-3
-acc_w: 3.0000e-3
-gyr_n: 1.6968e-4
-gyr_w: 1.9393e-5
+acc_n: 8.0000e-2
+acc_w: 4.0000e-5
+gyr_n: 4.0000e-3
+gyr_w: 2.0000e-6
 g_norm: 9.81
 
 acc_bias: [0.0, 0.0, 0.0]

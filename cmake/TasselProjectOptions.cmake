@@ -3,14 +3,14 @@ include_guard(GLOBAL)
 option(TASSEL_ENABLE_ASAN
        "Enable AddressSanitizer (leak / OOB / UAF detection)" OFF)
 option(TASSEL_ENABLE_PROFILING
-       "Add frame-pointer + debug symbols for perf / VTune profiling" ON)
+       "Add frame-pointer + debug symbols for perf / VTune profiling" OFF)
 option(TASSEL_ENABLE_HARDWARE_TESTS
        "Build tests that require hardware (depthai camera)" ON)
 
 function(tassel_setup_project_options)
   if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE
-        Debug
+        Release
         CACHE STRING "Build type" FORCE)
   endif()
 

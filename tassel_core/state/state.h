@@ -144,6 +144,7 @@ struct State {
     //  相机模型（用于 VisualFactor 畸变与雅可比）
     const CameraBase* camera = nullptr;
 
+    std::vector<std::array<double, 9>> storage_speed_bias;
     //  视觉因子信息矩阵
     Eigen::Matrix2d visual_sqrt_info;
 };
