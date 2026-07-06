@@ -1,64 +1,32 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.22)
 project(
-  stereo_vins
+  tassel
   VERSION 1.0.0
   LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Debug)
-endif()
+include(TasselProjectOptions)
+include(TasselDependencies)
 
-find_package(OpenCV REQUIRED)
-find_package(Eigen3 REQUIRED)
-find_package(depthai CONFIG REQUIRED)
-find_package(Ceres REQUIRED)
-find_package(Pangolin REQUIRED)
-find_package(GLEW REQUIRED)
-find_package(OpenGL REQUIRED)
-find_package(yaml-cpp 0.7.0 REQUIRED)
+tassel_setup_project_options()
+tassel_configure_dependencies()
 
-if(NOT TARGET pangolin::pangolin)
-  add_library(pangolin::pangolin INTERFACE IMPORTED)
+enable_testing()
 
-  if(TARGET pangolin)
-    set(PANGOLIN_LINK_TARGET pangolin)
-  else()
-    set(PANGOLIN_LINK_TARGET ${Pangolin_LIBRARIES})
-  endif()
+add_subdirectory(tassel_utils)
+add_subdirectory(tassel_core)
+add_subdirectory(tassel_tools)
 
-  set_target_properties(
-    pangolin::pangolin
-    PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${Pangolin_INCLUDE_DIRS}"
-               INTERFACE_LINK_LIBRARIES
-               "${PANGOLIN_LINK_TARGET};GLEW::GLEW;OpenGL::GL")
-endif()
+install(
+  DIRECTORY tassel_foxglove/
+  DESTINATION lib/${PROJECT_NAME}/tassel_foxglove
+  FILES_MATCHING
+  PATTERN "*.py"
+  PATTERN "*.yaml")
 
-add_library(core src/featureTracker.cpp src/estimator.cpp
-                 src/featureManager.cpp src/visual_factor.cpp)
-
-target_include_directories(core PUBLIC include)
-
-target_link_libraries(
-  core
-  PUBLIC Eigen3::Eigen
-         ${OpenCV_LIBS}
-         ${GLEW_LIBRARIES}
-         ${OpenGL_LIBRARIES}
-         Ceres::ceres
-         yaml-cpp
-         depthai::core
-         pangolin::pangolin)
-
-add_executable(estimator test/test_estimator.cpp)
-target_link_libraries(estimator PRIVATE core)
-
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL
-                                           "Clang")
-  target_compile_options(core PUBLIC $<$<CONFIG:Debug>:-g -O0>
-                                     $<$<CONFIG:Release>:-O3 -march=native>)
-endif()
+install(
+  DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
+  FILES_MATCHING
+  PATTERN "*.yaml")

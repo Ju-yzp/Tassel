@@ -1,0 +1,579 @@
+#include "estimator.h"
+
+#include <Eigen/Core>
+#include <Eigen/Eigenvalues>
+#include <Eigen/Geometry>
+#include <Eigen/SparseCore>
+
+#include <ceres/ceres.h>
+#include <ceres/loss_function.h>
+#include <ceres/problem.h>
+#include <ceres/rotation.h>
+#include <spdlog/spdlog.h>
+#include <algorithm>
+#include <cstddef>
+#include <iomanip>
+#include <opencv2/calib3d.hpp>
+#include <opencv2/core/eigen.hpp>
+#include <opencv2/core/types.hpp>
+#include <sophus/se3.hpp>
+#include <sophus/so3.hpp>
+#include <sstream>
+#include <vector>
+
+#include "factor/imu_factor.h"
+#include "factor/integrator_base.h"
+#include "factor/marginalization_prior_factor.h"
+#include "factor/visual_factor.h"
+#include "marg/marg_helper.h"
+#include "marg/marginlization_sqrt.h"
+#include "tassel_utils/se3_right_manifold.h"
+
+#include "initial/initial_alignment.h"
+#include "initial/initial_sfm.h"
+
+namespace tassel_core {
+
+namespace {
+
+template <typename Integrator>
+std::vector<Integrator> makePreintegrators(
+    size_t count, const Eigen::Matrix<double, 18, 18>& noise) {
+    return std::vector<Integrator>(
+        count, Integrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise));
+}
+
+std::string formatVec(const Eigen::Vector3d& v) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(3) << "[" << v.x() << "," << v.y() << "," << v.z()
+        << "]";
+    return oss.str();
+}
+
+template <typename Integrator>
+std::string formatImuCovarianceDiagnostics(
+    const State& state, const std::vector<Integrator>& preintegrators) {
+    std::ostringstream oss;
+    oss << "\n"
+        << "edge  dt     dq      dv      wdq      ratio   raw_dv             pred_dv            "
+           "corr_dv            dBa\n"
+        << "----  -----  ------  ------  -------  ------  -----------------  -----------------  "
+           "-----------------  -----------------";
+    for (int i = 0; i < state.cur_frame_count; ++i) {
+        const auto& preintegrator = preintegrators[i];
+        if (preintegrator.buffer.size() < 2 || preintegrator.sum_dt > 2.0) {
+            continue;
+        }
+
+        const Eigen::Vector3d P_i(
+            state.params_pose[i][0], state.params_pose[i][1], state.params_pose[i][2]);
+        const Eigen::Vector3d phi_i(
+            state.params_pose[i][3], state.params_pose[i][4], state.params_pose[i][5]);
+        const Eigen::Matrix3d R_i = Sophus::SO3d::exp(phi_i).matrix();
+
+        const Eigen::Vector3d P_j(
+            state.params_pose[i + 1][0], state.params_pose[i + 1][1], state.params_pose[i + 1][2]);
+        const Eigen::Vector3d phi_j(
+            state.params_pose[i + 1][3], state.params_pose[i + 1][4], state.params_pose[i + 1][5]);
+        const Eigen::Matrix3d R_j = Sophus::SO3d::exp(phi_j).matrix();
+
+        const Eigen::Vector3d V_i(
+            state.params_speed_bias[i][0], state.params_speed_bias[i][1],
+            state.params_speed_bias[i][2]);
+        const Eigen::Vector3d Ba_i(
+            state.params_speed_bias[i][3], state.params_speed_bias[i][4],
+            state.params_speed_bias[i][5]);
+        const Eigen::Vector3d Bg_i(
+            state.params_speed_bias[i][6], state.params_speed_bias[i][7],
+            state.params_speed_bias[i][8]);
+        const Eigen::Vector3d V_j(
+            state.params_speed_bias[i + 1][0], state.params_speed_bias[i + 1][1],
+            state.params_speed_bias[i + 1][2]);
+        const Eigen::Vector3d Ba_j(
+            state.params_speed_bias[i + 1][3], state.params_speed_bias[i + 1][4],
+            state.params_speed_bias[i + 1][5]);
+        const Eigen::Vector3d Bg_j(
+            state.params_speed_bias[i + 1][6], state.params_speed_bias[i + 1][7],
+            state.params_speed_bias[i + 1][8]);
+
+        const Eigen::Vector3d dba = Ba_i - preintegrator.ba_linearized;
+        const Eigen::Vector3d dbg = Bg_i - preintegrator.bg_linearized;
+        const Eigen::Vector3d dv_dba = preintegrator.get_dv_dba() * dba;
+        const Eigen::Vector3d dv_dbg = preintegrator.get_dv_dbg() * dbg;
+        const Eigen::Matrix3d corrected_delta_q =
+            preintegrator.final_delta_q *
+            Sophus::SO3d::exp(preintegrator.get_dq_dbg() * dbg).matrix();
+        const Eigen::Vector3d corrected_delta_v = preintegrator.final_delta_v + dv_dba + dv_dbg;
+        const Eigen::Vector3d corrected_delta_p = preintegrator.final_delta_p +
+                                                  preintegrator.get_dp_dba() * dba +
+                                                  preintegrator.get_dp_dbg() * dbg;
+
+        const double dt = preintegrator.sum_dt;
+        const double imu_dt =
+            dt / static_cast<double>(std::max<size_t>(1, preintegrator.buffer.size() - 1));
+        Eigen::Matrix<double, 15, 1> raw_residual;
+        raw_residual.template block<3, 1>(0, 0) =
+            R_i.transpose() * (0.5 * tassel_utils::G * dt * dt + P_j - P_i - V_i * dt) -
+            corrected_delta_p;
+        raw_residual.template block<3, 1>(3, 0) =
+            Sophus::SO3d(corrected_delta_q.inverse() * (R_i.inverse() * R_j)).log();
+        const Eigen::Vector3d predicted_delta_v =
+            R_i.transpose() * (tassel_utils::G * dt + V_j - V_i);
+        raw_residual.template block<3, 1>(6, 0) = predicted_delta_v - corrected_delta_v;
+        raw_residual.template block<3, 1>(9, 0) = Ba_j - Ba_i;
+        raw_residual.template block<3, 1>(12, 0) = Bg_j - Bg_i;
+
+        const Eigen::Matrix<double, 15, 15> cov_inv = preintegrator.covariance.inverse();
+        const Eigen::Matrix<double, 15, 15> sqrt_info =
+            Eigen::LLT<Eigen::Matrix<double, 15, 15>>(cov_inv).matrixL().transpose();
+        const Eigen::Matrix<double, 15, 1> white_residual = sqrt_info * raw_residual;
+
+        const Eigen::Vector3d cov_dq_diag =
+            preintegrator.covariance.diagonal().template segment<3>(3);
+        const double gyr_var = preintegrator.noise.template block<3, 3>(3, 3).diagonal().mean();
+        const double dq_cov_density_model = 0.5 * gyr_var * dt;
+        const double dq_cov_mean = cov_dq_diag.mean();
+
+        const double raw_dq_norm = raw_residual.template block<3, 1>(3, 0).norm();
+        const double raw_dv_norm = raw_residual.template block<3, 1>(6, 0).norm();
+        if (raw_dq_norm > 5e-2 || raw_dv_norm > 5e-2 || i == 0) {
+            oss << "\n"
+                << std::setw(4) << i << "  " << std::fixed << std::setprecision(3) << std::setw(5)
+                << dt << "  " << std::scientific << std::setprecision(1) << std::setw(6)
+                << raw_dq_norm << "  " << std::setw(6) << raw_dv_norm << "  " << std::setw(7)
+                << white_residual.template block<3, 1>(3, 0).norm() << "  " << std::fixed
+                << std::setprecision(3) << std::setw(6) << dq_cov_mean / dq_cov_density_model
+                << "  " << std::setw(17) << formatVec(raw_residual.template block<3, 1>(6, 0))
+                << "  " << std::setw(17) << formatVec(predicted_delta_v) << "  " << std::setw(17)
+                << formatVec(corrected_delta_v) << "  " << std::setw(17) << formatVec(dba);
+        }
+    }
+    return oss.str();
+}
+
+}  // namespace
+
+Estimator::Estimator(
+    const tassel_tools::Parameters& params, std::shared_ptr<State> state,
+    std::shared_ptr<FeatureManager> fm)
+    : params_(params), state_(std::move(state)), feature_manager_(std::move(fm)) {
+    tassel_utils::G = Eigen::Vector3d(0, 0, params_.g_norm);
+    cv::setNumThreads(params_.num_threads);
+    noise_ = initNoise();
+    state_->visual_sqrt_info = Eigen::Matrix2d::Identity() * params_.visual_factor_weight;
+    reset();
+}
+
+void Estimator::reset() {
+    gravity_initialized_ = false;
+    last_ts_ = -1;
+    last_imu_acc_ = Eigen::Vector3d::Zero();
+    last_imu_gyro_ = Eigen::Vector3d::Zero();
+    switch (params_.integrator_type) {
+        case tassel_utils::IntegratorType::kMidPoint:
+            preintegrators_ =
+                makePreintegrators<MidPointIntegrator>(state_->max_frame_count - 1, noise_);
+            break;
+        case tassel_utils::IntegratorType::kEuler:
+            preintegrators_ =
+                makePreintegrators<EulerIntegrator>(state_->max_frame_count - 1, noise_);
+            break;
+    }
+    Rs_.resize(state_->max_frame_count, Eigen::Matrix3d::Identity());
+    Ps_.resize(state_->max_frame_count, Eigen::Vector3d::Zero());
+    Vs_.resize(state_->max_frame_count, Eigen::Vector3d::Zero());
+    marg_data_.reset();
+    tassel_utils::G = Eigen::Vector3d(0, 0, params_.g_norm);
+    state_->reset();
+    feature_manager_->reset();
+}
+
+void Estimator::processMeasurement(
+    double ts, const std::unordered_map<int, FeaturePerFrame>& feature_frame,
+    const std::vector<tassel_utils::IMUMeasurement>& imu_measurements) {
+    int& frame_count = state_->cur_frame_count;
+    if (last_ts_ < 0 && !imu_measurements.empty()) {
+        last_ts_ = imu_measurements.back().timestamp;
+        last_imu_acc_ = imu_measurements.back().acc - params_.acc_bias;
+        last_imu_gyro_ = imu_measurements.back().gyro;
+    }
+
+    bool is_keyframe = feature_manager_->checkParallax(frame_count, feature_frame);
+
+    if (frame_count > 0) {
+        Eigen::Matrix3d R = state_->Rs[frame_count];
+        Eigen::Vector3d P = state_->Ps[frame_count];
+        Eigen::Vector3d V = state_->Vs[frame_count];
+        Eigen::Vector3d Ba = state_->Bas[frame_count];
+        Eigen::Vector3d Bg = state_->Bgs[frame_count];
+        visitPreintegrators([&](auto& preintegrators) {
+            auto& preintegrator = preintegrators[frame_count - 1];
+
+            for (const auto& imu : imu_measurements) {
+                tassel_utils::IMUMeasurement imu_cal = imu;
+                imu_cal.acc = imu.acc - params_.acc_bias;
+                preintegrator.propagate(imu_cal);
+
+                double dt = imu_cal.timestamp - last_ts_;
+                Eigen::Vector3d acc_0 = R * (last_imu_acc_ - Ba) - tassel_utils::G;
+                Eigen::Vector3d gyr = 0.5 * (last_imu_gyro_ + imu_cal.gyro) - Bg;
+                R = R * Sophus::SO3d::exp(gyr * dt).matrix();
+                Eigen::Vector3d acc_1 = R * (imu_cal.acc - Ba) - tassel_utils::G;
+                Eigen::Vector3d acc = 0.5 * (acc_0 + acc_1);
+                P += V * dt + 0.5 * acc * dt * dt;
+                V += acc * dt;
+                last_ts_ = imu_cal.timestamp;
+                last_imu_gyro_ = imu_cal.gyro;
+                last_imu_acc_ = imu_cal.acc;
+            }
+        });
+
+        Eigen::Quaterniond q(R);
+        q.normalize();
+        state_->Rs[frame_count] = q.matrix();
+        state_->Ps[frame_count] = P;
+        state_->Vs[frame_count] = V;
+    }
+
+    state_->acc_vec.push_back(last_imu_acc_);
+    state_->gyro_vec.push_back(last_imu_gyro_);
+    if (is_keyframe) {
+        feature_manager_->triangulate(
+            *state_, params_.ric, params_.tic, params_.ric1, params_.tic1);
+
+        if (frame_count == state_->max_frame_count - 1) {
+            if (!gravity_initialized_) {
+                if (!tryInitialize()) {
+                    spdlog::warn("VI initialization failed, resetting");
+                    reset();
+                    return;
+                }
+                feature_manager_->invalidateDepths();
+                feature_manager_->triangulate(
+                    *state_, params_.ric, params_.tic, params_.ric1, params_.tic1);
+            }
+            optimize();
+            feature_manager_->removeOutliers(*state_, params_.ric, params_.tic);
+            buildPrior();
+            feature_manager_->removeOldest(*state_, params_.ric, params_.tic);
+            slideWindow();
+        } else {
+            ++frame_count;
+            state_->Rs[frame_count] = state_->Rs[frame_count - 1];
+            state_->Ps[frame_count] = state_->Ps[frame_count - 1];
+            state_->Vs[frame_count] = state_->Vs[frame_count - 1];
+            state_->Bas[frame_count] = state_->Bas[frame_count - 1];
+            state_->Bgs[frame_count] = state_->Bgs[frame_count - 1];
+            int next_idx = frame_count - 1;
+            visitPreintegrators([&](auto& preintegrators) {
+                if (next_idx < static_cast<int>(preintegrators.size())) {
+                    preintegrators[next_idx].reset(
+                        state_->Bas[frame_count - 1], state_->Bgs[frame_count - 1], noise_);
+                }
+            });
+        }
+    } else {
+        state_->acc_vec.erase(state_->acc_vec.begin());
+        state_->gyro_vec.erase(state_->gyro_vec.begin());
+        if (frame_count == state_->max_frame_count - 1 && gravity_initialized_) {
+            optimize();
+            feature_manager_->removeOutliers(*state_, params_.ric, params_.tic);
+        }
+        feature_manager_->removeNewest(frame_count);
+    }
+
+    if (cloud_callback_ && gravity_initialized_) {
+        auto pts = feature_manager_->getPointCloud(*state_, params_.ric, params_.tic);
+        spdlog::info("{} valid points", static_cast<int>(pts.size()));
+        cloud_callback_(ts, pts);
+    }
+    if (pose_callback_ && gravity_initialized_) {
+        pose_callback_(
+            ts,
+            Sophus::SE3d(state_->Rs[state_->cur_frame_count], state_->Ps[state_->cur_frame_count]));
+    }
+}
+
+void Estimator::optimize() {
+    double delay_time_pre = state_->delay_time;
+
+    state_->stateToParams();
+    auto features = feature_manager_->collectLandmarks();
+
+    ceres::Problem problem;
+
+    for (int i = 0; i < state_->max_frame_count; ++i) {
+        auto se3_manifold = new SE3RightManifold();
+        problem.AddParameterBlock(state_->params_pose[i].data(), 6, se3_manifold);
+        problem.AddParameterBlock(state_->params_speed_bias[i].data(), 9);
+    }
+
+    problem.AddParameterBlock(&state_->param_delay_time, 1);
+    bool set_dt_constant_flag = true;
+    for (int i = 0; i < state_->cur_frame_count; ++i) {
+        if (state_->gyro_vec[i].norm() > params_.dt_gyro_threshold) {
+            set_dt_constant_flag = false;
+            break;
+        }
+    }
+
+    if (set_dt_constant_flag) {
+        problem.SetParameterBlockConstant(&state_->param_delay_time);
+    }
+
+    if (marg_data_) {
+        auto* prior_cost = new MarginalizationPriorFactor(*marg_data_);
+        std::vector<double*> prior_blocks;
+        int num_kept = static_cast<int>(marg_data_->linearization_poses.size());
+        for (int i = 0; i < num_kept; ++i) {
+            prior_blocks.push_back(state_->params_pose[i].data());
+            prior_blocks.push_back(state_->params_speed_bias[i].data());
+        }
+        problem.AddResidualBlock(prior_cost, nullptr, prior_blocks);
+    }
+
+    const double visual_huber_delta = params_.reproj_huber_thres * params_.visual_factor_weight;
+    ceres::LossFunction* loss = new ceres::HuberLoss(visual_huber_delta);
+    std::vector<double> inv_depth_params(features.size());
+    for (size_t k = 0; k < features.size(); ++k) {
+        double d = features[k]->estimated_depth;
+        inv_depth_params[k] = (d > 0 && d < params_.max_depth) ? (1.0 / d) : 1.0;
+        problem.AddParameterBlock(&inv_depth_params[k], 1);
+    }
+
+    Eigen::Matrix2d sqrt_info = state_->visual_sqrt_info;
+    for (size_t k = 0; k < features.size(); ++k) {
+        Feature* f = features[k];
+        int host_id = f->start_frame_id;
+        for (size_t obs_idx = 1; obs_idx < f->observations.size(); ++obs_idx) {
+            int target_id = host_id + static_cast<int>(obs_idx);
+            Eigen::Vector2d pt_j(f->observations[obs_idx].pt.x, f->observations[obs_idx].pt.y);
+            auto* cost = new VisualFactor(
+                f->observations[0].uv, pt_j, params_.ric, params_.tic, state_->gyro_vec[host_id],
+                state_->gyro_vec[target_id], state_->acc_vec[host_id], state_->acc_vec[target_id],
+                state_->params_speed_bias[host_id].data(),
+                state_->params_speed_bias[target_id].data(),
+                state_->params_speed_bias[host_id].data() + 6,
+                state_->params_speed_bias[target_id].data() + 6,
+                state_->params_speed_bias[host_id].data() + 3,
+                state_->params_speed_bias[target_id].data() + 3, sqrt_info, state_->camera);
+            problem.AddResidualBlock(
+                cost, loss, state_->params_pose[host_id].data(),
+                state_->params_pose[target_id].data(), &state_->param_delay_time,
+                &inv_depth_params[k]);
+        }
+    }
+
+    visitPreintegrators([&](auto& preintegrators) {
+        using Integrator = typename std::decay_t<decltype(preintegrators)>::value_type;
+        for (int i = 0; i < state_->cur_frame_count; ++i) {
+            if (preintegrators[i].buffer.size() < 2 || preintegrators[i].sum_dt > 2.0) continue;
+            auto pint_ptr = std::shared_ptr<Integrator>(&preintegrators[i], [](Integrator*) {});
+            auto* imu_cost = new IMUFactor<Integrator>(pint_ptr);
+            problem.AddResidualBlock(
+                imu_cost, nullptr, state_->params_pose[i].data(),
+                state_->params_speed_bias[i].data(), state_->params_pose[i + 1].data(),
+                state_->params_speed_bias[i + 1].data());
+        }
+    });
+
+    visitPreintegrators([&](const auto& preintegrators) {
+        spdlog::info(
+            "IMU diag before solve: {}", formatImuCovarianceDiagnostics(*state_, preintegrators));
+    });
+
+    ceres::Solver::Options opts;
+    opts.linear_solver_type = ceres::DENSE_SCHUR;
+    opts.max_num_iterations = params_.num_iterations;
+    opts.num_threads = params_.num_threads;
+    opts.minimizer_progress_to_stdout = false;
+    opts.logging_type = ceres::SILENT;
+
+    ceres::Solver::Summary summary;
+    ceres::Solve(opts, &problem, &summary);
+
+    visitPreintegrators([&](const auto& preintegrators) {
+        spdlog::info(
+            "IMU diag after solve: {}", formatImuCovarianceDiagnostics(*state_, preintegrators));
+    });
+
+    state_->paramsToState();
+
+    for (size_t k = 0; k < features.size(); ++k) {
+        double inv_d = inv_depth_params[k];
+        double d = (inv_d > 1e-6) ? (1.0 / inv_d) : INVALID_DEPTH;
+        features[k]->estimated_depth = d;
+    }
+
+    visitPreintegrators([&](auto& preintegrators) {
+        for (int i = 0; i < static_cast<int>(preintegrators.size()); ++i) {
+            preintegrators[i].repropagate(state_->Bas[i], state_->Bgs[i], noise_);
+        }
+    });
+
+    spdlog::info(
+        "Ba {:.4f} {:.4f} {:.4f} Bg {:.4f} {:.4f} {:.4f} delay_time {:.2f} ms", state_->Bas[0].x(),
+        state_->Bas[0].y(), state_->Bas[0].z(), state_->Bgs[0].x(), state_->Bgs[0].y(),
+        state_->Bgs[0].z(), state_->param_delay_time * 1e3);
+}
+
+void Estimator::buildPrior() {
+    const int n = state_->max_frame_count;
+    state_->stateToParams();
+    const double visual_huber_delta = params_.reproj_huber_thres * params_.visual_factor_weight;
+
+    auto marg_features = feature_manager_->collectMargFeatures();
+    spdlog::info("{} feature marginals", static_cast<int>(marg_features.size()));
+    visitPreintegrators([&](auto& preintegrators) {
+        using Integrator = typename std::decay_t<decltype(preintegrators)>::value_type;
+        std::vector<IntegratorBase<Integrator>*> pint_ptrs;
+        pint_ptrs.push_back(&preintegrators[0]);
+
+        auto marg = MarginlizationSqrt<Integrator>(
+            marg_features, std::make_unique<ceres::HuberLoss>(visual_huber_delta), state_,
+            pint_ptrs, params_.ric, params_.tic, marg_data_.get());
+        marg.allocate();
+        marg.linearize();
+        marg.performQRAll();
+
+        Eigen::MatrixXd Q2Jp;
+        Eigen::VectorXd Q2r;
+        marg.get_dense_Jp_b(Q2Jp, Q2r);
+
+        Eigen::MatrixXd marg_H;
+        Eigen::VectorXd marg_b;
+        MargHelper::marginalizeSqrtToSqrt(15, (n - 1) * 15, Q2Jp, Q2r, marg_H, marg_b);
+
+        auto new_prior = std::make_unique<MargLinData>();
+        new_prior->H = marg_H;
+        new_prior->b = marg_b;
+        new_prior->linearization_poses.resize(n - 1);
+        new_prior->linearization_speed_bias.resize(n - 1);
+        for (int i = 1; i < n; ++i) {
+            new_prior->linearization_poses[i - 1] = state_->params_pose[i];
+            new_prior->linearization_speed_bias[i - 1] = state_->params_speed_bias[i];
+        }
+        marg_data_ = std::move(new_prior);
+    });
+}
+
+void Estimator::slideWindow() {
+    const int n = state_->max_frame_count;
+
+    for (int i = 0; i < n - 1; ++i) {
+        state_->Rs[i] = state_->Rs[i + 1];
+        state_->Ps[i] = state_->Ps[i + 1];
+        state_->Vs[i] = state_->Vs[i + 1];
+        state_->Bas[i] = state_->Bas[i + 1];
+        state_->Bgs[i] = state_->Bgs[i + 1];
+    }
+    // 滑动预积分器
+    visitPreintegrators([&](auto& preintegrators) {
+        for (int i = 0; i < static_cast<int>(preintegrators.size()) - 1; ++i) {
+            preintegrators[i] = std::move(preintegrators[i + 1]);
+        }
+        preintegrators.back().reset(state_->Bas[n - 2], state_->Bgs[n - 2], noise_);
+    });
+
+    state_->acc_vec.erase(state_->acc_vec.begin());
+    state_->gyro_vec.erase(state_->gyro_vec.begin());
+}
+
+Eigen::Matrix<double, 18, 18> Estimator::initNoise() const {
+    Eigen::Matrix<double, 18, 18> noise = Eigen::Matrix<double, 18, 18>::Zero();
+    noise.block<3, 3>(0, 0) = (params_.acc_n * params_.acc_n) * Eigen::Matrix3d::Identity();
+    noise.block<3, 3>(3, 3) = (params_.gyr_n * params_.gyr_n) * Eigen::Matrix3d::Identity();
+    noise.block<3, 3>(6, 6) = (params_.acc_n * params_.acc_n) * Eigen::Matrix3d::Identity();
+    noise.block<3, 3>(9, 9) = (params_.gyr_n * params_.gyr_n) * Eigen::Matrix3d::Identity();
+    noise.block<3, 3>(12, 12) = (params_.acc_w * params_.acc_w) * Eigen::Matrix3d::Identity();
+    noise.block<3, 3>(15, 15) = (params_.gyr_w * params_.gyr_w) * Eigen::Matrix3d::Identity();
+    return noise;
+}
+
+bool Estimator::tryInitialize() {
+    int frame_count = state_->cur_frame_count;
+    int n_frames = frame_count + 1;
+
+    InitialSFM sfm(
+        params_.min_depth, params_.max_depth, params_.sfm_min_seed_pts, params_.sfm_min_e_inliers,
+        params_.sfm_e_ransac_threshold, params_.sfm_min_pnp_pts, params_.sfm_pnp_reproj_threshold,
+        params_.sfm_max_bad_pnp_ratio, params_.sfm_ba_max_iterations, params_.sfm_ba_num_threads);
+    if (!sfm.construct(
+            *state_, *feature_manager_, params_.ric, params_.tic, params_.ric1, params_.tic1, Rs_,
+            Ps_)) {
+        spdlog::warn("VIO init: SFM failed");
+        return false;
+    }
+
+    {
+        std::vector<Eigen::Matrix3d> dq_dbgs, delta_qs;
+        visitPreintegrators([&](const auto& preintegrators) {
+            for (int i = 0; i < frame_count; ++i) {
+                dq_dbgs.push_back(preintegrators[i].get_dq_dbg());
+                delta_qs.push_back(preintegrators[i].final_delta_q);
+            }
+        });
+        Eigen::Vector3d bg = solveGyroBias(Rs_, dq_dbgs, delta_qs, params_.ric);
+        for (int i = 0; i < frame_count; ++i) state_->Bgs[i] = bg;
+    }
+
+    visitPreintegrators([&](auto& preintegrators) {
+        for (int i = 0; i < frame_count; ++i) {
+            preintegrators[i].repropagate(state_->Bas[i], state_->Bgs[i], noise_);
+        }
+    });
+
+    std::vector<Eigen::Vector3d> delta_ps, delta_vs;
+    std::vector<double> dts;
+    visitPreintegrators([&](const auto& preintegrators) {
+        for (int i = 0; i < n_frames - 1; ++i) {
+            delta_ps.push_back(preintegrators[i].final_delta_p);
+            delta_vs.push_back(preintegrators[i].final_delta_v);
+            dts.push_back(preintegrators[i].sum_dt);
+        }
+    });
+
+    Eigen::Vector3d g;
+    double s;
+    if (!linearAlignment(
+            Rs_, Ps_, Vs_, delta_vs, delta_ps, dts, g, s, params_.ric, params_.tic,
+            params_.gravity_diff_threshold, params_.g_norm)) {
+        spdlog::warn("VI init: linear alignment failed");
+        return false;
+    }
+
+    refineGravitySpeeds(
+        Vs_, Rs_, Ps_, delta_vs, delta_ps, dts, g, s, params_.ric, params_.tic, params_.g_norm);
+
+    Eigen::Matrix3d R0 =
+        Eigen::Quaterniond::FromTwoVectors((g).normalized(), Eigen::Vector3d(0, 0, 1))
+            .toRotationMatrix();
+    double yaw = std::atan2(R0(1, 0), R0(0, 0));
+    R0 = Eigen::AngleAxisd(-yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix() * R0;
+
+    tassel_utils::G = Eigen::Vector3d(0, 0, params_.g_norm);
+    gravity_initialized_ = true;
+
+    for (int i = 0; i <= frame_count; ++i) {
+        state_->Rs[i] = Eigen::Quaterniond(R0 * params_.ric * Rs_[i] * params_.ric.transpose())
+                            .normalized()
+                            .toRotationMatrix();
+        state_->Ps[i] =
+            R0 * (params_.ric * s * Ps_[i] -
+                  params_.ric * Rs_[i] * params_.ric.transpose() * params_.tic + params_.tic);
+        state_->Vs[i] = R0 * Vs_[i];
+    }
+
+    spdlog::info(
+        "VI init: |g|={:.4f} s={:.4f} R0_yaw={:.2f}°", tassel_utils::G.norm(), s,
+        yaw * 180.0 / M_PI);
+    for (int i = 0; i <= frame_count; ++i) {
+        spdlog::info(
+            "  frame[{}]: P=[{:.3f},{:.3f},{:.3f}] V=[{:.3f},{:.3f},{:.3f}]", i, state_->Ps[i].x(),
+            state_->Ps[i].y(), state_->Ps[i].z(), state_->Vs[i].x(), state_->Vs[i].y(),
+            state_->Vs[i].z());
+    }
+    return true;
+}
+
+}  // namespace tassel_core

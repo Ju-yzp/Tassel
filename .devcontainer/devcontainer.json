@@ -1,16 +1,28 @@
 {
-    "name": "ROS_Container",
-    // 这里的 image 填你正在用的镜像，比如 "ros:noetic"
-    "image": "depthai_ros_ready",
+  "name": "Tassel VIO Dev",
+  "image": "depthai_kalibr_ready",
 
-    "runArgs": [
-        "--net=host",
-        "--privileged"
-    ],
-    "containerEnv": {
-        "DISPLAY": "${localEnv:DISPLAY}"
-    },
-    "mounts": [
-        "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind"
-    ]
+  "workspaceFolder": "/workspaces/Tassel",
+  "workspaceMount": "source=/home/adrewn/Tassel,target=/workspaces/Tassel,type=bind",
+
+  "mounts": [
+    "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,readonly",
+    "source=/dev/bus/usb,target=/dev/bus/usb,type=bind",
+    "source=/home/adrewn/data,target=/root/recordings,type=bind"
+  ],
+
+  "containerEnv": {
+    "DISPLAY": ":0",
+    "QT_X11_NO_MITSHM": "1"
+  },
+
+  "runArgs": [
+    "--privileged",
+    "--network=host",
+    "--ipc=host"
+  ],
+
+  "remoteEnv": {
+    "ROS_MASTER_URI": "http://localhost:11311"
+  }
 }
