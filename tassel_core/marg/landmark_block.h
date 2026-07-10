@@ -29,6 +29,8 @@ public:
 
     inline int get_padding_index() const { return padding_idx_; }
 
+    inline int get_delay_index() const { return delay_idx_; }
+
     inline int get_landmark_index() const { return lm_idx_; }
 
     inline int get_residual_index() const { return res_idx_; }
@@ -39,6 +41,7 @@ public:
 
 private:
     tassel_utils::MatrixRowMajor storage_;
+    int delay_idx_;
     int lm_idx_;
     int res_idx_;
     int padding_idx_;

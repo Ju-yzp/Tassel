@@ -49,7 +49,7 @@ max_depth: 10.0
 min_translation: 0.06
 min_tracked_pts: 70
 
-num_iterations: 7
+num_iterations: 6
 max_frame_count: 10
 integrator_type: midpoint
 
@@ -60,9 +60,9 @@ visual_factor_weight: 300.0
 num_init_iterations: 8
 
 acc_n: 8.0000e-2
-acc_w: 4.0000e-5
-gyr_n: 4.0000e-3
-gyr_w: 2.0000e-6
+acc_w: 2.0000e-4
+gyr_n: 3.0000e-4
+gyr_w: 6.0000e-6
 g_norm: 9.81
 
 acc_bias: [0.0, 0.0, 0.0]

@@ -91,10 +91,13 @@ bool VisualFactor::Evaluate(
 
         if (jacobians[2]) {
             Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_dt(jacobians[2]);
-            jacobian_dt = reduce * ric.transpose() *
-                          (Sophus::SO3d::hat(bg_j - w_j) * pj_in_I +
-                           A_j * R_j.transpose() *
-                               (R_i * A_i * Sophus::SO3d::hat(w_i - bg_i) * pi_in_I + V_i - V_j));
+            const Eigen::Vector3d dP_i_dt = V_i + R_i * (a_i - ba_i) * dt;
+            const Eigen::Vector3d dP_j_dt = V_j + R_j * (a_j - ba_j) * dt;
+            jacobian_dt =
+                reduce * ric.transpose() *
+                (Sophus::SO3d::hat(bg_j - w_j) * pj_in_I +
+                 A_j * R_j.transpose() *
+                     (R_i * A_i * Sophus::SO3d::hat(w_i - bg_i) * pi_in_I + dP_i_dt - dP_j_dt));
         }
 
         if (jacobians[3]) {

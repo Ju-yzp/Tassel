@@ -78,8 +78,7 @@ private:
 
     bool resolvePose(
         const std::vector<PoseCandidate>& candidates, const std::vector<cv::Point2f>& pts_seed,
-        const std::vector<cv::Point2f>& pts_other, const std::vector<double>& seed_depths,
-        PoseCandidate& selected);
+        const std::vector<cv::Point2f>& pts_other, PoseCandidate& selected);
 
     bool checkCheirality(
         int seed_id, int other_id, const std::vector<Eigen::Quaterniond>& q_cam_rel,
@@ -111,10 +110,6 @@ private:
     void scoreByCheirality(
         const std::vector<PoseCandidate>& candidates, const std::vector<cv::Point2f>& pts_seed,
         const std::vector<cv::Point2f>& pts_other, std::vector<PoseCandidate>& scored);
-
-    int selectByPnP(
-        const std::vector<PoseCandidate>& candidates, const std::vector<cv::Point2f>& pts_seed,
-        const std::vector<cv::Point2f>& pts_other, const std::vector<double>& seed_depths);
 
     double min_depth_, max_depth_;
     int min_seed_pts_, min_e_inliers_;

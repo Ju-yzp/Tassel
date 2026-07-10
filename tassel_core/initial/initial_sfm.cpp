@@ -12,11 +12,61 @@
 
 #include <sophus/so3.hpp>
 
-#include "factor/reprojection_factor.h"
 #include "tassel_utils/rotation.h"
 #include "tassel_utils/triangulation.h"
 
 namespace tassel_core {
+namespace {
+
+struct EpipolarSampsonFactor {
+    EpipolarSampsonFactor(const Eigen::Vector2d& uv_i, const Eigen::Vector2d& uv_j)
+        : xi_(uv_i.x(), uv_i.y(), 1.0), xj_(uv_j.x(), uv_j.y(), 1.0) {}
+
+    template <typename T>
+    bool operator()(
+        const T* const q_i, const T* const t_i, const T* const q_j, const T* const t_j,
+        T* residual) const {
+        T xi[3] = {T(xi_.x()), T(xi_.y()), T(1.0)};
+        T xj[3] = {T(xj_.x()), T(xj_.y()), T(1.0)};
+
+        T q_i_inv[4] = {q_i[0], -q_i[1], -q_i[2], -q_i[3]};
+
+        T x_world_dir[3];
+        ceres::QuaternionRotatePoint(q_i_inv, xi, x_world_dir);
+        T rji_xi[3];
+        ceres::QuaternionRotatePoint(q_j, x_world_dir, rji_xi);
+
+        T ti_world[3];
+        ceres::QuaternionRotatePoint(q_i_inv, t_i, ti_world);
+        T rji_ti[3];
+        ceres::QuaternionRotatePoint(q_j, ti_world, rji_ti);
+        T tji[3] = {t_j[0] - rji_ti[0], t_j[1] - rji_ti[1], t_j[2] - rji_ti[2]};
+
+        T ex[3] = {
+            tji[1] * rji_xi[2] - tji[2] * rji_xi[1], tji[2] * rji_xi[0] - tji[0] * rji_xi[2],
+            tji[0] * rji_xi[1] - tji[1] * rji_xi[0]};
+        T algebraic = xj[0] * ex[0] + xj[1] * ex[1] + xj[2] * ex[2];
+
+        T xj_cross_t[3] = {
+            xj[1] * tji[2] - xj[2] * tji[1], xj[2] * tji[0] - xj[0] * tji[2],
+            xj[0] * tji[1] - xj[1] * tji[0]};
+        T q_j_inv[4] = {q_j[0], -q_j[1], -q_j[2], -q_j[3]};
+        T et_xj_world[3];
+        ceres::QuaternionRotatePoint(q_j_inv, xj_cross_t, et_xj_world);
+        T et_xj[3];
+        ceres::QuaternionRotatePoint(q_i, et_xj_world, et_xj);
+
+        T denom = ceres::sqrt(
+            ex[0] * ex[0] + ex[1] * ex[1] + et_xj[0] * et_xj[0] + et_xj[1] * et_xj[1] + T(1e-12));
+        residual[0] = algebraic / denom;
+        return true;
+    }
+
+    Eigen::Vector3d xi_;
+    Eigen::Vector3d xj_;
+};
+
+}  // namespace
 
 void InitialSFM::collectStereoDepths(
     int frame_num, const State& cur_state, FeatureManager& feature_manager,
@@ -163,35 +213,13 @@ bool InitialSFM::computeEssential(
 
 bool InitialSFM::resolvePose(
     const std::vector<PoseCandidate>& candidates, const std::vector<cv::Point2f>& pts_seed,
-    const std::vector<cv::Point2f>& pts_other, const std::vector<double>& seed_depths,
-    PoseCandidate& selected) {
-    int pnp_pick = selectByPnP(candidates, pts_seed, pts_other, seed_depths);
-
+    const std::vector<cv::Point2f>& pts_other, PoseCandidate& selected) {
     std::vector<PoseCandidate> scored;
     scoreByCheirality(candidates, pts_seed, pts_other, scored);
 
-    std::vector<int> priority;
-    if (pnp_pick >= 0) {
-        for (int i = 0; i < static_cast<int>(scored.size()); ++i)
-            if (tassel_utils::rotDiff(scored[i].R, candidates[pnp_pick].R).norm() < 1e-6 &&
-                scored[i].t.dot(candidates[pnp_pick].t) > 0.5) {
-                priority.push_back(i);
-                break;
-            }
-    }
-    for (int i = 0; i < std::min(2, static_cast<int>(scored.size())); ++i) {
-        bool dup = false;
-        for (int p : priority) dup |= (p == i);
-        if (!dup) priority.push_back(i);
-    }
-
-    for (int pi = 0; pi < static_cast<int>(priority.size()); ++pi) {
-        int ci = priority[pi];
-        if (scored[ci].score < 5) continue;
-        selected = scored[ci];
-        return true;
-    }
-    return false;
+    if (scored.empty() || scored.front().score < 5) return false;
+    selected = scored.front();
+    return true;
 }
 
 bool InitialSFM::checkCheirality(
@@ -358,54 +386,85 @@ bool InitialSFM::runBA(
             }
         }
 
-        int n_ba_pts = 0;
+        int n_epipolar_edges = 0;
         for (int i = 0; i < feature_num_; i++) {
-            if (sfm_f[i].state != true) continue;
-            if (static_cast<int>(sfm_f[i].observation.size()) < 3) continue;
-            bool ok = true;
-            Eigen::Vector3d X(sfm_f[i].position);
-            for (int j = 0; j < static_cast<int>(sfm_f[i].observation.size()); j++) {
-                int frame_idx = sfm_f[i].observation[j].first;
-                if ((X - t_arr[frame_idx]).dot(q_cam_rel[frame_idx].toRotationMatrix().col(2)) <
-                    0.1) {
-                    ok = false;
-                    break;
+            const int nobs = static_cast<int>(sfm_f[i].observation.size());
+            if (nobs < 2) continue;
+            for (int j = 0; j < nobs; j++) {
+                int frame_j = sfm_f[i].observation[j].first;
+                for (int k = j + 1; k < nobs; k++) {
+                    int frame_k = sfm_f[i].observation[k].first;
+                    if (frame_j == frame_k) continue;
+                    ceres::CostFunction* cost_function =
+                        new ceres::AutoDiffCostFunction<EpipolarSampsonFactor, 1, 4, 3, 4, 3>(
+                            new EpipolarSampsonFactor(
+                                sfm_f[i].observation[j].second, sfm_f[i].observation[k].second));
+                    ceres::LossFunction* loss = new ceres::HuberLoss(e_ransac_threshold_);
+                    problem.AddResidualBlock(
+                        cost_function, loss, c_rotation[frame_j].data(),
+                        c_translation[frame_j].data(), c_rotation[frame_k].data(),
+                        c_translation[frame_k].data());
+                    n_epipolar_edges++;
                 }
             }
-            if (!ok) continue;
-            for (int j = 0; j < static_cast<int>(sfm_f[i].observation.size()); j++) {
-                int frame_idx = sfm_f[i].observation[j].first;
-                ceres::CostFunction* cost_function = new ReprojectionFactor(
-                    sfm_f[i].observation[j].second.x(), sfm_f[i].observation[j].second.y());
-                problem.AddResidualBlock(
-                    cost_function, nullptr, c_rotation[frame_idx].data(),
-                    c_translation[frame_idx].data(), sfm_f[i].position);
-            }
-            n_ba_pts++;
+        }
+
+        if (n_epipolar_edges == 0) {
+            spdlog::warn("SFM epipolar optimization: no valid edges");
+            return false;
         }
 
         ceres::Solver::Options options;
-        options.linear_solver_type = ceres::SPARSE_SCHUR;
+        options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
         options.max_num_iterations = ba_max_iterations_;
         options.num_threads = ba_num_threads_;
         ceres::Solver::Summary summary;
         ceres::Solve(options, &problem, &summary);
         spdlog::debug(
-            "SFM BA: {} pts, {}, iters={}, cost={:.4e}", n_ba_pts,
+            "SFM epipolar: {} edges, {}, iters={}, cost={:.4e}", n_epipolar_edges,
             summary.termination_type == ceres::CONVERGENCE ? "CONV" : "NOCONV",
             summary.iterations.size(), summary.final_cost);
 
         for (int i = 0; i < frame_num; i++) {
-            q_cam_rel[i].w() = c_rotation[i][0];
-            q_cam_rel[i].x() = c_rotation[i][1];
-            q_cam_rel[i].y() = c_rotation[i][2];
-            q_cam_rel[i].z() = c_rotation[i][3];
-            q_cam_rel[i] = q_cam_rel[i].inverse();
+            c_Quat[i] = Eigen::Quaterniond(
+                            c_rotation[i][0], c_rotation[i][1], c_rotation[i][2], c_rotation[i][3])
+                            .normalized();
+            c_Rotation[i] = c_Quat[i].toRotationMatrix();
+            c_Translation[i] =
+                Eigen::Vector3d(c_translation[i][0], c_translation[i][1], c_translation[i][2]);
+            Pose[i].block<3, 3>(0, 0) = c_Rotation[i];
+            Pose[i].block<3, 1>(0, 3) = c_Translation[i];
+            q_cam_rel[i] = c_Quat[i].inverse();
+            t_arr[i] = -1 * (q_cam_rel[i] * c_Translation[i]);
         }
-        for (int i = 0; i < frame_num; i++) {
-            t_arr[i] = -1 * (q_cam_rel[i] *
-                             Eigen::Vector3d(
-                                 c_translation[i][0], c_translation[i][1], c_translation[i][2]));
+
+        for (int i = 0; i < feature_num_; i++) sfm_f[i].state = false;
+        for (int i = 0; i < feature_num_; i++) {
+            int nobs = static_cast<int>(sfm_f[i].observation.size());
+            if (nobs < 3) continue;
+            std::vector<Eigen::Matrix<double, 3, 4>> obs_poses;
+            std::vector<Eigen::Vector2d> obs_uvs;
+            for (int j = 0; j < nobs; j++) {
+                int frame_idx = sfm_f[i].observation[j].first;
+                obs_poses.push_back(Pose[frame_idx]);
+                obs_uvs.push_back(sfm_f[i].observation[j].second);
+            }
+            Eigen::Vector3d point_3d =
+                tassel_utils::dehomogenize(tassel_utils::triangulateMultiView(obs_poses, obs_uvs));
+            bool ok = true;
+            for (int j = 0; j < nobs; j++) {
+                int frame_idx = sfm_f[i].observation[j].first;
+                if ((point_3d - t_arr[frame_idx])
+                        .dot(q_cam_rel[frame_idx].toRotationMatrix().col(2)) < 0.1) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (!ok) continue;
+            sfm_f[i].state = true;
+            sfm_f[i].position[0] = point_3d(0);
+            sfm_f[i].position[1] = point_3d(1);
+            sfm_f[i].position[2] = point_3d(2);
         }
     }
 
@@ -601,53 +660,6 @@ void InitialSFM::scoreByCheirality(
     });
 }
 
-int InitialSFM::selectByPnP(
-    const std::vector<PoseCandidate>& candidates, const std::vector<cv::Point2f>& pts_seed,
-    const std::vector<cv::Point2f>& pts_other, const std::vector<double>& seed_depths) {
-    std::vector<cv::Point3f> pts_3d;
-    std::vector<cv::Point2f> pts_2d;
-    pts_3d.reserve(pts_seed.size());
-    pts_2d.reserve(pts_seed.size());
-
-    for (size_t i = 0; i < pts_seed.size(); ++i) {
-        if (std::isnan(seed_depths[i])) continue;
-        double d = seed_depths[i];
-        pts_3d.emplace_back(pts_seed[i].x * d, pts_seed[i].y * d, d);
-        pts_2d.push_back(pts_other[i]);
-    }
-
-    if (static_cast<int>(pts_3d.size()) < 7) return -1;
-
-    cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
-    cv::Mat rvec, t_pnp_cv, inliers;
-    if (!cv::solvePnPRansac(
-            pts_3d, pts_2d, K, cv::Mat(), rvec, t_pnp_cv, false, 100, 0.01, 0.99, inliers))
-        return -1;
-    if (inliers.rows < std::max(7, static_cast<int>(pts_3d.size()) / 2)) return -1;
-
-    cv::Mat R_pnp_cv;
-    cv::Rodrigues(rvec, R_pnp_cv);
-    Eigen::Matrix3d R_pnp;
-    Eigen::Vector3d t_pnp_eig;
-    cv::cv2eigen(R_pnp_cv, R_pnp);
-    cv::cv2eigen(t_pnp_cv, t_pnp_eig);
-    Eigen::Vector3d t_pnp_dir = t_pnp_eig.normalized();
-
-    int best_idx = -1;
-    double best_err = std::numeric_limits<double>::max();
-    for (int i = 0; i < 4; ++i) {
-        double r_err = tassel_utils::rotDiff(candidates[i].R, R_pnp).norm();
-        double t_dot = candidates[i].t.dot(t_pnp_dir);
-        if (t_dot < 0.5) continue;
-        double err = r_err + (1.0 - t_dot);
-        if (err < best_err) {
-            best_err = err;
-            best_idx = i;
-        }
-    }
-    return best_idx;
-}
-
 bool InitialSFM::construct(
     State& cur_state, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
     const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1,
@@ -677,32 +689,8 @@ bool InitialSFM::construct(
                 seed_id, other_id, sfm_f, all_frames, candidates, pts_seed, pts_other))
             continue;
 
-        std::vector<double> seed_depths(pts_seed.size(), std::numeric_limits<double>::quiet_NaN());
-        for (size_t k = 0; k < pts_seed.size(); ++k) {
-            for (const auto& f : sfm_f) {
-                bool in_seed = false, in_other = false;
-                Eigen::Vector2d uv_seed;
-                for (const auto& [fid, uv] : f.observation) {
-                    if (fid == seed_id) {
-                        in_seed = true;
-                        uv_seed = uv;
-                    }
-                    if (fid == other_id) in_other = true;
-                }
-                if (in_seed && in_other && std::abs(uv_seed.x() - pts_seed[k].x) < 1e-6 &&
-                    std::abs(uv_seed.y() - pts_seed[k].y) < 1e-6) {
-                    for (const auto& obs : all_frames[seed_id])
-                        if (obs.feature_id == f.id) {
-                            seed_depths[k] = obs.depth;
-                            break;
-                        }
-                    break;
-                }
-            }
-        }
-
         PoseCandidate selected;
-        if (!resolvePose(candidates, pts_seed, pts_other, seed_depths, selected)) continue;
+        if (!resolvePose(candidates, pts_seed, pts_other, selected)) continue;
 
         Eigen::Matrix3d R_sel = selected.R;
         Eigen::Vector3d t_sel = selected.t;

@@ -207,7 +207,7 @@ TEST_F(LandmarkBlockTest, GetDenseExtractsCorrectRows) {
     int kept = lb.get_kept_rows();
     int pad = lb.get_padding_index();
 
-    Eigen::MatrixXd Q2Jp(kept, pad);
+    Eigen::MatrixXd Q2Jp(kept, pad + 1);
     Eigen::VectorXd Q2r(kept);
     lb.get_dense_Q2Jp_Q2r(Q2Jp, Q2r, 0);
 
@@ -215,6 +215,7 @@ TEST_F(LandmarkBlockTest, GetDenseExtractsCorrectRows) {
         for (int c = 0; c < pad; ++c) {
             EXPECT_DOUBLE_EQ(Q2Jp(r, c), s(r + 1, c));
         }
+        EXPECT_DOUBLE_EQ(Q2Jp(r, pad), s(r + 1, lb.get_delay_index()));
         EXPECT_DOUBLE_EQ(Q2r(r), s(r + 1, lb.get_residual_index()));
     }
 }
@@ -232,14 +233,14 @@ TEST_F(LandmarkBlockTest, GetDenseWithOffsetPreservesPrefix) {
     int pad = lb.get_padding_index();
     int offset = 3;
 
-    Eigen::MatrixXd Q2Jp(offset + kept, pad);
+    Eigen::MatrixXd Q2Jp(offset + kept, pad + 1);
     Eigen::VectorXd Q2r(offset + kept);
     Q2Jp.setConstant(-1.0);
     Q2r.setConstant(-1.0);
     lb.get_dense_Q2Jp_Q2r(Q2Jp, Q2r, offset);
 
     for (int r = 0; r < offset; ++r) {
-        for (int c = 0; c < pad; ++c) {
+        for (int c = 0; c < pad + 1; ++c) {
             EXPECT_DOUBLE_EQ(Q2Jp(r, c), -1.0) << "offset prefix was overwritten";
         }
         EXPECT_DOUBLE_EQ(Q2r(r), -1.0);
@@ -248,6 +249,7 @@ TEST_F(LandmarkBlockTest, GetDenseWithOffsetPreservesPrefix) {
         for (int c = 0; c < pad; ++c) {
             EXPECT_DOUBLE_EQ(Q2Jp(offset + r, c), s(r + 1, c));
         }
+        EXPECT_DOUBLE_EQ(Q2Jp(offset + r, pad), s(r + 1, lb.get_delay_index()));
         EXPECT_DOUBLE_EQ(Q2r(offset + r), s(r + 1, lb.get_residual_index()));
     }
 }

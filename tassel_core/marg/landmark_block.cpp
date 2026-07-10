@@ -9,7 +9,13 @@
 namespace tassel_core {
 
 LandmarkBlock::LandmarkBlock(int dim, ceres::LossFunction* loss)
-    : lm_idx_(0), res_idx_(0), padding_idx_(0), num_rows_(0), dim_(dim), loss_(loss) {}
+    : delay_idx_(0),
+      lm_idx_(0),
+      res_idx_(0),
+      padding_idx_(0),
+      num_rows_(0),
+      dim_(dim),
+      loss_(loss) {}
 
 void LandmarkBlock::allocate(int num_frames, int num_obs, int dim) {
     padding_idx_ = num_frames * dim;
@@ -17,7 +23,8 @@ void LandmarkBlock::allocate(int num_frames, int num_obs, int dim) {
 
     int padding_size = padding_idx_ % 4;
     int padding_cols = (padding_size == 0) ? 0 : 4 - padding_size;
-    lm_idx_ = padding_idx_ + padding_cols;
+    delay_idx_ = padding_idx_ + padding_cols;
+    lm_idx_ = delay_idx_ + 1;
     res_idx_ = lm_idx_ + 1;
 
     storage_.resize(num_rows_, res_idx_ + 1);
@@ -78,6 +85,7 @@ void LandmarkBlock::linearize(
     int row = (offset - 1) * 2;
     storage_.block<2, 6>(row, start_frame_id * dim_) = scale * jacobian_pose_i;
     storage_.block<2, 6>(row, target_id * dim_) = scale * jacobian_pose_j;
+    storage_.block<2, 1>(row, delay_idx_) = scale * jacobian_dt;
     storage_.block<2, 1>(row, lm_idx_) = scale * jacobian_landmark;
     storage_.block<2, 1>(row, res_idx_) = scale * residual;
 }
@@ -109,6 +117,8 @@ void LandmarkBlock::get_dense_Q2Jp_Q2r(
     Q2r.segment(start_row, kept_rows) = storage_.col(res_idx_).tail(kept_rows);
     Q2Jp.block(start_row, 0, kept_rows, padding_idx_) =
         storage_.block(1, 0, kept_rows, padding_idx_);
+    Q2Jp.col(Q2Jp.cols() - 1).segment(start_row, kept_rows) =
+        storage_.col(delay_idx_).tail(kept_rows);
 }
 
 }  // namespace tassel_core

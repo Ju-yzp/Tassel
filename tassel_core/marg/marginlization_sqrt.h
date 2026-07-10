@@ -3,6 +3,7 @@
 
 #include <ceres/loss_function.h>
 #include <Eigen/Core>
+#include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <sophus/so3.hpp>
@@ -55,7 +56,7 @@ public:
     }
 
     void linearize() {
-        num_cols = state_->max_frame_count * 15;
+        num_cols = state_->max_frame_count * 15 + 1;
         num_rows = 0;
         for (size_t idx = 0; idx < marg_features_.size(); ++idx) {
             auto& lmb = landmark_blocks_[idx];
@@ -105,7 +106,13 @@ public:
 
         if (prior_) {
             int prior_cols = static_cast<int>(prior_->H.cols());
-            Jp.block(rows, 0, prior_rows, prior_cols) = prior_->H;
+            const int state_cols = std::min(prior_cols, (state_->max_frame_count - 1) * 15);
+            if (state_cols > 0) {
+                Jp.block(rows, 0, prior_rows, state_cols) = prior_->H.leftCols(state_cols);
+            }
+            if (prior_cols == state_cols + 1) {
+                Jp.col(num_cols - 1).segment(rows, prior_rows) = prior_->H.col(prior_cols - 1);
+            }
             b.segment(rows, prior_rows) = prior_->b;
         }
     }
