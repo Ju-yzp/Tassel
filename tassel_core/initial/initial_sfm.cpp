@@ -10,8 +10,6 @@
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/core/types.hpp>
 
-#include <sophus/so3.hpp>
-
 #include "tassel_utils/rotation.h"
 #include "tassel_utils/triangulation.h"
 
@@ -69,9 +67,9 @@ struct EpipolarSampsonFactor {
 }  // namespace
 
 void InitialSFM::collectStereoDepths(
-    int frame_num, const State& cur_state, FeatureManager& feature_manager,
-    const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1,
-    const Eigen::Vector3d& tic1, std::vector<std::vector<Observation>>& all_frames) {
+    int frame_num, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
+    const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1,
+    std::vector<std::vector<Observation>>& all_frames) {
     for (auto& [id, feature] : feature_manager.features()) {
         int start_id = static_cast<int>(feature.start_frame_id);
         for (size_t k = 0; k < feature.observations.size(); ++k) {
@@ -87,18 +85,17 @@ void InitialSFM::collectStereoDepths(
         }
     }
 
-    R_lr_ = ric1.transpose() * ric;
-    P_lr_ = ric1.transpose() * (tic - tic1);
+    Eigen::Matrix3d R_lr = ric1.transpose() * ric;
+    Eigen::Vector3d P_lr = ric1.transpose() * (tic - tic1);
     for (auto& frame_obs : all_frames) {
         for (auto& obs : frame_obs) {
-            if (obs.is_stereo) obs.depth = triangulateStereo(obs.uv_l, obs.uv_r, R_lr_, P_lr_);
+            if (obs.is_stereo) obs.depth = triangulateStereo(obs.uv_l, obs.uv_r, R_lr, P_lr);
         }
     }
 }
 
 int InitialSFM::selectSeedFrame(
-    int frame_num, const std::vector<std::vector<Observation>>& all_frames,
-    const std::vector<SFMFeature>& /*sfm_f*/) {
+    int frame_num, const std::vector<std::vector<Observation>>& all_frames) {
     std::vector<int> valid_per_frame(frame_num, 0);
     for (int i = 0; i < frame_num; ++i) {
         for (const auto& obs : all_frames[i])
@@ -177,8 +174,8 @@ std::vector<std::pair<int, int>> InitialSFM::findParallaxFrames(
 
 bool InitialSFM::computeEssential(
     int seed_id, int other_id, const std::vector<SFMFeature>& sfm_f,
-    const std::vector<std::vector<Observation>>&, std::vector<PoseCandidate>& candidates,
-    std::vector<cv::Point2f>& pts_seed, std::vector<cv::Point2f>& pts_other) {
+    std::vector<PoseCandidate>& candidates, std::vector<cv::Point2f>& pts_seed,
+    std::vector<cv::Point2f>& pts_other) {
     for (const auto& f : sfm_f) {
         bool in_seed = false, in_other = false;
         Eigen::Vector2d uv_seed, uv_other;
@@ -222,47 +219,10 @@ bool InitialSFM::resolvePose(
     return true;
 }
 
-bool InitialSFM::checkCheirality(
-    int seed_id, int other_id, const std::vector<Eigen::Quaterniond>& q_cam_rel,
-    const Eigen::Vector3d& T_dir, const std::vector<SFMFeature>& sfm_f) {
-    const Eigen::Quaterniond& q_other = q_cam_rel[other_id];
-    std::vector<Eigen::Matrix<double, 3, 4>> P(2);
-    P[0].block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
-    P[0].block<3, 1>(0, 3) = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d Rw2c_1 = q_other.inverse().toRotationMatrix();
-    P[1].block<3, 3>(0, 0) = Rw2c_1;
-    P[1].block<3, 1>(0, 3) = -Rw2c_1 * T_dir.normalized();
-
-    int n_valid = 0;
-    for (const auto& f : sfm_f) {
-        bool h0 = false, h1 = false;
-        Eigen::Vector2d uv0, uv1;
-        for (const auto& [fid, uv] : f.observation) {
-            if (fid == seed_id) {
-                h0 = true;
-                uv0 = uv;
-            }
-            if (fid == other_id) {
-                h1 = true;
-                uv1 = uv;
-            }
-        }
-        if (!h0 || !h1) continue;
-        Eigen::Vector4d pt = tassel_utils::triangulateTwoView(P[0], uv0, P[1], uv1);
-        if (std::abs(pt(3)) < 1e-10) continue;
-        Eigen::Vector3d X = tassel_utils::dehomogenize(pt);
-        if (X.z() > 0.1 && (X - T_dir.normalized()).dot(q_other.toRotationMatrix().col(2)) > 0.1)
-            n_valid++;
-    }
-    if (n_valid < 5) return false;
-    return true;
-}
-
 bool InitialSFM::runBA(
-    int frame_num, int seed_id, int other_id, const Eigen::Matrix3d& /*relative_R*/,
-    const Eigen::Vector3d& relative_T, std::vector<Eigen::Quaterniond>& q_cam_rel,
-    std::vector<Eigen::Vector3d>& t_arr, std::vector<SFMFeature>& sfm_f,
-    std::map<int, Eigen::Vector3d>& tracked_pts) {
+    int frame_num, int seed_id, int other_id, const Eigen::Vector3d& relative_T,
+    std::vector<Eigen::Quaterniond>& q_cam_rel, std::vector<Eigen::Vector3d>& t_arr,
+    std::vector<SFMFeature>& sfm_f, std::map<int, Eigen::Vector3d>& tracked_pts) {
     feature_num_ = static_cast<int>(sfm_f.size());
     int l = seed_id, last = other_id;
 
@@ -337,34 +297,6 @@ bool InitialSFM::runBA(
         if (i == l || i == last) continue;
         q_cam_rel[i] = c_Quat[i].inverse();
         t_arr[i] = -1 * (c_Quat[i] * c_Translation[i]);
-    }
-
-    for (int j = 0; j < feature_num_; j++) sfm_f[j].state = false;
-    for (int j = 0; j < feature_num_; j++) {
-        int nobs = static_cast<int>(sfm_f[j].observation.size());
-        if (nobs < 3) continue;
-        std::vector<Eigen::Matrix<double, 3, 4>> obs_poses;
-        std::vector<Eigen::Vector2d> obs_uvs;
-        for (int k = 0; k < nobs; k++) {
-            int fid = sfm_f[j].observation[k].first;
-            obs_poses.push_back(Pose[fid]);
-            obs_uvs.push_back(sfm_f[j].observation[k].second);
-        }
-        Eigen::Vector3d point_3d =
-            tassel_utils::dehomogenize(tassel_utils::triangulateMultiView(obs_poses, obs_uvs));
-        bool ok = true;
-        for (int k = 0; k < nobs; k++) {
-            int fid = sfm_f[j].observation[k].first;
-            if ((point_3d - t_arr[fid]).dot(q_cam_rel[fid].toRotationMatrix().col(2)) < 0.1) {
-                ok = false;
-                break;
-            }
-        }
-        if (!ok) continue;
-        sfm_f[j].state = true;
-        sfm_f[j].position[0] = point_3d(0);
-        sfm_f[j].position[1] = point_3d(1);
-        sfm_f[j].position[2] = point_3d(2);
     }
 
     {
@@ -670,8 +602,8 @@ bool InitialSFM::construct(
     auto sfm_f = feature_manager.collectSFMFeatures(frame_num);
 
     std::vector<std::vector<Observation>> all_frames(frame_num);
-    collectStereoDepths(frame_num, cur_state, feature_manager, ric, tic, ric1, tic1, all_frames);
-    int seed_id = selectSeedFrame(frame_num, all_frames, sfm_f);
+    collectStereoDepths(frame_num, feature_manager, ric, tic, ric1, tic1, all_frames);
+    int seed_id = selectSeedFrame(frame_num, all_frames);
     if (seed_id < 0) return false;
 
     auto other_candidates = findParallaxFrames(seed_id, frame_num, all_frames, sfm_f);
@@ -685,9 +617,7 @@ bool InitialSFM::construct(
     for (const auto& [other_id, common] : other_candidates) {
         std::vector<PoseCandidate> candidates;
         std::vector<cv::Point2f> pts_seed, pts_other;
-        if (!computeEssential(
-                seed_id, other_id, sfm_f, all_frames, candidates, pts_seed, pts_other))
-            continue;
+        if (!computeEssential(seed_id, other_id, sfm_f, candidates, pts_seed, pts_other)) continue;
 
         PoseCandidate selected;
         if (!resolvePose(candidates, pts_seed, pts_other, selected)) continue;
@@ -702,13 +632,9 @@ bool InitialSFM::construct(
         q_cam_rel[other_id] = Eigen::Quaterniond(tassel_utils::normalizeRot(R_sel.transpose()));
         Eigen::Vector3d T_dir = (-R_sel.transpose() * t_sel).normalized();
 
-        if (!checkCheirality(seed_id, other_id, q_cam_rel, T_dir, sfm_f)) continue;
-
         std::vector<Eigen::Vector3d> t_arr(frame_num, Eigen::Vector3d::Zero());
         std::map<int, Eigen::Vector3d> tracked_pts;
-        if (!runBA(
-                frame_num, seed_id, other_id, Eigen::Matrix3d::Identity(), T_dir, q_cam_rel, t_arr,
-                sfm_f, tracked_pts))
+        if (!runBA(frame_num, seed_id, other_id, T_dir, q_cam_rel, t_arr, sfm_f, tracked_pts))
             continue;
 
         Rs_out.resize(frame_num);

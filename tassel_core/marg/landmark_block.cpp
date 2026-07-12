@@ -50,38 +50,31 @@ void LandmarkBlock::linearize(
     int target_id = start_frame_id + offset;
     Eigen::Vector2d pt_j(observations[offset].pt.x, observations[offset].pt.y);
     double inv_depth = 1.0 / depth;
-    auto visual_factor = new VisualFactor(
+    VisualFactor visual_factor(
         uv_i, pt_j, ric, tic, state.gyro_vec[start_frame_id], state.gyro_vec[target_id],
         state.acc_vec[start_frame_id], state.acc_vec[target_id],
         state.params_speed_bias[start_frame_id].data(), state.params_speed_bias[target_id].data(),
         state.params_speed_bias[start_frame_id].data() + 6,
         state.params_speed_bias[target_id].data() + 6,
         state.params_speed_bias[start_frame_id].data() + 3,
-        state.params_speed_bias[target_id].data() + 3, sqrt_info, state.camera);
+        state.params_speed_bias[target_id].data() + 3, sqrt_info, state.camera,
+        observations[0].applied_delay, observations[offset].applied_delay);
 
-    std::vector<double*> jacobians;
-    jacobians.push_back(jacobian_pose_i.data());
-    jacobians.push_back(jacobian_pose_j.data());
-    jacobians.push_back(jacobian_dt.data());
-    jacobians.push_back(jacobian_landmark.data());
+    std::vector<double*> jacobians = {
+        jacobian_pose_i.data(), jacobian_pose_j.data(), jacobian_dt.data(),
+        jacobian_landmark.data()};
+    std::vector<double const*> parameters = {
+        state.params_pose[start_frame_id].data(), state.params_pose[target_id].data(),
+        &state.param_delay_time, &inv_depth};
+    visual_factor.Evaluate(parameters.data(), residual.data(), jacobians.data());
 
-    std::vector<double const*> parameters;
-    parameters.push_back(state.params_pose[start_frame_id].data());
-    parameters.push_back(state.params_pose[target_id].data());
-    parameters.push_back(&state.param_delay_time);
-    parameters.push_back(&inv_depth);
-
-    visual_factor->Evaluate(parameters.data(), residual.data(), jacobians.data());
-    delete visual_factor;
-
-    double sqrt_loss = 1.0;
+    double scale = 1.0;
     if (loss_) {
-        double s = residual.squaredNorm();
         double rho[3];
-        loss_->Evaluate(s, rho);
-        sqrt_loss = std::sqrt(rho[1]);
+        loss_->Evaluate(residual.squaredNorm(), rho);
+        scale = std::sqrt(rho[1]);
     }
-    double scale = sqrt_loss;
+
     int row = (offset - 1) * 2;
     storage_.block<2, 6>(row, start_frame_id * dim_) = scale * jacobian_pose_i;
     storage_.block<2, 6>(row, target_id * dim_) = scale * jacobian_pose_j;

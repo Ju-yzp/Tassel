@@ -25,6 +25,7 @@
 #include "factor/visual_factor.h"
 #include "marg/marg_helper.h"
 #include "marg/marginlization_sqrt.h"
+#include "tassel_utils/macros.h"
 #include "tassel_utils/se3_right_manifold.h"
 
 #include "initial/initial_alignment.h"
@@ -80,8 +81,9 @@ void Estimator::reset() {
 
 void Estimator::processMeasurement(
     double ts, const std::unordered_map<int, FeaturePerFrame>& feature_frame,
-    const std::vector<tassel_utils::IMUMeasurement>& imu_measurements) {
+    const std::vector<tassel_utils::IMUMeasurement>& imu_measurements, double applied_delay) {
     int& frame_count = state_->cur_frame_count;
+    state_->frame_delays[frame_count] = applied_delay;
     if (last_ts_ < 0 && !imu_measurements.empty()) {
         last_ts_ = imu_measurements.back().timestamp;
         last_imu_acc_ = imu_measurements.back().acc - params_.acc_bias;
@@ -143,6 +145,9 @@ void Estimator::processMeasurement(
                     *state_, params_.ric, params_.tic, params_.ric1, params_.tic1);
             }
             optimize();
+            if (pose_callback_) {
+                pose_callback_(ts, Sophus::SE3d(state_->Rs[frame_count], state_->Ps[frame_count]));
+            }
             feature_manager_->removeOutliers(*state_, params_.ric, params_.tic);
             buildPrior();
             feature_manager_->removeOldest(*state_, params_.ric, params_.tic);
@@ -154,6 +159,7 @@ void Estimator::processMeasurement(
             state_->Vs[frame_count] = state_->Vs[frame_count - 1];
             state_->Bas[frame_count] = state_->Bas[frame_count - 1];
             state_->Bgs[frame_count] = state_->Bgs[frame_count - 1];
+            state_->frame_delays[frame_count] = state_->frame_delays[frame_count - 1];
             int next_idx = frame_count - 1;
             visitPreintegrators([&](auto& preintegrators) {
                 if (next_idx < static_cast<int>(preintegrators.size())) {
@@ -177,15 +183,10 @@ void Estimator::processMeasurement(
         spdlog::info("{} valid points", static_cast<int>(pts.size()));
         cloud_callback_(ts, pts);
     }
-    if (pose_callback_ && gravity_initialized_) {
-        pose_callback_(
-            ts,
-            Sophus::SE3d(state_->Rs[state_->cur_frame_count], state_->Ps[state_->cur_frame_count]));
-    }
 }
 
 void Estimator::optimize() {
-    double delay_time_pre = state_->delay_time;
+    const int latest_id = state_->cur_frame_count;
 
     state_->stateToParams();
     auto features = feature_manager_->collectLandmarks();
@@ -197,11 +198,14 @@ void Estimator::optimize() {
         problem.AddParameterBlock(state_->params_pose[i].data(), 6, se3_manifold);
         problem.AddParameterBlock(state_->params_speed_bias[i].data(), 9);
     }
+    if (!marg_data_) {
+        problem.SetParameterBlockConstant(state_->params_pose[0].data());
+    }
 
     problem.AddParameterBlock(&state_->param_delay_time, 1);
     bool set_dt_constant_flag = true;
     for (int i = 0; i < state_->cur_frame_count; ++i) {
-        if (state_->gyro_vec[i].norm() > params_.dt_gyro_threshold) {
+        if ((state_->gyro_vec[i] - state_->Bgs[i]).norm() > params_.dt_gyro_threshold) {
             set_dt_constant_flag = false;
             break;
         }
@@ -247,7 +251,8 @@ void Estimator::optimize() {
                 state_->params_speed_bias[host_id].data() + 6,
                 state_->params_speed_bias[target_id].data() + 6,
                 state_->params_speed_bias[host_id].data() + 3,
-                state_->params_speed_bias[target_id].data() + 3, sqrt_info, state_->camera);
+                state_->params_speed_bias[target_id].data() + 3, sqrt_info, state_->camera,
+                f->observations[0].applied_delay, f->observations[obs_idx].applied_delay);
             problem.AddResidualBlock(
                 cost, loss, state_->params_pose[host_id].data(),
                 state_->params_pose[target_id].data(), &state_->param_delay_time,
@@ -258,7 +263,7 @@ void Estimator::optimize() {
     visitPreintegrators([&](auto& preintegrators) {
         using Integrator = typename std::decay_t<decltype(preintegrators)>::value_type;
         for (int i = 0; i < state_->cur_frame_count; ++i) {
-            if (preintegrators[i].buffer.size() < 2 || preintegrators[i].sum_dt > 2.0) continue;
+            if (preintegrators[i].buffer.size() < 2) continue;
             auto pint_ptr = std::shared_ptr<Integrator>(&preintegrators[i], [](Integrator*) {});
             auto* imu_cost = new IMUFactor<Integrator>(pint_ptr);
             problem.AddResidualBlock(
@@ -293,15 +298,47 @@ void Estimator::optimize() {
     });
 
     spdlog::info(
-        "Ba {:.4f} {:.4f} {:.4f} Bg {:.4f} {:.4f} {:.4f} delay_time {:.2f} ms", state_->Bas[0].x(),
-        state_->Bas[0].y(), state_->Bas[0].z(), state_->Bgs[0].x(), state_->Bgs[0].y(),
-        state_->Bgs[0].z(), state_->param_delay_time * 1e3);
+        "Ba {:.4f} {:.4f} {:.4f} Bg {:.4f} {:.4f} {:.4f} delay_time {:.2f} ms",
+        state_->Bas[latest_id].x(), state_->Bas[latest_id].y(), state_->Bas[latest_id].z(),
+        state_->Bgs[latest_id].x(), state_->Bgs[latest_id].y(), state_->Bgs[latest_id].z(),
+        state_->param_delay_time * 1e3);
 }
 
 void Estimator::buildPrior() {
     const int n = state_->max_frame_count;
     state_->stateToParams();
     const double visual_huber_delta = params_.reproj_huber_thres * params_.visual_factor_weight;
+
+    // The dense marginalization system below is linearized at the current state. Rebase the
+    // carried prior to that same point before inserting its H and b into the new QR system.
+    MargLinData rebased_prior;
+    const MargLinData* prior_for_marg = nullptr;
+    if (marg_data_) {
+        rebased_prior = *marg_data_;
+        MarginalizationPriorFactor prior_factor(*marg_data_);
+
+        const int num_kept = static_cast<int>(marg_data_->linearization_poses.size());
+        TASSEL_ASSERT(num_kept == n - 1);
+        TASSEL_ASSERT(static_cast<int>(marg_data_->linearization_speed_bias.size()) == num_kept);
+        TASSEL_ASSERT(marg_data_->H.cols() == num_kept * 15 + 1);
+
+        std::vector<const double*> prior_parameters;
+        prior_parameters.reserve(num_kept * 2 + 1);
+        for (int i = 0; i < num_kept; ++i) {
+            prior_parameters.push_back(state_->params_pose[i].data());
+            prior_parameters.push_back(state_->params_speed_bias[i].data());
+        }
+        prior_parameters.push_back(&state_->param_delay_time);
+
+        rebased_prior.b.resize(prior_factor.num_residuals());
+        prior_factor.Evaluate(prior_parameters.data(), rebased_prior.b.data(), nullptr);
+        for (int i = 0; i < num_kept; ++i) {
+            rebased_prior.linearization_poses[i] = state_->params_pose[i];
+            rebased_prior.linearization_speed_bias[i] = state_->params_speed_bias[i];
+        }
+        rebased_prior.linearization_delay_time = state_->param_delay_time;
+        prior_for_marg = &rebased_prior;
+    }
 
     auto marg_features = feature_manager_->collectMargFeatures();
     spdlog::info("{} feature marginals", static_cast<int>(marg_features.size()));
@@ -312,7 +349,7 @@ void Estimator::buildPrior() {
 
         auto marg = MarginlizationSqrt<Integrator>(
             marg_features, std::make_unique<ceres::HuberLoss>(visual_huber_delta), state_,
-            pint_ptrs, params_.ric, params_.tic, marg_data_.get());
+            pint_ptrs, params_.ric, params_.tic, prior_for_marg);
         marg.allocate();
         marg.linearize();
         marg.performQRAll();
@@ -348,6 +385,7 @@ void Estimator::slideWindow() {
         state_->Vs[i] = state_->Vs[i + 1];
         state_->Bas[i] = state_->Bas[i + 1];
         state_->Bgs[i] = state_->Bgs[i + 1];
+        state_->frame_delays[i] = state_->frame_delays[i + 1];
     }
     // 滑动预积分器
     visitPreintegrators([&](auto& preintegrators) {

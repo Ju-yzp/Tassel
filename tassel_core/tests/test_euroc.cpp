@@ -68,6 +68,7 @@ struct LatestDisplayImage {
 struct SyncedPacket {
     std::shared_ptr<tassel_utils::StereoObservation> stereo;
     std::vector<tassel_utils::IMUMeasurement> imu_slice;
+    double applied_delay = 0.0;
 };
 
 class BlockingDatasetSync {
@@ -105,27 +106,29 @@ public:
         cv_.notify_all();
     }
 
-    bool waitPop(SyncedPacket& packet) {
+    bool waitPop(SyncedPacket& packet, double applied_delay) {
         std::unique_lock<std::mutex> lock(mutex_);
         cv_.wait(lock, [&]() {
             if (stereo_queue_.empty()) return stereo_done_;
-            const double ts = stereo_queue_.front()->timestamp;
-            return imu_done_ || (!imu_queue_.empty() && imu_queue_.back().timestamp >= ts);
+            const double sync_ts = stereo_queue_.front()->timestamp + applied_delay;
+            return imu_done_ || (!imu_queue_.empty() && imu_queue_.back().timestamp >= sync_ts);
         });
 
         if (stereo_queue_.empty()) {
             return false;
         }
-        if (imu_queue_.empty() || imu_queue_.back().timestamp < stereo_queue_.front()->timestamp) {
+        const double sync_ts = stereo_queue_.front()->timestamp + applied_delay;
+        if (imu_queue_.empty() || imu_queue_.back().timestamp < sync_ts) {
             std::cerr << "[EuRoC] missing IMU coverage for stereo t="
-                      << stereo_queue_.front()->timestamp << "\n";
+                      << stereo_queue_.front()->timestamp << " sync t=" << sync_ts
+                      << " applied_delay=" << applied_delay << "\n";
             return false;
         }
 
         packet.stereo = std::move(stereo_queue_.front());
         stereo_queue_.pop_front();
+        packet.applied_delay = applied_delay;
 
-        const double ts = packet.stereo->timestamp;
         packet.imu_slice.clear();
         if (has_boundary_) {
             packet.imu_slice.push_back(boundary_imu_);
@@ -133,18 +136,18 @@ public:
 
         const double prev_ts = has_boundary_ ? boundary_imu_.timestamp : -1.0;
         for (const auto& imu : imu_queue_) {
-            if (imu.timestamp >= ts) break;
+            if (imu.timestamp >= sync_ts) break;
             if (prev_ts < 0.0 || imu.timestamp > prev_ts) {
                 packet.imu_slice.push_back(imu);
             }
         }
 
-        auto boundary = interpolateBoundary(ts);
+        auto boundary = interpolateBoundary(sync_ts);
         if (packet.imu_slice.empty() || packet.imu_slice.back().timestamp < boundary.timestamp) {
             packet.imu_slice.push_back(boundary);
         }
 
-        while (!imu_queue_.empty() && imu_queue_.front().timestamp <= ts) {
+        while (!imu_queue_.empty() && imu_queue_.front().timestamp <= sync_ts) {
             imu_queue_.pop_front();
         }
         boundary_imu_ = boundary;
@@ -552,7 +555,7 @@ int main(int argc, char** argv) {
     size_t processed = 0;
     while (rclcpp::ok()) {
         SyncedPacket packet;
-        if (!sync.waitPop(packet)) break;
+        if (!sync.waitPop(packet, state->delay_time)) break;
         if (!packet.stereo) continue;
 
         std::unordered_map<int, FeaturePerFrame> feature_frame;
@@ -560,6 +563,10 @@ int main(int argc, char** argv) {
             tassel_utils::Timer t("euroc_stereo_tracking");
             feature_frame =
                 tracker.stereoTracking(0, packet.stereo->left_img, 1, packet.stereo->right_img);
+        }
+        for (auto& [id, feature] : feature_frame) {
+            (void)id;
+            feature.applied_delay = packet.applied_delay;
         }
 
         cv::Mat left_tracking = packet.stereo->left_img.clone();
@@ -573,7 +580,8 @@ int main(int argc, char** argv) {
             latest_image.image = std::move(tracking_disp);
         }
 
-        estimator.processMeasurement(packet.stereo->timestamp, feature_frame, packet.imu_slice);
+        estimator.processMeasurement(
+            packet.stereo->timestamp, feature_frame, packet.imu_slice, packet.applied_delay);
 
         ++processed;
 

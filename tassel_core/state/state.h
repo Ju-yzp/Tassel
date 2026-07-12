@@ -19,6 +19,7 @@ struct State {
         Vs.resize(max_frame_count, Eigen::Vector3d::Zero());
         Bas.resize(max_frame_count, Eigen::Vector3d::Zero());
         Bgs.resize(max_frame_count, Eigen::Vector3d::Zero());
+        frame_delays.resize(max_frame_count, 0.0);
         params_pose.resize(max_frame_count, std::array<double, 6>{0, 0, 0, 0, 0, 0});
         params_speed_bias.resize(max_frame_count, std::array<double, 9>{0, 0, 0, 0, 0, 0, 0, 0, 0});
         delay_time = 0.0;
@@ -94,11 +95,10 @@ struct State {
     State get_compensated_state() const {
         State compensated = *this;
         for (int i = 0; i < cur_frame_count; ++i) {
-            compensated.Rs[i] =
-                Rs[i] * Sophus::SO3d::exp((gyro_vec[i] - Bgs[i]) * delay_time).matrix();
-            compensated.Ps[i] =
-                Ps[i] + Vs[i] * delay_time +
-                0.5 * (Rs[i] * (acc_vec[i] - Bas[i]) - tassel_utils::G) * delay_time * delay_time;
+            const double dt = delay_time - frame_delays[i];
+            compensated.Rs[i] = Rs[i] * Sophus::SO3d::exp((gyro_vec[i] - Bgs[i]) * dt).matrix();
+            compensated.Ps[i] = Ps[i] + Vs[i] * dt +
+                                0.5 * (Rs[i] * (acc_vec[i] - Bas[i]) - tassel_utils::G) * dt * dt;
         }
         return compensated;
     }
@@ -112,6 +112,7 @@ struct State {
         std::fill(Vs.begin(), Vs.end(), Eigen::Vector3d::Zero());
         std::fill(Bas.begin(), Bas.end(), Eigen::Vector3d::Zero());
         std::fill(Bgs.begin(), Bgs.end(), Eigen::Vector3d::Zero());
+        std::fill(frame_delays.begin(), frame_delays.end(), 0.0);
         std::fill(params_pose.begin(), params_pose.end(), std::array<double, 6>{0, 0, 0, 0, 0, 0});
         std::fill(
             params_speed_bias.begin(), params_speed_bias.end(),
@@ -130,6 +131,7 @@ struct State {
     std::vector<Eigen::Vector3d> Vs;
     std::vector<Eigen::Vector3d> Bas;
     std::vector<Eigen::Vector3d> Bgs;
+    std::vector<double> frame_delays;
     double delay_time;
 
     // 保存imu(t)时刻采样的imu体坐标系下的加速度和角速度
@@ -144,7 +146,6 @@ struct State {
     //  相机模型（用于 VisualFactor 畸变与雅可比）
     const CameraBase* camera = nullptr;
 
-    std::vector<std::array<double, 9>> storage_speed_bias;
     //  视觉因子信息矩阵
     Eigen::Matrix2d visual_sqrt_info;
 };

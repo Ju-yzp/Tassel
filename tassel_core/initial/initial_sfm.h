@@ -17,7 +17,6 @@ struct SFMFeature {
     int id;
     std::vector<std::pair<int, Eigen::Vector2d>> observation;
     double position[3];
-    double depth;
 };
 
 class InitialSFM {
@@ -58,13 +57,11 @@ private:
     };
 
     void collectStereoDepths(
-        int frame_num, const State& cur_state, FeatureManager& feature_manager,
-        const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1,
-        const Eigen::Vector3d& tic1, std::vector<std::vector<Observation>>& all_frames);
+        int frame_num, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
+        const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1,
+        std::vector<std::vector<Observation>>& all_frames);
 
-    int selectSeedFrame(
-        int frame_num, const std::vector<std::vector<Observation>>& all_frames,
-        const std::vector<SFMFeature>& sfm_f);
+    int selectSeedFrame(int frame_num, const std::vector<std::vector<Observation>>& all_frames);
 
     std::vector<std::pair<int, int>> findParallaxFrames(
         int seed_id, int frame_num, const std::vector<std::vector<Observation>>& all_frames,
@@ -72,7 +69,6 @@ private:
 
     bool computeEssential(
         int seed_id, int other_id, const std::vector<SFMFeature>& sfm_f,
-        const std::vector<std::vector<Observation>>& all_frames,
         std::vector<PoseCandidate>& candidates, std::vector<cv::Point2f>& pts_seed,
         std::vector<cv::Point2f>& pts_other);
 
@@ -80,15 +76,10 @@ private:
         const std::vector<PoseCandidate>& candidates, const std::vector<cv::Point2f>& pts_seed,
         const std::vector<cv::Point2f>& pts_other, PoseCandidate& selected);
 
-    bool checkCheirality(
-        int seed_id, int other_id, const std::vector<Eigen::Quaterniond>& q_cam_rel,
-        const Eigen::Vector3d& T_dir, const std::vector<SFMFeature>& sfm_f);
-
     bool runBA(
-        int frame_num, int seed_id, int other_id, const Eigen::Matrix3d& relative_R,
-        const Eigen::Vector3d& relative_T, std::vector<Eigen::Quaterniond>& q_cam_rel,
-        std::vector<Eigen::Vector3d>& t_arr, std::vector<SFMFeature>& sfm_f,
-        std::map<int, Eigen::Vector3d>& tracked_pts);
+        int frame_num, int seed_id, int other_id, const Eigen::Vector3d& relative_T,
+        std::vector<Eigen::Quaterniond>& q_cam_rel, std::vector<Eigen::Vector3d>& t_arr,
+        std::vector<SFMFeature>& sfm_f, std::map<int, Eigen::Vector3d>& tracked_pts);
 
     void alignToReference(
         int frame_num, std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps);
@@ -118,8 +109,6 @@ private:
     double pnp_reproj_threshold_, max_bad_pnp_ratio_;
     int ba_max_iterations_, ba_num_threads_;
     int feature_num_ = 0;
-    Eigen::Matrix3d R_lr_;
-    Eigen::Vector3d P_lr_;
 };
 
 }  // namespace tassel_core

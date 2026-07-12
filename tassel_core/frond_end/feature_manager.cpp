@@ -11,6 +11,7 @@
 #include <opencv2/calib3d.hpp>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/core/types.hpp>
+#include <sophus/so3.hpp>
 
 // tassel
 #include "cam/camera_base.h"
@@ -77,22 +78,20 @@ bool FeatureManager::checkParallax(
 void FeatureManager::triangulate(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
     const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1) {
-    auto cs = state.get_compensated_state();
     for (auto& [id, feature] : features_) {
         // feature.stereoTriangulate(ric, tic, ric1, tic1, min_depth_, max_depth_);
-        feature.monoTriangulate(cs, ric, tic, min_translation_, min_depth_, max_depth_);
+        feature.monoTriangulate(state, ric, tic, min_translation_, min_depth_, max_depth_);
     }
 }
 
 void FeatureManager::removeOldest(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
     if (state.cur_frame_count > 1) {
-        auto cs = state.get_compensated_state();
         std::erase_if(features_, [&](const auto& item) {
             return item.second.start_frame_id == 0 && item.second.observations.size() == 1;
         });
         for (auto& [id, feature] : features_) {
-            feature.removeOldest(cs.Rs[0], cs.Ps[0], cs.Rs[1], cs.Ps[1], ric, tic);
+            feature.removeOldest(state, ric, tic);
         }
 
         std::erase_if(
@@ -110,8 +109,7 @@ void FeatureManager::removeNewest(size_t frame_count) {
 
 void FeatureManager::removeOutliers(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
-    auto cs = state.get_compensated_state();
-    if (!cs.camera) {
+    if (!state.camera) {
         return;
     }
 
@@ -125,24 +123,40 @@ void FeatureManager::removeOutliers(
         }
 
         int start_frame_id = feature.start_frame_id;
-        Eigen::Vector3d pi_in_C = depth * observations[0].uv;
-        Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
-        Eigen::Vector3d pi_in_W = cs.Rs[start_frame_id] * pi_in_I + cs.Ps[start_frame_id];
 
         double error_sum = 0.0;
         for (size_t k = 1; k < observations.size(); ++k) {
             int j = start_frame_id + static_cast<int>(k);
-            Eigen::Vector3d pj_in_I = cs.Rs[j].transpose() * (pi_in_W - cs.Ps[j]);
-            Eigen::Vector3d pj_in_C = ric.transpose() * (pj_in_I - tic);
+            const double dt_i = state.delay_time - observations[0].applied_delay;
+            const double dt_j = state.delay_time - observations[k].applied_delay;
+            const Eigen::Matrix3d A_i =
+                Sophus::SO3d::exp(
+                    (state.gyro_vec[start_frame_id] - state.Bgs[start_frame_id]) * dt_i)
+                    .matrix();
+            const Eigen::Matrix3d A_j =
+                Sophus::SO3d::exp((state.Bgs[j] - state.gyro_vec[j]) * dt_j).matrix();
 
-            double inv_z = 1.0 / pj_in_C.z();
-            Eigen::Vector2d uv_norm(pj_in_C.x() * inv_z, pj_in_C.y() * inv_z);
-            Eigen::Vector2d uv_pixel = cs.camera->distort(uv_norm);
+            const Eigen::Vector3d pi_in_C = observations[0].uv * depth;
+            const Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
+            const Eigen::Vector3d pi_in_G =
+                state.Rs[start_frame_id] * A_i * pi_in_I + state.Ps[start_frame_id] +
+                state.Vs[start_frame_id] * dt_i +
+                0.5 * state.Rs[start_frame_id] *
+                    (state.acc_vec[start_frame_id] - state.Bas[start_frame_id]) * dt_i * dt_i;
+            const Eigen::Vector3d pj_in_I =
+                A_j * state.Rs[j].transpose() *
+                (pi_in_G - (state.Ps[j] + state.Vs[j] * dt_j +
+                            0.5 * state.Rs[j] * (state.acc_vec[j] - state.Bas[j]) * dt_j * dt_j));
+            const Eigen::Vector3d pj_in_C = ric.transpose() * (pj_in_I - tic);
+
+            const double inv_z = 1.0 / pj_in_C.z();
+            const Eigen::Vector2d uv_pred_norm(pj_in_C.x() * inv_z, pj_in_C.y() * inv_z);
+            const Eigen::Vector2d uv_pixel = state.camera->distort(uv_pred_norm);
             Eigen::Vector2d pt_meas(observations[k].pt.x, observations[k].pt.y);
             error_sum += (uv_pixel - pt_meas).norm();
         }
 
-        double average_error = error_sum / static_cast<double>(observations.size());
+        double average_error = error_sum / static_cast<double>(observations.size() - 1);
         if (average_error > reproj_err_thres_) {
             removed_ids.insert(id);
         }
@@ -209,7 +223,6 @@ std::vector<SFMFeature> FeatureManager::collectSFMFeatures(int frame_num) const 
         SFMFeature sfm_f;
         sfm_f.state = false;
         sfm_f.id = id;
-        sfm_f.depth = 0;
         sfm_f.position[0] = 0;
         sfm_f.position[1] = 0;
         sfm_f.position[2] = 0;

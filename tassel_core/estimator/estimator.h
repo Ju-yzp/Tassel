@@ -31,7 +31,8 @@ public:
 
     void processMeasurement(
         double ts, const std::unordered_map<int, FeaturePerFrame>& feature_frame,
-        const std::vector<tassel_utils::IMUMeasurement>& imu_measurements = {});
+        const std::vector<tassel_utils::IMUMeasurement>& imu_measurements = {},
+        double applied_delay = 0.0);
 
     void setPoseCallback(std::function<void(double, const Sophus::SE3d&)> cb) {
         pose_callback_ = std::move(cb);

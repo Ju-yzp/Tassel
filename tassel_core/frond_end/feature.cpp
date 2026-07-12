@@ -4,6 +4,7 @@
 
 #include <Eigen/SVD>
 #include <cmath>
+#include <sophus/so3.hpp>
 #include <vector>
 
 #include "state/state.h"
@@ -102,15 +103,26 @@ void Feature::monoTriangulate(
 }
 
 void Feature::removeOldest(
-    const Eigen::Matrix3d& prev_r, const Eigen::Vector3d& prev_t, const Eigen::Matrix3d& cur_r,
-    const Eigen::Vector3d& cur_t, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
+    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
     if (start_frame_id == 0) {
         if (estimated_depth != INVALID_DEPTH && observations.size() > 1) {
-            Eigen::Vector3d pi_in_C = estimated_depth * observations[0].uv;
-            Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
-            Eigen::Vector3d pi_in_W = prev_r * pi_in_I + prev_t;
-            Eigen::Vector3d pj_in_I = cur_r.transpose() * (pi_in_W - cur_t);
-            Eigen::Vector3d pj_in_C = ric.transpose() * (pj_in_I - tic);
+            const double dt_i = state.delay_time - observations[0].applied_delay;
+            const double dt_j = state.delay_time - observations[1].applied_delay;
+            const Eigen::Matrix3d A_i =
+                Sophus::SO3d::exp((state.gyro_vec[0] - state.Bgs[0]) * dt_i).matrix();
+            const Eigen::Matrix3d A_j =
+                Sophus::SO3d::exp((state.Bgs[1] - state.gyro_vec[1]) * dt_j).matrix();
+
+            const Eigen::Vector3d pi_in_C = estimated_depth * observations[0].uv;
+            const Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
+            const Eigen::Vector3d pi_in_W =
+                state.Rs[0] * A_i * pi_in_I + state.Ps[0] + state.Vs[0] * dt_i +
+                0.5 * state.Rs[0] * (state.acc_vec[0] - state.Bas[0]) * dt_i * dt_i;
+            const Eigen::Vector3d pj_in_I =
+                A_j * state.Rs[1].transpose() *
+                (pi_in_W - (state.Ps[1] + state.Vs[1] * dt_j +
+                            0.5 * state.Rs[1] * (state.acc_vec[1] - state.Bas[1]) * dt_j * dt_j));
+            const Eigen::Vector3d pj_in_C = ric.transpose() * (pj_in_I - tic);
             if (pj_in_C.z() > 0) {
                 estimated_depth = pj_in_C.z();
             } else {

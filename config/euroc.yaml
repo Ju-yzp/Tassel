@@ -39,7 +39,7 @@ max_square_move_dist: 1.0
 min_gradient: 10.0
 enable_statistics: true
 
-reproj_err_thres: 2.0
+reproj_err_thres: 2.2
 reproj_huber_thres: 1.0
 
 parallax_thres: 20.0
@@ -55,14 +55,15 @@ integrator_type: midpoint
 
 initial_exposure_time_us: 6000
 
-visual_factor_weight: 300.0
+visual_factor_weight: 110.0
 
 num_init_iterations: 8
 
-acc_n: 8.0000e-2
-acc_w: 2.0000e-4
+acc_n: 2.5000e-2
+acc_w: 3.0000e-4
 gyr_n: 3.0000e-4
-gyr_w: 6.0000e-6
+gyr_w: 5.0000e-6
+
 g_norm: 9.81
 
 acc_bias: [0.0, 0.0, 0.0]
@@ -70,7 +71,7 @@ acc_bias: [0.0, 0.0, 0.0]
 num_threads: 1
 init_time_span: 5.0
 gravity_diff_threshold: 0.21
-dt_gyro_threshold: 0.3
+dt_gyro_threshold: 0.2
 sfm_min_seed_pts: 10
 sfm_min_e_inliers: 8
 sfm_e_ransac_threshold: 0.004
