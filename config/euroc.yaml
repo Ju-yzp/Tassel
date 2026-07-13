@@ -72,6 +72,8 @@ num_threads: 1
 init_time_span: 5.0
 gravity_diff_threshold: 0.21
 dt_gyro_threshold: 0.2
+imu_repropagate_ba_threshold: 0.02
+imu_repropagate_bg_threshold: 0.006
 sfm_min_seed_pts: 10
 sfm_min_e_inliers: 8
 sfm_e_ransac_threshold: 0.004
@@ -80,3 +82,6 @@ sfm_pnp_reproj_threshold: 0.03
 sfm_max_bad_pnp_ratio: 0.3
 sfm_ba_max_iterations: 10
 sfm_ba_num_threads: 5
+
+viewer:
+    path_max_poses: 300

@@ -157,7 +157,8 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::stereoTracking(
 }
 
 void FeatureTracker::reset() {
-    for (auto& [id, ctc] : ctc_map_) {
+    for (auto& item : ctc_map_) {
+        auto& ctc = item.second;
         ctc.prev_pts.clear();
         ctc.cur_pts.clear();
         ctc.prev_ids.clear();
@@ -187,11 +188,14 @@ void FeatureTracker::drawTrackingResult(size_t camera_id, cv::Mat& img) {
         for (size_t i = 0; i < prev_pts.size(); ++i) {
             float ratio = std::min(tracked_times[i], tracked_times_thres_) /
                           static_cast<float>(tracked_times_thres_);
-            cv::circle(img, prev_pts[i], 6, cv::Scalar(255 * (1.0 - ratio), 0, 255 * ratio), 3);
+            const cv::Scalar color(255 * (1.0 - ratio), 0, 255 * ratio);
+            cv::circle(img, prev_pts[i], 4, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+            cv::circle(img, prev_pts[i], 3, color, -1, cv::LINE_AA);
         }
     } else {
-        for (auto pt : prev_pts) {
-            cv::circle(img, pt, 2, cv::Scalar(255, 0, 0), -1);
+        for (const auto& pt : prev_pts) {
+            cv::circle(img, pt, 4, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+            cv::circle(img, pt, 3, cv::Scalar(0, 220, 0), -1, cv::LINE_AA);
         }
     }
 }
@@ -308,9 +312,6 @@ void FeatureTracker::extractNewFeatures(
     cv::sqrt(diff_sq + ixy_sq, term);
     ctc.grad = (Ix2 + Iy2 - term) * 0.5f;
 
-    cv::Mat grad_mask;
-    cv::threshold(ctc.grad, grad_mask, min_gradient_thres_, 255.0, cv::THRESH_BINARY);
-
     const int rows = ctc.camera->get_height();
     const int cols = ctc.camera->get_width();
     const int grid_rows = ctc.grid_rows;
@@ -331,7 +332,6 @@ void FeatureTracker::extractNewFeatures(
     for (int y = y0; y < y1; ++y) {
         const uchar* mask_row = ctc.mask.ptr<uchar>(y);
         const float* grad_row = ctc.grad.ptr<float>(y);
-        const float* gmask_row = grad_mask.ptr<float>(y);
         for (int x = x0; x < x1; ++x) {
             if (mask_row[x] == 0) continue;
             int cell_r = (y - y0) / cell_h;

@@ -123,8 +123,6 @@ struct State {
 
     int max_frame_count;
     int cur_frame_count;
-    bool use_imu;
-
     // 位姿 / 速度 / 偏置 / 时间延迟
     std::vector<Eigen::Matrix3d> Rs;
     std::vector<Eigen::Vector3d> Ps;

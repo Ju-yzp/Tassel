@@ -1,0 +1,113 @@
+{
+  "configById": {
+    "3D!tasselmain": {
+      "followTf": "world",
+      "scene": {
+        "transforms": {
+          "visible": true,
+          "showLabel": false,
+          "axisSize": 0.3
+        }
+      },
+      "layers": {
+        "tassel-map-grid": {
+          "visible": true,
+          "frameLocked": true,
+          "label": "Map grid",
+          "instanceId": "tassel-map-grid",
+          "layerId": "foxglove.Grid",
+          "size": 10,
+          "divisions": 20,
+          "lineWidth": 1,
+          "color": "#78909c",
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0],
+          "order": 1
+        }
+      },
+      "topics": {
+        "/odom/camera": { "visible": true },
+                    "/vo/path": {
+                      "visible": true,
+                      "lineWidth": 0.005,
+          "color": "#ef4444"
+        },
+        "/landmarks": {
+          "visible": true,
+          "pointSize": 1.75,
+          "color": "#e8edf2"
+        }
+      }
+    },
+    "Image!tasselstereo": {
+      "imageMode": {
+        "imageTopic": "/stereo/image",
+        "synchronize": false
+      }
+    },
+    "Plot!tasselcostreduction": {
+      "xAxisVal": "timestamp",
+      "xAxisDisplayMethod": "relative",
+      "timeWindowMode": "sliding",
+      "followingViewWidth": 15,
+      "playbackBarPosition": "right",
+      "isSynced": false,
+      "paths": [
+        {
+          "value": "/optimization/total_reduction.data",
+          "label": "total",
+          "color": "#f59e0b",
+          "lineSize": 2
+        },
+        {
+          "value": "/optimization/visual_reduction.data",
+          "label": "visual",
+          "color": "#22c55e",
+          "lineSize": 2
+        },
+        {
+          "value": "/optimization/imu_reduction.data",
+          "label": "imu",
+          "color": "#3b82f6",
+          "lineSize": 2
+        },
+        {
+          "value": "/optimization/prior_reduction.data",
+          "label": "prior",
+          "color": "#ec4899",
+          "lineSize": 2
+        }
+      ]
+    },
+    "Image!tasselvisualwindow": {
+      "imageMode": {
+        "imageTopic": "/optimization/visual_window",
+        "synchronize": false
+      }
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": {
+    "speed": 1
+  },
+  "drawerConfig": {
+    "tracks": []
+  },
+  "layout": {
+    "first": {
+      "first": "3D!tasselmain",
+      "second": "Image!tasselstereo",
+      "direction": "column",
+      "splitPercentage": 65
+    },
+    "second": {
+      "first": "Plot!tasselcostreduction",
+      "second": "Image!tasselvisualwindow",
+      "direction": "column",
+      "splitPercentage": 82
+    },
+    "direction": "row",
+    "splitPercentage": 60
+  }
+}

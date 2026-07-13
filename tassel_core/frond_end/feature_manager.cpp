@@ -64,9 +64,9 @@ bool FeatureManager::checkParallax(
                 computeParallax((*it).second.observations.back().pt, per_frame_feature.pt);
             it->second.observations.emplace_back(per_frame_feature);
         } else {
-            Feature feature(frame_count, max_depth_ > 3.0 ? 15 : 15);
+            Feature feature(frame_count, 15);
             feature.observations.emplace_back(per_frame_feature);
-            features_[id] = feature;
+            features_.emplace(id, std::move(feature));
         }
     }
 
@@ -76,11 +76,9 @@ bool FeatureManager::checkParallax(
 }
 
 void FeatureManager::triangulate(
-    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
-    const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1) {
-    for (auto& [id, feature] : features_) {
-        // feature.stereoTriangulate(ric, tic, ric1, tic1, min_depth_, max_depth_);
-        feature.monoTriangulate(state, ric, tic, min_translation_, min_depth_, max_depth_);
+    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
+    for (auto& item : features_) {
+        item.second.monoTriangulate(state, ric, tic, min_translation_, min_depth_, max_depth_);
     }
 }
 
@@ -90,8 +88,8 @@ void FeatureManager::removeOldest(
         std::erase_if(features_, [&](const auto& item) {
             return item.second.start_frame_id == 0 && item.second.observations.size() == 1;
         });
-        for (auto& [id, feature] : features_) {
-            feature.removeOldest(state, ric, tic);
+        for (auto& item : features_) {
+            item.second.removeOldest(state, ric, tic);
         }
 
         std::erase_if(
@@ -100,8 +98,8 @@ void FeatureManager::removeOldest(
 }
 
 void FeatureManager::removeNewest(size_t frame_count) {
-    for (auto& [id, feature] : features_) {
-        feature.removeNewest(frame_count);
+    for (auto& item : features_) {
+        item.second.removeNewest(frame_count);
     }
 
     std::erase_if(features_, [&](const auto& item) { return item.second.observations.empty(); });
@@ -162,7 +160,6 @@ void FeatureManager::removeOutliers(
         }
     }
 
-    spdlog::info("Removing {} outlier features", static_cast<int>(removed_ids.size()));
     std::erase_if(features_, [&](const auto& item) { return removed_ids.count(item.first) > 0; });
 }
 
@@ -170,7 +167,8 @@ void FeatureManager::reset() { features_.clear(); }
 
 std::vector<Feature*> FeatureManager::collectMargFeatures() {
     std::vector<Feature*> result;
-    for (auto& [id, feature] : features_) {
+    for (auto& item : features_) {
+        auto& feature = item.second;
         if (feature.start_frame_id != 0 || !canUseFeature(feature, tracked_times_thres_)) {
             continue;
         }
@@ -180,15 +178,12 @@ std::vector<Feature*> FeatureManager::collectMargFeatures() {
     return result;
 }
 
-void FeatureManager::removeMargFeatures() {
-    std::erase_if(features_, [&](const auto& item) { return item.second.start_frame_id == 0; });
-}
-
 std::vector<Eigen::Vector3d> FeatureManager::getPointCloud(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) const {
     auto cs = state.get_compensated_state();
     std::vector<Eigen::Vector3d> points;
-    for (const auto& [id, feature] : features_) {
+    for (const auto& item : features_) {
+        const auto& feature = item.second;
         if (feature.estimated_depth <= 0) {
             continue;
         }
@@ -206,7 +201,8 @@ std::vector<Eigen::Vector3d> FeatureManager::getPointCloud(
 
 std::vector<Feature*> FeatureManager::collectLandmarks() {
     std::vector<Feature*> result;
-    for (auto& [id, feature] : features_) {
+    for (auto& item : features_) {
+        auto& feature = item.second;
         if (!canUseFeature(feature, tracked_times_thres_)) {
             continue;
         }

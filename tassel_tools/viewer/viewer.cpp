@@ -1,8 +1,15 @@
 #include "viewer/viewer.h"
 
+#include <algorithm>
+
 namespace tassel_tools {
 Viewer::Viewer(const std::string& frame_id) : Node("viewer"), frame_id_(frame_id) {
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+}
+
+rclcpp::Time Viewer::messageStamp(double timestamp) const {
+    if (timestamp < 0.0) return this->now();
+    return rclcpp::Time(static_cast<int64_t>(timestamp * 1e9), RCL_ROS_TIME);
 }
 
 void Viewer::createImagePublisher(const std::string& topic_name, const rclcpp::QoS qos) {
@@ -17,7 +24,7 @@ void Viewer::createImagePublisher(const std::string& topic_name, const rclcpp::Q
 }
 
 void Viewer::publishImage(
-    const std::string& topic, const std::string& frame_id, const cv::Mat& image) {
+    const std::string& topic, const std::string& frame_id, const cv::Mat& image, double timestamp) {
     if (image_publishers_.find(topic) == image_publishers_.end()) {
         RCLCPP_ERROR(this->get_logger(), "Image topic %s not found!", topic.c_str());
         return;
@@ -49,7 +56,7 @@ void Viewer::publishImage(
     }
 
     cv_bridge::CvImage cv_bridge_msg;
-    cv_bridge_msg.header.stamp = this->now();
+    cv_bridge_msg.header.stamp = messageStamp(timestamp);
     cv_bridge_msg.header.frame_id = frame_id;
     cv_bridge_msg.encoding = encoding;
     cv_bridge_msg.image = image;
@@ -71,7 +78,7 @@ void Viewer::createCompressedImagePublisher(const std::string& topic_name, const
 
 void Viewer::publishCompressedImage(
     const std::string& topic, const std::string& frame_id, const cv::Mat& image,
-    const std::string& format) {
+    const std::string& format, double timestamp) {
     if (compressed_image_publishers_.find(topic) == compressed_image_publishers_.end()) {
         RCLCPP_ERROR(this->get_logger(), "CompressedImage topic %s not found!", topic.c_str());
         return;
@@ -92,7 +99,7 @@ void Viewer::publishCompressedImage(
     }
 
     sensor_msgs::msg::CompressedImage msg;
-    msg.header.stamp = this->now();
+    msg.header.stamp = messageStamp(timestamp);
     msg.header.frame_id = frame_id;
     msg.format = format;
     msg.data = std::move(buf);
@@ -119,13 +126,13 @@ void Viewer::createOdometryPublisher(
 void Viewer::publishOdometry(
     const std::string& topic, const Eigen::Vector3d& position,
     const Eigen::Quaterniond& orientation, const Eigen::Vector3d& linear_velocity,
-    const Eigen::Vector3d& angular_velocity) {
+    const Eigen::Vector3d& angular_velocity, double timestamp) {
     if (odometry_publishers_.find(topic) == odometry_publishers_.end()) {
         RCLCPP_ERROR(this->get_logger(), "Odometry topic %s not found!", topic.c_str());
         return;
     }
     auto& odom = odometry_[topic];
-    odom.header.stamp = this->now();
+    odom.header.stamp = messageStamp(timestamp);
     odom.pose.pose.position.x = position.x();
     odom.pose.pose.position.y = position.y();
     odom.pose.pose.position.z = position.z();
@@ -156,7 +163,8 @@ void Viewer::publishOdometry(
     tf_broadcaster_->sendTransform(tf);
 }
 
-void Viewer::createPathPublisher(const std::string& topic_name, const rclcpp::QoS& qos) {
+void Viewer::createPathPublisher(
+    const std::string& topic_name, const rclcpp::QoS& qos, size_t max_poses) {
     if (path_publishers_.find(topic_name) != path_publishers_.end()) {
         RCLCPP_WARN(
             this->get_logger(), "Path topic %s already exists, skipping creation.",
@@ -168,17 +176,18 @@ void Viewer::createPathPublisher(const std::string& topic_name, const rclcpp::Qo
     nav_msgs::msg::Path path;
     path.header.frame_id = frame_id_;
     paths_[topic_name] = path;
+    path_max_poses_[topic_name] = max_poses;
 }
 
 void Viewer::publishPath(
     const std::string& topic, const Eigen::Vector3d& position,
-    const Eigen::Quaterniond& orientation) {
+    const Eigen::Quaterniond& orientation, double timestamp) {
     if (path_publishers_.find(topic) == path_publishers_.end()) {
         RCLCPP_ERROR(this->get_logger(), "Path topic %s not found!", topic.c_str());
         return;
     }
     auto& path = paths_[topic];
-    path.header.stamp = this->now();
+    path.header.stamp = messageStamp(timestamp);
 
     geometry_msgs::msg::PoseStamped pose_stamped;
     pose_stamped.header = path.header;
@@ -191,6 +200,10 @@ void Viewer::publishPath(
     pose_stamped.pose.orientation.w = orientation.w();
 
     path.poses.push_back(pose_stamped);
+    const size_t max_poses = path_max_poses_[topic];
+    if (max_poses > 0 && path.poses.size() > max_poses) {
+        path.poses.erase(path.poses.begin(), path.poses.begin() + (path.poses.size() - max_poses));
+    }
     path_publishers_[topic]->publish(path);
 }
 
@@ -207,7 +220,7 @@ void Viewer::createPointCloudPublisher(const std::string& topic_name, const rclc
 }
 
 void Viewer::publishPointCloud(
-    const std::string& topic, const std::vector<Eigen::Vector3d>& points) {
+    const std::string& topic, const std::vector<Eigen::Vector3d>& points, double timestamp) {
     if (pointcloud_publishers_.find(topic) == pointcloud_publishers_.end()) {
         RCLCPP_ERROR(this->get_logger(), "PointCloud topic %s not found!", topic.c_str());
         return;
@@ -215,7 +228,7 @@ void Viewer::publishPointCloud(
     if (points.empty()) return;
 
     sensor_msgs::msg::PointCloud2 cloud;
-    cloud.header.stamp = this->now();
+    cloud.header.stamp = messageStamp(timestamp);
     cloud.header.frame_id = frame_id_;
     cloud.height = 1;
     cloud.width = points.size();
@@ -248,6 +261,72 @@ void Viewer::publishPointCloud(
     }
 
     pointcloud_publishers_[topic]->publish(cloud);
+}
+
+void Viewer::createScalarPublisher(const std::string& topic_name, const rclcpp::QoS& qos) {
+    scalar_publishers_[topic_name] =
+        this->template create_publisher<std_msgs::msg::Float64>(topic_name, qos);
+}
+
+void Viewer::publishScalar(const std::string& topic, double value) {
+    auto it = scalar_publishers_.find(topic);
+    if (it == scalar_publishers_.end()) {
+        RCLCPP_ERROR(this->get_logger(), "Scalar topic %s not found!", topic.c_str());
+        return;
+    }
+    std_msgs::msg::Float64 msg;
+    msg.data = value;
+    it->second->publish(msg);
+}
+
+void Viewer::createIntArrayPublisher(const std::string& topic_name, const rclcpp::QoS& qos) {
+    int_array_publishers_[topic_name] =
+        this->template create_publisher<std_msgs::msg::Int32MultiArray>(topic_name, qos);
+}
+
+void Viewer::publishIntArray(const std::string& topic, const std::vector<int>& values) {
+    auto it = int_array_publishers_.find(topic);
+    if (it == int_array_publishers_.end()) {
+        RCLCPP_ERROR(this->get_logger(), "Integer array topic %s not found!", topic.c_str());
+        return;
+    }
+    std_msgs::msg::Int32MultiArray msg;
+    msg.data.assign(values.begin(), values.end());
+    it->second->publish(msg);
+}
+
+void Viewer::publishVisualFactorWindow(
+    const std::string& topic, const std::vector<int>& counts, double timestamp) {
+    constexpr int kSegmentWidth = 64;
+    constexpr int kImageHeight = 72;
+    constexpr double kGreenFactorCount = 200.0;
+    if (counts.empty()) return;
+
+    cv::Mat image(kImageHeight, kSegmentWidth * static_cast<int>(counts.size()), CV_8UC3);
+    for (size_t i = 0; i < counts.size(); ++i) {
+        const int count = std::max(0, counts[i]);
+        cv::Scalar color(0, 0, 0);
+        if (count > 0) {
+            const double ratio = std::clamp(count / kGreenFactorCount, 0.0, 1.0);
+            const int red = ratio < 0.5 ? 255 : static_cast<int>(510.0 * (1.0 - ratio));
+            const int green = ratio < 0.5 ? static_cast<int>(510.0 * ratio) : 255;
+            color = cv::Scalar(0, green, red);
+        }
+
+        const int x0 = static_cast<int>(i) * kSegmentWidth;
+        cv::rectangle(image, cv::Rect(x0, 0, kSegmentWidth, kImageHeight), color, cv::FILLED);
+        cv::line(
+            image, cv::Point(x0, 0), cv::Point(x0, kImageHeight - 1), cv::Scalar(96, 96, 96), 1);
+        const cv::Scalar text_color =
+            count == 0 ? cv::Scalar(255, 255, 255) : cv::Scalar(20, 20, 20);
+        cv::putText(
+            image, std::to_string(i), cv::Point(x0 + 6, 20), cv::FONT_HERSHEY_SIMPLEX, 0.48,
+            text_color, 1, cv::LINE_AA);
+        cv::putText(
+            image, std::to_string(count), cv::Point(x0 + 6, 53), cv::FONT_HERSHEY_SIMPLEX, 0.58,
+            text_color, 1, cv::LINE_AA);
+    }
+    publishImage(topic, frame_id_, image, timestamp);
 }
 
 void Viewer::createErrorPublisher(const std::string& topic_name, const rclcpp::QoS& qos) {

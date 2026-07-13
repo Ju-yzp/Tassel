@@ -1,7 +1,5 @@
 #include "feature.h"
 
-#include <spdlog/spdlog.h>
-
 #include <Eigen/SVD>
 #include <cmath>
 #include <sophus/so3.hpp>
@@ -11,38 +9,9 @@
 #include "tassel_utils/triangulation.h"
 
 namespace tassel_core {
-Feature::Feature(size_t max_capacity) : start_frame_id(0), estimated_depth(INVALID_DEPTH) {
-    observations.reserve(max_capacity);
-}
-
 Feature::Feature(size_t start_frame_id, size_t max_capacity)
     : start_frame_id(start_frame_id), estimated_depth(INVALID_DEPTH) {
     observations.reserve(max_capacity);
-}
-
-Feature::Feature() : start_frame_id(0) { observations.reserve(15); }
-
-void Feature::stereoTriangulate(
-    const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1,
-    const Eigen::Vector3d& tic1, double min_depth, double max_depth) {
-    if (estimated_depth != INVALID_DEPTH || !observations[0].is_stereo) {
-        return;
-    }
-
-    Eigen::Matrix<double, 3, 4> pose0 = Eigen::Matrix<double, 3, 4>::Identity();
-    Eigen::Matrix<double, 3, 4> pose1;
-    pose1.block<3, 3>(0, 0) = ric1.transpose() * ric;
-    pose1.block<3, 1>(0, 3) = ric1.transpose() * (tic - tic1);
-
-    double cond;
-    Eigen::Vector4d h = tassel_utils::triangulateTwoView(
-        pose0, observations[0].uv.head<2>(), pose1, observations[0].uv_r.head<2>(), &cond);
-    if (cond < 1e6) {
-        Eigen::Vector3d p = tassel_utils::dehomogenize(h);
-        if (p.z() > min_depth && p.z() < max_depth) {
-            estimated_depth = p.z();
-        }
-    }
 }
 
 void Feature::monoTriangulate(

@@ -77,10 +77,22 @@ int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
     auto viewer = std::make_shared<tassel_tools::Viewer>("world");
 
-    viewer->createImagePublisher("stereo/image");
-    viewer->createOdometryPublisher("camera", "odom/camera");
-    viewer->createPathPublisher("vo/path");
+    rclcpp::QoS image_qos(rclcpp::KeepLast(1));
+    image_qos.best_effort().durability_volatile();
+    viewer->createCompressedImagePublisher("stereo/image", image_qos);
+    viewer->createOdometryPublisher("imu", "odom/camera");
+    viewer->createPathPublisher("vo/path", rclcpp::QoS(10), params.viewer_path_max_poses);
     viewer->createPointCloudPublisher("landmarks");
+    rclcpp::QoS telemetry_qos(rclcpp::KeepLast(1));
+    telemetry_qos.reliable().durability_volatile();
+    for (const char* topic :
+         {"optimization/total_reduction", "optimization/visual_reduction",
+          "optimization/imu_reduction", "optimization/prior_reduction", "optimization/valid_count",
+          "optimization/invalid_count", "optimization/valid"}) {
+        viewer->createScalarPublisher(topic, telemetry_qos);
+    }
+    viewer->createIntArrayPublisher("optimization/visual_factors_per_frame", telemetry_qos);
+    viewer->createImagePublisher("optimization/visual_window", telemetry_qos);
 
     auto stereo_buffer = StereoBuf::createShared(15);
     auto imu_buffer = IMUBuf::createShared(600);
@@ -180,6 +192,24 @@ int main(int argc, char** argv) {
     estimator.setCloudCallback([&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
         viewer->publishPointCloud("landmarks", pts);
     });
+    estimator.setOptimizationCallback([&viewer](double /*ts*/, const OptimizationStats& stats) {
+        viewer->publishScalar(
+            "optimization/total_reduction", stats.total_cost_before - stats.total_cost_after);
+        viewer->publishScalar(
+            "optimization/visual_reduction", stats.visual_cost_before - stats.visual_cost_after);
+        viewer->publishScalar(
+            "optimization/imu_reduction", stats.imu_cost_before - stats.imu_cost_after);
+        viewer->publishScalar(
+            "optimization/prior_reduction", stats.prior_cost_before - stats.prior_cost_after);
+        viewer->publishScalar("optimization/valid_count", static_cast<double>(stats.valid_count));
+        viewer->publishScalar(
+            "optimization/invalid_count", static_cast<double>(stats.invalid_count));
+        viewer->publishScalar("optimization/valid", stats.valid ? 1.0 : 0.0);
+        viewer->publishIntArray(
+            "optimization/visual_factors_per_frame", stats.visual_factors_per_frame);
+        viewer->publishVisualFactorWindow(
+            "optimization/visual_window", stats.visual_factors_per_frame);
+    });
 
     rclcpp::Rate rate(30);
 
@@ -209,7 +239,7 @@ int main(int argc, char** argv) {
             cv::Mat stereo_disp;
             cv::hconcat(disp_left, disp_right, stereo_disp);
 
-            viewer->publishImage("stereo/image", "camera", stereo_disp);
+            viewer->publishCompressedImage("stereo/image", "camera", stereo_disp, "jpeg");
         }
         rclcpp::spin_some(viewer);
         rate.sleep();

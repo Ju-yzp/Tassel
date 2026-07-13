@@ -23,6 +23,21 @@ namespace tassel_core {
 
 class CameraBase;
 
+struct OptimizationStats {
+    double total_cost_before = 0.0;
+    double total_cost_after = 0.0;
+    double visual_cost_before = 0.0;
+    double visual_cost_after = 0.0;
+    double prior_cost_before = 0.0;
+    double prior_cost_after = 0.0;
+    double imu_cost_before = 0.0;
+    double imu_cost_after = 0.0;
+    std::vector<int> visual_factors_per_frame;
+    size_t valid_count = 0;
+    size_t invalid_count = 0;
+    bool valid = false;
+};
+
 class Estimator {
 public:
     Estimator(
@@ -40,12 +55,15 @@ public:
     void setCloudCallback(std::function<void(double, const std::vector<Eigen::Vector3d>&)> cb) {
         cloud_callback_ = std::move(cb);
     }
+    void setOptimizationCallback(std::function<void(double, const OptimizationStats&)> cb) {
+        optimization_callback_ = std::move(cb);
+    }
     void setCamera(const CameraBase* camera) {
         camera_ = camera;
         if (state_) state_->camera = camera;
     }
 
-    void optimize();
+    void optimize(double timestamp = -1.0);
 
     void reset();
 
@@ -82,9 +100,12 @@ private:
     Eigen::Matrix<double, 18, 18> noise_;
 
     bool gravity_initialized_ = false;
+    size_t valid_optimization_count_ = 0;
+    size_t invalid_optimization_count_ = 0;
 
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
     std::function<void(double, const std::vector<Eigen::Vector3d>&)> cloud_callback_;
+    std::function<void(double, const OptimizationStats&)> optimization_callback_;
 
     PreintegratorStorage preintegrators_;
     double last_ts_ = -1;

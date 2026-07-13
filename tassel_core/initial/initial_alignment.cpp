@@ -24,8 +24,6 @@ bool linearAlignment(
 
     Eigen::MatrixXd A = Eigen::MatrixXd::Zero(n_state, n_state);
     Eigen::VectorXd b = Eigen::VectorXd::Zero(n_state);
-    Eigen::Matrix3d ricT = ric.transpose();
-
     for (int i = 0; i < n_frames - 1; ++i) {
         int j = i + 1;
         double dt = dts[i];

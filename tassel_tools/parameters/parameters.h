@@ -25,6 +25,7 @@ struct Parameters {
         loadImu(parser);
         loadInitialization(parser);
         loadHardware(parser);
+        loadViewer(parser);
     }
 
     // Camera calibration: consumed by test_estimator camera construction, FeatureManager
@@ -64,6 +65,8 @@ struct Parameters {
     double visual_factor_weight;
     int num_threads = 1;
     double dt_gyro_threshold = 0.7;
+    double imu_repropagate_ba_threshold = 0.02;
+    double imu_repropagate_bg_threshold = 0.002;
     tassel_utils::IntegratorType integrator_type = tassel_utils::IntegratorType::kMidPoint;
 
     // IMU model and calibration: consumed by Estimator propagation, preintegration, and init.
@@ -87,6 +90,9 @@ struct Parameters {
 
     // Hardware capture: consumed by OAK/DepthAI integration tests.
     int initial_exposure_time_us;
+
+    // Visualization: consumed by Viewer publishers.
+    size_t viewer_path_max_poses = 300;
 
 private:
     static void loadCamera(ParamsParser& parser, size_t id, Parameters& params) {
@@ -137,6 +143,8 @@ private:
         visual_factor_weight = parser.as<double>("visual_factor_weight");
         num_threads = parser.as<int>("num_threads");
         dt_gyro_threshold = parser.as<double>("dt_gyro_threshold");
+        imu_repropagate_ba_threshold = parser.as<double>("imu_repropagate_ba_threshold");
+        imu_repropagate_bg_threshold = parser.as<double>("imu_repropagate_bg_threshold");
         integrator_type = parseIntegratorType(parser.as<std::string>("integrator_type"));
     }
 
@@ -165,6 +173,10 @@ private:
 
     void loadHardware(ParamsParser& parser) {
         initial_exposure_time_us = parser.as<int>("initial_exposure_time_us");
+    }
+
+    void loadViewer(ParamsParser& parser) {
+        viewer_path_max_poses = parser.as<size_t>("viewer", "path_max_poses");
     }
 
     static std::string normalizeToken(std::string value) {

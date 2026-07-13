@@ -1,0 +1,23 @@
+---
+bridge:
+    port: 8765
+    address: 127.0.0.1
+    topic_whitelist:
+        - /tf
+        - /tf_static
+        - /odom/camera
+        - /vo/path
+        - /landmarks
+        - /stereo/image
+        - /optimization/.*
+
+studio:
+    executable: /usr/bin/foxglove-studio
+    layout_file: foxglove_layout.json
+    layout_name: Tassel VIO
+
+viewer:
+    point_size: 1.75
+    path_color: '#ef4444'
+    path_line_width: 0.005
+    cost_window_seconds: 15

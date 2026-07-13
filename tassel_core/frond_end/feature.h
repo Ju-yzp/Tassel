@@ -37,15 +37,7 @@ const double MIN_DISTANCE = 0.1;
 const double MAX_DISTANCE = 3.0;
 
 struct Feature {
-    Feature(size_t max_capacity);
-
     Feature(size_t start_frame_id, size_t max_capacity);
-
-    Feature();
-
-    void stereoTriangulate(
-        const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1,
-        const Eigen::Vector3d& tic1, double min_depth, double max_depth);
 
     void monoTriangulate(
         const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,

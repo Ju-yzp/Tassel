@@ -27,13 +27,16 @@ public:
         std::vector<Feature*> marg_features, std::unique_ptr<ceres::LossFunction> loss_function,
         std::shared_ptr<State> state, std::vector<IntegratorBase<Derived>*>& preintegrators,
         const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, const MargLinData* prior = nullptr)
-        : prior_(prior), ric_(ric), tic_(tic) {
-        marg_features_ = std::move(marg_features);
-        loss_function_ = std::move(loss_function);
-        state_ = state;
-        preintegrators_ = preintegrators;
+        : marg_features_(std::move(marg_features)),
+          loss_function_(std::move(loss_function)),
+          state_(std::move(state)),
+          preintegrators_(preintegrators),
+          prior_(prior),
+          ric_(ric),
+          tic_(tic) {
         if (!preintegrators_.empty()) {
-            TASSEL_ASSERT(preintegrators.size() <= state_->max_frame_count - 1);
+            TASSEL_ASSERT(
+                preintegrators.size() <= static_cast<size_t>(state_->max_frame_count - 1));
             TASSEL_ASSERT(state_->cur_frame_count == state_->max_frame_count - 1);
         }
     }
@@ -130,8 +133,8 @@ private:
     const MargLinData* prior_ = nullptr;
     Eigen::Matrix3d ric_;
     Eigen::Vector3d tic_;
-    int num_rows;
-    int num_cols;
+    int num_rows = 0;
+    int num_cols = 0;
 };
 }  // namespace tassel_core
 

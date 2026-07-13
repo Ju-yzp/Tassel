@@ -12,11 +12,13 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <opencv2/calib3d.hpp>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/core/types.hpp>
 #include <sophus/se3.hpp>
 #include <sophus/so3.hpp>
+#include <string>
 #include <vector>
 
 #include "factor/imu_factor.h"
@@ -57,6 +59,8 @@ Estimator::Estimator(
 
 void Estimator::reset() {
     gravity_initialized_ = false;
+    valid_optimization_count_ = 0;
+    invalid_optimization_count_ = 0;
     last_ts_ = -1;
     last_imu_acc_ = Eigen::Vector3d::Zero();
     last_imu_gyro_ = Eigen::Vector3d::Zero();
@@ -130,8 +134,7 @@ void Estimator::processMeasurement(
     state_->acc_vec.push_back(last_imu_acc_);
     state_->gyro_vec.push_back(last_imu_gyro_);
     if (is_keyframe) {
-        feature_manager_->triangulate(
-            *state_, params_.ric, params_.tic, params_.ric1, params_.tic1);
+        feature_manager_->triangulate(*state_, params_.ric, params_.tic);
 
         if (frame_count == state_->max_frame_count - 1) {
             if (!gravity_initialized_) {
@@ -141,10 +144,9 @@ void Estimator::processMeasurement(
                     return;
                 }
                 feature_manager_->invalidateDepths();
-                feature_manager_->triangulate(
-                    *state_, params_.ric, params_.tic, params_.ric1, params_.tic1);
+                feature_manager_->triangulate(*state_, params_.ric, params_.tic);
             }
-            optimize();
+            optimize(ts);
             if (pose_callback_) {
                 pose_callback_(ts, Sophus::SE3d(state_->Rs[frame_count], state_->Ps[frame_count]));
             }
@@ -169,29 +171,32 @@ void Estimator::processMeasurement(
             });
         }
     } else {
-        state_->acc_vec.erase(state_->acc_vec.begin());
-        state_->gyro_vec.erase(state_->gyro_vec.begin());
         if (frame_count == state_->max_frame_count - 1 && gravity_initialized_) {
-            optimize();
+            optimize(ts);
             feature_manager_->removeOutliers(*state_, params_.ric, params_.tic);
         }
         feature_manager_->removeNewest(frame_count);
+        state_->acc_vec.pop_back();
+        state_->gyro_vec.pop_back();
     }
 
     if (cloud_callback_ && gravity_initialized_) {
         auto pts = feature_manager_->getPointCloud(*state_, params_.ric, params_.tic);
-        spdlog::info("{} valid points", static_cast<int>(pts.size()));
         cloud_callback_(ts, pts);
     }
 }
 
-void Estimator::optimize() {
+void Estimator::optimize(double timestamp) {
     const int latest_id = state_->cur_frame_count;
 
     state_->stateToParams();
     auto features = feature_manager_->collectLandmarks();
 
     ceres::Problem problem;
+    std::vector<ceres::ResidualBlockId> prior_residuals;
+    std::vector<ceres::ResidualBlockId> visual_residuals;
+    std::vector<ceres::ResidualBlockId> imu_residuals;
+    std::vector<int> visual_factors_per_frame(state_->cur_frame_count + 1, 0);
 
     for (int i = 0; i < state_->max_frame_count; ++i) {
         auto se3_manifold = new SE3RightManifold();
@@ -224,7 +229,7 @@ void Estimator::optimize() {
             prior_blocks.push_back(state_->params_speed_bias[i].data());
         }
         prior_blocks.push_back(&state_->param_delay_time);
-        problem.AddResidualBlock(prior_cost, nullptr, prior_blocks);
+        prior_residuals.push_back(problem.AddResidualBlock(prior_cost, nullptr, prior_blocks));
     }
 
     const double visual_huber_delta = params_.reproj_huber_thres * params_.visual_factor_weight;
@@ -253,10 +258,12 @@ void Estimator::optimize() {
                 state_->params_speed_bias[host_id].data() + 3,
                 state_->params_speed_bias[target_id].data() + 3, sqrt_info, state_->camera,
                 f->observations[0].applied_delay, f->observations[obs_idx].applied_delay);
-            problem.AddResidualBlock(
+            visual_residuals.push_back(problem.AddResidualBlock(
                 cost, loss, state_->params_pose[host_id].data(),
                 state_->params_pose[target_id].data(), &state_->param_delay_time,
-                &inv_depth_params[k]);
+                &inv_depth_params[k]));
+            if (host_id <= state_->cur_frame_count) ++visual_factors_per_frame[host_id];
+            if (target_id <= state_->cur_frame_count) ++visual_factors_per_frame[target_id];
         }
     }
 
@@ -266,12 +273,24 @@ void Estimator::optimize() {
             if (preintegrators[i].buffer.size() < 2) continue;
             auto pint_ptr = std::shared_ptr<Integrator>(&preintegrators[i], [](Integrator*) {});
             auto* imu_cost = new IMUFactor<Integrator>(pint_ptr);
-            problem.AddResidualBlock(
+            imu_residuals.push_back(problem.AddResidualBlock(
                 imu_cost, nullptr, state_->params_pose[i].data(),
                 state_->params_speed_bias[i].data(), state_->params_pose[i + 1].data(),
-                state_->params_speed_bias[i + 1].data());
+                state_->params_speed_bias[i + 1].data()));
         }
     });
+
+    auto evaluate_cost = [&](const std::vector<ceres::ResidualBlockId>& residuals) {
+        if (residuals.empty()) return 0.0;
+        ceres::Problem::EvaluateOptions options;
+        options.apply_loss_function = true;
+        options.residual_blocks = residuals;
+        double cost = 0.0;
+        if (!problem.Evaluate(options, &cost, nullptr, nullptr, nullptr)) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        return cost;
+    };
 
     ceres::Solver::Options opts;
     opts.linear_solver_type = ceres::DENSE_SCHUR;
@@ -280,8 +299,61 @@ void Estimator::optimize() {
     opts.minimizer_progress_to_stdout = false;
     opts.logging_type = ceres::SILENT;
 
+    const double prior_cost_before = evaluate_cost(prior_residuals);
+    const double visual_cost_before = evaluate_cost(visual_residuals);
+    const double imu_cost_before = evaluate_cost(imu_residuals);
+
     ceres::Solver::Summary summary;
     ceres::Solve(opts, &problem, &summary);
+
+    const double prior_cost_after = evaluate_cost(prior_residuals);
+    const double visual_cost_after = evaluate_cost(visual_residuals);
+    const double imu_cost_after = evaluate_cost(imu_residuals);
+
+    const bool latest_has_visual = visual_factors_per_frame[latest_id] > 0;
+    const bool cost_decreased = std::isfinite(summary.initial_cost) &&
+                                std::isfinite(summary.final_cost) &&
+                                summary.final_cost < summary.initial_cost;
+    const bool valid_optimization =
+        latest_has_visual && summary.IsSolutionUsable() && cost_decreased;
+    if (valid_optimization) {
+        ++valid_optimization_count_;
+    } else {
+        ++invalid_optimization_count_;
+    }
+
+    std::string visual_counts;
+    for (size_t i = 0; i < visual_factors_per_frame.size(); ++i) {
+        if (!visual_counts.empty()) visual_counts += ',';
+        visual_counts += std::to_string(visual_factors_per_frame[i]);
+    }
+    spdlog::info(
+        "Optimization {}\n"
+        "  visual: {:.3e} -> {:.3e}\n"
+        "  prior:  {:.3e} -> {:.3e}\n"
+        "  imu:    {:.3e} -> {:.3e}\n"
+        "  visual/frame: [{}]\n"
+        "  count: valid={} invalid={}",
+        valid_optimization ? "valid" : "invalid", visual_cost_before, visual_cost_after,
+        prior_cost_before, prior_cost_after, imu_cost_before, imu_cost_after, visual_counts,
+        valid_optimization_count_, invalid_optimization_count_);
+
+    if (optimization_callback_) {
+        OptimizationStats stats;
+        stats.total_cost_before = summary.initial_cost;
+        stats.total_cost_after = summary.final_cost;
+        stats.visual_cost_before = visual_cost_before;
+        stats.visual_cost_after = visual_cost_after;
+        stats.prior_cost_before = prior_cost_before;
+        stats.prior_cost_after = prior_cost_after;
+        stats.imu_cost_before = imu_cost_before;
+        stats.imu_cost_after = imu_cost_after;
+        stats.visual_factors_per_frame = visual_factors_per_frame;
+        stats.valid_count = valid_optimization_count_;
+        stats.invalid_count = invalid_optimization_count_;
+        stats.valid = valid_optimization;
+        optimization_callback_(timestamp >= 0.0 ? timestamp : last_ts_, stats);
+    }
 
     state_->paramsToState();
 
@@ -292,16 +364,15 @@ void Estimator::optimize() {
     }
 
     visitPreintegrators([&](auto& preintegrators) {
-        for (int i = 0; i < static_cast<int>(preintegrators.size()); ++i) {
-            preintegrators[i].repropagate(state_->Bas[i], state_->Bgs[i], noise_);
+        for (int i = 0; i < state_->cur_frame_count; ++i) {
+            const double delta_ba = (state_->Bas[i] - preintegrators[i].ba_linearized).norm();
+            const double delta_bg = (state_->Bgs[i] - preintegrators[i].bg_linearized).norm();
+            if (delta_ba > params_.imu_repropagate_ba_threshold ||
+                delta_bg > params_.imu_repropagate_bg_threshold) {
+                preintegrators[i].repropagate(state_->Bas[i], state_->Bgs[i], noise_);
+            }
         }
     });
-
-    spdlog::info(
-        "Ba {:.4f} {:.4f} {:.4f} Bg {:.4f} {:.4f} {:.4f} delay_time {:.2f} ms",
-        state_->Bas[latest_id].x(), state_->Bas[latest_id].y(), state_->Bas[latest_id].z(),
-        state_->Bgs[latest_id].x(), state_->Bgs[latest_id].y(), state_->Bgs[latest_id].z(),
-        state_->param_delay_time * 1e3);
 }
 
 void Estimator::buildPrior() {
@@ -341,7 +412,6 @@ void Estimator::buildPrior() {
     }
 
     auto marg_features = feature_manager_->collectMargFeatures();
-    spdlog::info("{} feature marginals", static_cast<int>(marg_features.size()));
     visitPreintegrators([&](auto& preintegrators) {
         using Integrator = typename std::decay_t<decltype(preintegrators)>::value_type;
         std::vector<IntegratorBase<Integrator>*> pint_ptrs;
@@ -487,12 +557,6 @@ bool Estimator::tryInitialize() {
     spdlog::info(
         "VI init: |g|={:.4f} s={:.4f} R0_yaw={:.2f}°", tassel_utils::G.norm(), s,
         yaw * 180.0 / M_PI);
-    for (int i = 0; i <= frame_count; ++i) {
-        spdlog::info(
-            "  frame[{}]: P=[{:.3f},{:.3f},{:.3f}] V=[{:.3f},{:.3f},{:.3f}]", i, state_->Ps[i].x(),
-            state_->Ps[i].y(), state_->Ps[i].z(), state_->Vs[i].x(), state_->Vs[i].y(),
-            state_->Vs[i].z());
-    }
     return true;
 }
 

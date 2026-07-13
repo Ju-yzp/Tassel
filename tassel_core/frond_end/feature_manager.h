@@ -25,14 +25,12 @@ public:
         size_t frame_count, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
 
     inline void invalidateDepths() {
-        for (auto& [id, feature] : features_) {
-            feature.estimated_depth = INVALID_DEPTH;
+        for (auto& item : features_) {
+            item.second.estimated_depth = INVALID_DEPTH;
         }
     }
 
-    void triangulate(
-        const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
-        const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1);
+    void triangulate(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
     void removeOldest(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
@@ -49,8 +47,6 @@ public:
     std::vector<Eigen::Vector3d> getPointCloud(
         const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) const;
 
-    void removeMargFeatures();
-
     void reset(int parallax_thres);
 
     std::vector<SFMFeature> collectSFMFeatures(int frame_num) const;
@@ -65,10 +61,6 @@ private:
     int tracked_times_thres_;
 
     int min_tracked_pts_;
-
-    int min_pnp_pts_;
-
-    double min_pnp_inliers_ratio_;
 
     double min_translation_;
 
