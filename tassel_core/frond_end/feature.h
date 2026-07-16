@@ -50,7 +50,8 @@ struct Feature {
     size_t start_frame_id;
     double estimated_depth;
     std::vector<FeaturePerFrame> observations;
-    bool has_been_used = false;
+    // 已进入过边缘化先验；宿主滑动并继承深度后允许继续边缘化。
+    bool has_been_marginalized = false;
 };
 }  // namespace tassel_core
 #endif  // TASSEL_CORE_FEATURE_H_

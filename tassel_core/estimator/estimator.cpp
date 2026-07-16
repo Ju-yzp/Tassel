@@ -59,8 +59,6 @@ Estimator::Estimator(
 
 void Estimator::reset() {
     gravity_initialized_ = false;
-    valid_optimization_count_ = 0;
-    invalid_optimization_count_ = 0;
     last_ts_ = -1;
     last_imu_acc_ = Eigen::Vector3d::Zero();
     last_imu_gyro_ = Eigen::Vector3d::Zero();
@@ -94,7 +92,20 @@ void Estimator::processMeasurement(
         last_imu_gyro_ = imu_measurements.back().gyro;
     }
 
-    bool is_keyframe = feature_manager_->checkParallax(frame_count, feature_frame);
+    const bool initialization_keyframe =
+        feature_manager_->checkParallax(frame_count, feature_frame);
+    const auto& input_stats = feature_manager_->lastInputStats();
+    const double new_feature_ratio = input_stats.input_count > 0
+                                         ? static_cast<double>(input_stats.created_count) /
+                                               static_cast<double>(input_stats.input_count)
+                                         : 1.0;
+    const bool is_keyframe = new_feature_ratio >= params_.keyframe_new_feature_ratio;
+    spdlog::info(
+        "Frame features: input={} matched={} new={} new_ratio={:.3f} parallax={:.3f} "
+        "keyframe={}",
+        input_stats.input_count, input_stats.matched_count, input_stats.created_count,
+        new_feature_ratio, input_stats.average_parallax,
+        gravity_initialized_ ? is_keyframe : initialization_keyframe);
 
     if (frame_count > 0) {
         Eigen::Matrix3d R = state_->Rs[frame_count];
@@ -133,28 +144,16 @@ void Estimator::processMeasurement(
 
     state_->acc_vec.push_back(last_imu_acc_);
     state_->gyro_vec.push_back(last_imu_gyro_);
-    if (is_keyframe) {
-        feature_manager_->triangulate(*state_, params_.ric, params_.tic);
+    if (!gravity_initialized_) {
+        if (!initialization_keyframe) {
+            feature_manager_->removeNewest(frame_count);
+            state_->acc_vec.pop_back();
+            state_->gyro_vec.pop_back();
+            return;
+        }
 
-        if (frame_count == state_->max_frame_count - 1) {
-            if (!gravity_initialized_) {
-                if (!tryInitialize()) {
-                    spdlog::warn("VI initialization failed, resetting");
-                    reset();
-                    return;
-                }
-                feature_manager_->invalidateDepths();
-                feature_manager_->triangulate(*state_, params_.ric, params_.tic);
-            }
-            optimize(ts);
-            if (pose_callback_) {
-                pose_callback_(ts, Sophus::SE3d(state_->Rs[frame_count], state_->Ps[frame_count]));
-            }
-            feature_manager_->removeOutliers(*state_, params_.ric, params_.tic);
-            buildPrior();
-            feature_manager_->removeOldest(*state_, params_.ric, params_.tic);
-            slideWindow();
-        } else {
+        feature_manager_->triangulate(*state_, params_.ric, params_.tic);
+        if (frame_count < state_->max_frame_count - 1) {
             ++frame_count;
             state_->Rs[frame_count] = state_->Rs[frame_count - 1];
             state_->Ps[frame_count] = state_->Ps[frame_count - 1];
@@ -169,16 +168,32 @@ void Estimator::processMeasurement(
                         state_->Bas[frame_count - 1], state_->Bgs[frame_count - 1], noise_);
                 }
             });
+            return;
         }
-    } else {
-        if (frame_count == state_->max_frame_count - 1 && gravity_initialized_) {
-            optimize(ts);
-            feature_manager_->removeOutliers(*state_, params_.ric, params_.tic);
+
+        if (!tryInitialize()) {
+            spdlog::warn("VI initialization failed, resetting");
+            reset();
+            return;
         }
-        feature_manager_->removeNewest(frame_count);
-        state_->acc_vec.pop_back();
-        state_->gyro_vec.pop_back();
+        feature_manager_->invalidateDepths();
     }
+
+    feature_manager_->triangulate(*state_, params_.ric, params_.tic);
+    optimize(ts);
+    const Sophus::SE3d optimized_pose(state_->Rs[frame_count], state_->Ps[frame_count]);
+    if (pose_callback_) pose_callback_(ts, optimized_pose);
+    if (realtime_pose_callback_) realtime_pose_callback_(ts, optimized_pose);
+    const OutlierStats outliers =
+        feature_manager_->removeOutliers(*state_, params_.ric, params_.tic);
+    spdlog::info(
+        "  reprojection: checked={} removed={} mean={:.3f}px max={:.3f}px "
+        "removed_mean={:.3f}px",
+        outliers.checked_count, outliers.removed_count, outliers.average_error,
+        outliers.maximum_error, outliers.removed_average_error);
+    buildPrior();
+    feature_manager_->removeOldest(*state_, params_.ric, params_.tic);
+    slideWindow();
 
     if (cloud_callback_ && gravity_initialized_) {
         auto pts = feature_manager_->getPointCloud(*state_, params_.ric, params_.tic);
@@ -188,6 +203,14 @@ void Estimator::processMeasurement(
 
 void Estimator::optimize(double timestamp) {
     const int latest_id = state_->cur_frame_count;
+    const Eigen::Vector3d latest_position_before = state_->Ps[latest_id];
+    const Eigen::Vector3d latest_velocity_before = state_->Vs[latest_id];
+    const Eigen::Vector3d latest_ba_before = state_->Bas[latest_id];
+    const Eigen::Vector3d latest_bg_before = state_->Bgs[latest_id];
+    const double delay_before = state_->delay_time;
+    const auto window_positions_before = state_->Ps;
+    const auto window_rotations_before = state_->Rs;
+    const auto window_velocities_before = state_->Vs;
 
     state_->stateToParams();
     auto features = feature_manager_->collectLandmarks();
@@ -195,6 +218,8 @@ void Estimator::optimize(double timestamp) {
     ceres::Problem problem;
     std::vector<ceres::ResidualBlockId> prior_residuals;
     std::vector<ceres::ResidualBlockId> visual_residuals;
+    std::vector<ceres::ResidualBlockId> visual_two_observation_residuals;
+    std::vector<ceres::ResidualBlockId> visual_mature_residuals;
     std::vector<ceres::ResidualBlockId> imu_residuals;
     std::vector<int> visual_factors_per_frame(state_->cur_frame_count + 1, 0);
 
@@ -245,6 +270,12 @@ void Estimator::optimize(double timestamp) {
     for (size_t k = 0; k < features.size(); ++k) {
         Feature* f = features[k];
         int host_id = f->start_frame_id;
+        for (size_t obs_idx = 0; obs_idx < f->observations.size(); ++obs_idx) {
+            const int frame_id = host_id + static_cast<int>(obs_idx);
+            if (frame_id <= state_->cur_frame_count) {
+                ++visual_factors_per_frame[frame_id];
+            }
+        }
         for (size_t obs_idx = 1; obs_idx < f->observations.size(); ++obs_idx) {
             int target_id = host_id + static_cast<int>(obs_idx);
             Eigen::Vector2d pt_j(f->observations[obs_idx].pt.x, f->observations[obs_idx].pt.y);
@@ -258,12 +289,16 @@ void Estimator::optimize(double timestamp) {
                 state_->params_speed_bias[host_id].data() + 3,
                 state_->params_speed_bias[target_id].data() + 3, sqrt_info, state_->camera,
                 f->observations[0].applied_delay, f->observations[obs_idx].applied_delay);
-            visual_residuals.push_back(problem.AddResidualBlock(
+            const ceres::ResidualBlockId residual = problem.AddResidualBlock(
                 cost, loss, state_->params_pose[host_id].data(),
                 state_->params_pose[target_id].data(), &state_->param_delay_time,
-                &inv_depth_params[k]));
-            if (host_id <= state_->cur_frame_count) ++visual_factors_per_frame[host_id];
-            if (target_id <= state_->cur_frame_count) ++visual_factors_per_frame[target_id];
+                &inv_depth_params[k]);
+            visual_residuals.push_back(residual);
+            if (f->observations.size() == 2) {
+                visual_two_observation_residuals.push_back(residual);
+            } else {
+                visual_mature_residuals.push_back(residual);
+            }
         }
     }
 
@@ -301,6 +336,9 @@ void Estimator::optimize(double timestamp) {
 
     const double prior_cost_before = evaluate_cost(prior_residuals);
     const double visual_cost_before = evaluate_cost(visual_residuals);
+    const double visual_two_observation_cost_before =
+        evaluate_cost(visual_two_observation_residuals);
+    const double visual_mature_cost_before = evaluate_cost(visual_mature_residuals);
     const double imu_cost_before = evaluate_cost(imu_residuals);
 
     ceres::Solver::Summary summary;
@@ -308,18 +346,55 @@ void Estimator::optimize(double timestamp) {
 
     const double prior_cost_after = evaluate_cost(prior_residuals);
     const double visual_cost_after = evaluate_cost(visual_residuals);
+    const double visual_two_observation_cost_after =
+        evaluate_cost(visual_two_observation_residuals);
+    const double visual_mature_cost_after = evaluate_cost(visual_mature_residuals);
     const double imu_cost_after = evaluate_cost(imu_residuals);
-
-    const bool latest_has_visual = visual_factors_per_frame[latest_id] > 0;
-    const bool cost_decreased = std::isfinite(summary.initial_cost) &&
-                                std::isfinite(summary.final_cost) &&
-                                summary.final_cost < summary.initial_cost;
-    const bool valid_optimization =
-        latest_has_visual && summary.IsSolutionUsable() && cost_decreased;
-    if (valid_optimization) {
-        ++valid_optimization_count_;
-    } else {
-        ++invalid_optimization_count_;
+    const Eigen::Vector3d latest_position_after(
+        state_->params_pose[latest_id][0], state_->params_pose[latest_id][1],
+        state_->params_pose[latest_id][2]);
+    const Eigen::Vector3d latest_velocity_after(
+        state_->params_speed_bias[latest_id][0], state_->params_speed_bias[latest_id][1],
+        state_->params_speed_bias[latest_id][2]);
+    const Eigen::Vector3d latest_ba_after(
+        state_->params_speed_bias[latest_id][3], state_->params_speed_bias[latest_id][4],
+        state_->params_speed_bias[latest_id][5]);
+    const Eigen::Vector3d latest_bg_after(
+        state_->params_speed_bias[latest_id][6], state_->params_speed_bias[latest_id][7],
+        state_->params_speed_bias[latest_id][8]);
+    double maximum_position_update = 0.0;
+    double maximum_rotation_update = 0.0;
+    double maximum_velocity_update = 0.0;
+    int maximum_position_frame = 0;
+    int maximum_rotation_frame = 0;
+    int maximum_velocity_frame = 0;
+    for (int i = 0; i <= latest_id; ++i) {
+        const Eigen::Vector3d position_after(
+            state_->params_pose[i][0], state_->params_pose[i][1], state_->params_pose[i][2]);
+        const Eigen::Matrix3d rotation_after =
+            Sophus::SO3d::exp(Eigen::Vector3d(
+                                  state_->params_pose[i][3], state_->params_pose[i][4],
+                                  state_->params_pose[i][5]))
+                .matrix();
+        const Eigen::Vector3d velocity_after(
+            state_->params_speed_bias[i][0], state_->params_speed_bias[i][1],
+            state_->params_speed_bias[i][2]);
+        const double position_update = (position_after - window_positions_before[i]).norm();
+        const double rotation_update =
+            Sophus::SO3d(window_rotations_before[i].transpose() * rotation_after).log().norm();
+        const double velocity_update = (velocity_after - window_velocities_before[i]).norm();
+        if (position_update > maximum_position_update) {
+            maximum_position_update = position_update;
+            maximum_position_frame = i;
+        }
+        if (rotation_update > maximum_rotation_update) {
+            maximum_rotation_update = rotation_update;
+            maximum_rotation_frame = i;
+        }
+        if (velocity_update > maximum_velocity_update) {
+            maximum_velocity_update = velocity_update;
+            maximum_velocity_frame = i;
+        }
     }
 
     std::string visual_counts;
@@ -328,15 +403,30 @@ void Estimator::optimize(double timestamp) {
         visual_counts += std::to_string(visual_factors_per_frame[i]);
     }
     spdlog::info(
-        "Optimization {}\n"
+        "Optimization\n"
         "  visual: {:.3e} -> {:.3e}\n"
+        "  visual obs=2: {:.3e} -> {:.3e}, mature: {:.3e} -> {:.3e}\n"
         "  prior:  {:.3e} -> {:.3e}\n"
         "  imu:    {:.3e} -> {:.3e}\n"
-        "  visual/frame: [{}]\n"
-        "  count: valid={} invalid={}",
-        valid_optimization ? "valid" : "invalid", visual_cost_before, visual_cost_after,
-        prior_cost_before, prior_cost_after, imu_cost_before, imu_cost_after, visual_counts,
-        valid_optimization_count_, invalid_optimization_count_);
+        "  latest state: |V| {:.4f} -> {:.4f}, |dP| {:.4f}, |dV| {:.4f}\n"
+        "  delay: {:.6f} -> {:.6f}\n"
+        "  Ba: ({:.5f}, {:.5f}, {:.5f}) -> ({:.5f}, {:.5f}, {:.5f})\n"
+        "  Bg: ({:.5f}, {:.5f}, {:.5f}) -> ({:.5f}, {:.5f}, {:.5f})\n"
+        "  window update: |dP|max {:.4f}@{}, |dR|max {:.4f}@{}, |dV|max {:.4f}@{}\n"
+        "  visual landmarks: {}\n"
+        "  visual/frame: [{}]",
+        visual_cost_before, visual_cost_after, visual_two_observation_cost_before,
+        visual_two_observation_cost_after, visual_mature_cost_before, visual_mature_cost_after,
+        prior_cost_before, prior_cost_after, imu_cost_before, imu_cost_after,
+        latest_velocity_before.norm(), latest_velocity_after.norm(),
+        (latest_position_after - latest_position_before).norm(),
+        (latest_velocity_after - latest_velocity_before).norm(), delay_before,
+        state_->param_delay_time, latest_ba_before.x(), latest_ba_before.y(), latest_ba_before.z(),
+        latest_ba_after.x(), latest_ba_after.y(), latest_ba_after.z(), latest_bg_before.x(),
+        latest_bg_before.y(), latest_bg_before.z(), latest_bg_after.x(), latest_bg_after.y(),
+        latest_bg_after.z(), maximum_position_update, maximum_position_frame,
+        maximum_rotation_update, maximum_rotation_frame, maximum_velocity_update,
+        maximum_velocity_frame, features.size(), visual_counts);
 
     if (optimization_callback_) {
         OptimizationStats stats;
@@ -349,9 +439,6 @@ void Estimator::optimize(double timestamp) {
         stats.imu_cost_before = imu_cost_before;
         stats.imu_cost_after = imu_cost_after;
         stats.visual_factors_per_frame = visual_factors_per_frame;
-        stats.valid_count = valid_optimization_count_;
-        stats.invalid_count = invalid_optimization_count_;
-        stats.valid = valid_optimization;
         optimization_callback_(timestamp >= 0.0 ? timestamp : last_ts_, stats);
     }
 
@@ -380,34 +467,21 @@ void Estimator::buildPrior() {
     state_->stateToParams();
     const double visual_huber_delta = params_.reproj_huber_thres * params_.visual_factor_weight;
 
-    // The dense marginalization system below is linearized at the current state. Rebase the
-    // carried prior to that same point before inserting its H and b into the new QR system.
+    // Linearize the fixed carried prior at the current state without mutating its stored
+    // linearization point. Rotation columns are transported into the current right tangent.
     MargLinData rebased_prior;
     const MargLinData* prior_for_marg = nullptr;
     if (marg_data_) {
-        rebased_prior = *marg_data_;
-        MarginalizationPriorFactor prior_factor(*marg_data_);
-
         const int num_kept = static_cast<int>(marg_data_->linearization_poses.size());
         TASSEL_ASSERT(num_kept == n - 1);
-        TASSEL_ASSERT(static_cast<int>(marg_data_->linearization_speed_bias.size()) == num_kept);
-        TASSEL_ASSERT(marg_data_->H.cols() == num_kept * 15 + 1);
-
-        std::vector<const double*> prior_parameters;
-        prior_parameters.reserve(num_kept * 2 + 1);
+        std::vector<std::array<double, 6>> current_poses(num_kept);
+        std::vector<std::array<double, 9>> current_speed_bias(num_kept);
         for (int i = 0; i < num_kept; ++i) {
-            prior_parameters.push_back(state_->params_pose[i].data());
-            prior_parameters.push_back(state_->params_speed_bias[i].data());
+            current_poses[i] = state_->params_pose[i];
+            current_speed_bias[i] = state_->params_speed_bias[i];
         }
-        prior_parameters.push_back(&state_->param_delay_time);
-
-        rebased_prior.b.resize(prior_factor.num_residuals());
-        prior_factor.Evaluate(prior_parameters.data(), rebased_prior.b.data(), nullptr);
-        for (int i = 0; i < num_kept; ++i) {
-            rebased_prior.linearization_poses[i] = state_->params_pose[i];
-            rebased_prior.linearization_speed_bias[i] = state_->params_speed_bias[i];
-        }
-        rebased_prior.linearization_delay_time = state_->param_delay_time;
+        rebased_prior = MargHelper::rebasePrior(
+            *marg_data_, current_poses, current_speed_bias, state_->param_delay_time);
         prior_for_marg = &rebased_prior;
     }
 
@@ -504,7 +578,7 @@ bool Estimator::tryInitialize() {
             }
         });
         Eigen::Vector3d bg = solveGyroBias(Rs_, dq_dbgs, delta_qs, params_.ric);
-        for (int i = 0; i < frame_count; ++i) state_->Bgs[i] = bg;
+        for (int i = 0; i <= frame_count; ++i) state_->Bgs[i] = bg;
     }
 
     visitPreintegrators([&](auto& preintegrators) {

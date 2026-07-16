@@ -205,7 +205,7 @@ TEST(MarginalizationPriorTest, ResidualMatchesDirect) {
     EXPECT_TRUE(r.isApprox(expected_r, 1e-12));
 }
 
-TEST(MarginalizationPriorTest, JacobiansMatchFiniteDiff) {
+TEST(MarginalizationPriorTest, JacobiansMatchManifoldFiniteDiff) {
     std::mt19937 rng(123);
     std::normal_distribution<double> n(0.0, 1.0);
 
@@ -214,8 +214,8 @@ TEST(MarginalizationPriorTest, JacobiansMatchFiniteDiff) {
         for (int c = 0; c < 12; ++c) H(r, c) = n(rng);
     Eigen::VectorXd b = Eigen::VectorXd::Random(8);
 
-    std::array<double, 6> lin0 = {0, 0, 0, 0, 0, 0};
-    std::array<double, 6> lin1 = {0, 0, 0, 0, 0, 0};
+    std::array<double, 6> lin0 = {0.2, -0.1, 0.3, 0.4, -0.2, 0.1};
+    std::array<double, 6> lin1 = {-0.3, 0.2, 0.1, -0.25, 0.35, 0.15};
 
     MargLinData data;
     data.H = H;
@@ -225,8 +225,8 @@ TEST(MarginalizationPriorTest, JacobiansMatchFiniteDiff) {
 
     double pose0[6], pose1[6];
     for (int i = 0; i < 6; ++i) {
-        pose0[i] = n(rng);
-        pose1[i] = n(rng);
+        pose0[i] = lin0[i] + 0.2 * n(rng);
+        pose1[i] = lin1[i] + 0.2 * n(rng);
     }
 
     double const* params[] = {pose0, pose1};
@@ -241,59 +241,141 @@ TEST(MarginalizationPriorTest, JacobiansMatchFiniteDiff) {
     }
 
     const double eps = 1e-6;
+    SE3RightManifold manifold;
     for (int p = 0; p < 2; ++p) {
         double* pose = (p == 0) ? pose0 : pose1;
         auto& J = (p == 0) ? J0 : J1;
 
+        double plus_data[36];
+        manifold.PlusJacobian(pose, plus_data);
+        Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus(plus_data);
+        Eigen::MatrixXd J_tangent = J * plus;
+
         for (int c = 0; c < 6; ++c) {
-            double orig = pose[c];
-            pose[c] = orig + eps;
+            Eigen::Matrix<double, 6, 1> delta = Eigen::Matrix<double, 6, 1>::Zero();
+            delta[c] = eps;
+            double pose_plus[6], pose_minus[6];
+            manifold.Plus(pose, delta.data(), pose_plus);
+            manifold.Plus(pose, (-delta).eval().data(), pose_minus);
+            const double* original = params[p];
+            params[p] = pose_plus;
             Eigen::VectorXd rp(res_dim);
             factor.Evaluate(params, rp.data(), nullptr);
-            pose[c] = orig - eps;
+            params[p] = pose_minus;
             Eigen::VectorXd rm(res_dim);
             factor.Evaluate(params, rm.data(), nullptr);
-            pose[c] = orig;
+            params[p] = original;
 
             Eigen::VectorXd fd = (rp - rm) / (2.0 * eps);
             for (int row = 0; row < res_dim; ++row) {
-                double denom = std::max(1e-6, std::abs(J(row, c)));
-                EXPECT_NEAR(J(row, c), fd(row), 5e-5 * denom)
+                double denom = std::max(1e-6, std::abs(J_tangent(row, c)));
+                EXPECT_NEAR(J_tangent(row, c), fd(row), 5e-5 * denom)
                     << "Block " << p << " col " << c << " row " << row;
             }
         }
     }
 }
 
-TEST(MarginalizationPriorTest, JacobianIsConstantH) {
-    std::mt19937 rng(456);
+TEST(MarginalizationPriorTest, RebaseMatchesOldPriorAtCurrentState) {
+    constexpr int kFrames = 2;
+    constexpr int kCols = kFrames * 15 + 1;
+    constexpr int kRows = 24;
+    std::mt19937 rng(789);
     std::normal_distribution<double> n(0.0, 1.0);
 
-    Eigen::MatrixXd H(6, 6);
-    for (int r = 0; r < 6; ++r)
-        for (int c = 0; c < 6; ++c) H(r, c) = n(rng);
-    Eigen::VectorXd b = Eigen::VectorXd::Random(6);
-
-    std::array<double, 6> lin0 = {0, 0, 0, 0, 0, 0};
-    MargLinData data;
-    data.H = H;
-    data.b = b;
-    data.linearization_poses = {lin0};
-    MarginalizationPriorFactor factor(data);
-
-    // Jacobian should equal H regardless of evaluation point
-    for (int trial = 0; trial < 3; ++trial) {
-        double pose0[6];
-        for (int i = 0; i < 6; ++i) pose0[i] = n(rng);
-
-        double const* params[] = {pose0};
-        Eigen::Matrix<double, Eigen::Dynamic, 6, Eigen::RowMajor> J(6, 6);
-        double* jacs[] = {J.data()};
-        Eigen::VectorXd r(6);
-        factor.Evaluate(params, r.data(), jacs);
-
-        EXPECT_TRUE(J.isApprox(H, 1e-12)) << "Jacobian should equal H (trial " << trial << ")";
+    MargLinData old_prior;
+    old_prior.H.resize(kRows, kCols);
+    old_prior.b.resize(kRows);
+    for (int r = 0; r < kRows; ++r) {
+        old_prior.b[r] = 0.1 * n(rng);
+        for (int c = 0; c < kCols; ++c) old_prior.H(r, c) = n(rng);
     }
+    old_prior.linearization_poses = {
+        std::array<double, 6>{0.1, -0.2, 0.3, 0.35, -0.15, 0.2},
+        std::array<double, 6>{-0.3, 0.15, 0.2, -0.2, 0.3, 0.1}};
+    old_prior.linearization_speed_bias.resize(kFrames);
+    for (int i = 0; i < kFrames; ++i)
+        for (double& value : old_prior.linearization_speed_bias[i]) value = 0.1 * n(rng);
+    old_prior.linearization_delay_time = 0.004;
+
+    auto current_poses = old_prior.linearization_poses;
+    auto current_speed_bias = old_prior.linearization_speed_bias;
+    for (int i = 0; i < kFrames; ++i) {
+        for (double& value : current_poses[i]) value += 0.15 * n(rng);
+        for (double& value : current_speed_bias[i]) value += 0.05 * n(rng);
+    }
+    double current_delay = -0.003;
+
+    const MargLinData rebased =
+        MargHelper::rebasePrior(old_prior, current_poses, current_speed_bias, current_delay);
+    MarginalizationPriorFactor old_factor(old_prior);
+    std::vector<const double*> parameters;
+    for (int i = 0; i < kFrames; ++i) {
+        parameters.push_back(current_poses[i].data());
+        parameters.push_back(current_speed_bias[i].data());
+    }
+    parameters.push_back(&current_delay);
+
+    Eigen::VectorXd residual(kRows);
+    ASSERT_TRUE(old_factor.Evaluate(parameters.data(), residual.data(), nullptr));
+    EXPECT_TRUE(rebased.b.isApprox(residual, 1e-12));
+
+    const double eps = 1e-7;
+    SE3RightManifold manifold;
+    Eigen::MatrixXd numerical(kRows, kCols);
+    for (int frame = 0; frame < kFrames; ++frame) {
+        for (int c = 0; c < 6; ++c) {
+            Eigen::Matrix<double, 6, 1> delta = Eigen::Matrix<double, 6, 1>::Zero();
+            delta[c] = eps;
+            double plus[6], minus[6];
+            manifold.Plus(current_poses[frame].data(), delta.data(), plus);
+            manifold.Plus(current_poses[frame].data(), (-delta).eval().data(), minus);
+            const int parameter_index = frame * 2;
+            const double* original = parameters[parameter_index];
+            parameters[parameter_index] = plus;
+            Eigen::VectorXd rp(kRows);
+            old_factor.Evaluate(parameters.data(), rp.data(), nullptr);
+            parameters[parameter_index] = minus;
+            Eigen::VectorXd rm(kRows);
+            old_factor.Evaluate(parameters.data(), rm.data(), nullptr);
+            parameters[parameter_index] = original;
+            numerical.col(frame * 15 + c) = (rp - rm) / (2.0 * eps);
+        }
+        for (int c = 0; c < 9; ++c) {
+            const int parameter_index = frame * 2 + 1;
+            const double original = current_speed_bias[frame][c];
+            current_speed_bias[frame][c] = original + eps;
+            Eigen::VectorXd rp(kRows);
+            old_factor.Evaluate(parameters.data(), rp.data(), nullptr);
+            current_speed_bias[frame][c] = original - eps;
+            Eigen::VectorXd rm(kRows);
+            old_factor.Evaluate(parameters.data(), rm.data(), nullptr);
+            current_speed_bias[frame][c] = original;
+            numerical.col(frame * 15 + 6 + c) = (rp - rm) / (2.0 * eps);
+        }
+    }
+    current_delay += eps;
+    Eigen::VectorXd rp(kRows);
+    old_factor.Evaluate(parameters.data(), rp.data(), nullptr);
+    current_delay -= 2.0 * eps;
+    Eigen::VectorXd rm(kRows);
+    old_factor.Evaluate(parameters.data(), rm.data(), nullptr);
+    current_delay += eps;
+    numerical.col(kCols - 1) = (rp - rm) / (2.0 * eps);
+
+    EXPECT_TRUE(rebased.H.isApprox(numerical, 2e-7))
+        << "max error: " << (rebased.H - numerical).cwiseAbs().maxCoeff();
+}
+
+TEST(SE3RightManifoldTest, PlusAndMinusJacobiansAreInverse) {
+    SE3RightManifold manifold;
+    double pose[6] = {0.3, -0.2, 0.1, 0.7, -0.4, 0.25};
+    double plus_data[36], minus_data[36];
+    ASSERT_TRUE(manifold.PlusJacobian(pose, plus_data));
+    ASSERT_TRUE(manifold.MinusJacobian(pose, minus_data));
+    Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus(plus_data);
+    Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> minus(minus_data);
+    EXPECT_TRUE((minus * plus).isApprox(Eigen::Matrix<double, 6, 6>::Identity(), 1e-12));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

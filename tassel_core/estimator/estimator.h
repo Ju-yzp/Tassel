@@ -33,9 +33,6 @@ struct OptimizationStats {
     double imu_cost_before = 0.0;
     double imu_cost_after = 0.0;
     std::vector<int> visual_factors_per_frame;
-    size_t valid_count = 0;
-    size_t invalid_count = 0;
-    bool valid = false;
 };
 
 class Estimator {
@@ -51,6 +48,9 @@ public:
 
     void setPoseCallback(std::function<void(double, const Sophus::SE3d&)> cb) {
         pose_callback_ = std::move(cb);
+    }
+    void setRealtimePoseCallback(std::function<void(double, const Sophus::SE3d&)> cb) {
+        realtime_pose_callback_ = std::move(cb);
     }
     void setCloudCallback(std::function<void(double, const std::vector<Eigen::Vector3d>&)> cb) {
         cloud_callback_ = std::move(cb);
@@ -100,10 +100,9 @@ private:
     Eigen::Matrix<double, 18, 18> noise_;
 
     bool gravity_initialized_ = false;
-    size_t valid_optimization_count_ = 0;
-    size_t invalid_optimization_count_ = 0;
 
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
+    std::function<void(double, const Sophus::SE3d&)> realtime_pose_callback_;
     std::function<void(double, const std::vector<Eigen::Vector3d>&)> cloud_callback_;
     std::function<void(double, const OptimizationStats&)> optimization_callback_;
 

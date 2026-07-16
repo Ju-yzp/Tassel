@@ -87,8 +87,7 @@ int main(int argc, char** argv) {
     telemetry_qos.reliable().durability_volatile();
     for (const char* topic :
          {"optimization/total_reduction", "optimization/visual_reduction",
-          "optimization/imu_reduction", "optimization/prior_reduction", "optimization/valid_count",
-          "optimization/invalid_count", "optimization/valid"}) {
+          "optimization/imu_reduction", "optimization/prior_reduction"}) {
         viewer->createScalarPublisher(topic, telemetry_qos);
     }
     viewer->createIntArrayPublisher("optimization/visual_factors_per_frame", telemetry_qos);
@@ -185,9 +184,11 @@ int main(int argc, char** argv) {
     Estimator estimator(params, state, feature_manager);
     state->camera = camera_ptr;
     estimator.setCamera(camera_ptr);
-    estimator.setPoseCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
+    estimator.setRealtimePoseCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
         viewer->publishOdometry("odom/camera", pose.translation(), pose.unit_quaternion());
-        viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion());
+    });
+    estimator.setPoseCallback([&viewer](double ts, const Sophus::SE3d& pose) {
+        viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion(), ts);
     });
     estimator.setCloudCallback([&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
         viewer->publishPointCloud("landmarks", pts);
@@ -201,10 +202,6 @@ int main(int argc, char** argv) {
             "optimization/imu_reduction", stats.imu_cost_before - stats.imu_cost_after);
         viewer->publishScalar(
             "optimization/prior_reduction", stats.prior_cost_before - stats.prior_cost_after);
-        viewer->publishScalar("optimization/valid_count", static_cast<double>(stats.valid_count));
-        viewer->publishScalar(
-            "optimization/invalid_count", static_cast<double>(stats.invalid_count));
-        viewer->publishScalar("optimization/valid", stats.valid ? 1.0 : 0.0);
         viewer->publishIntArray(
             "optimization/visual_factors_per_frame", stats.visual_factors_per_frame);
         viewer->publishVisualFactorWindow(

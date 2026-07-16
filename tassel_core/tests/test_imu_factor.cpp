@@ -23,6 +23,7 @@
 #include <vector>
 
 #include <ceres/ceres.h>
+#include <ceres/gradient_checker.h>
 #include <sophus/so3.hpp>
 
 #include "factor/imu_factor.h"
@@ -180,6 +181,16 @@ TEST_F(ImuFactorTest, JacobianCheck) {
     double r[15];
     factor->Evaluate(params, r, jac_ptrs);
 
+    Eigen::Matrix<double, 15, 6, Eigen::RowMajor> tangent_pose_jacobians[2];
+    for (int pose_block = 0; pose_block < 2; ++pose_block) {
+        const int block = pose_block * 2;
+        double plus_data[36];
+        manifold.PlusJacobian(params[block], plus_data);
+        Eigen::Map<const Eigen::Matrix<double, 15, 6, Eigen::RowMajor>> ambient(J[block]);
+        Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus(plus_data);
+        tangent_pose_jacobians[pose_block] = ambient * plus;
+    }
+
     // 切空间维度: pose=6, sb=9
     int dims[] = {6, 9, 6, 9};
 
@@ -231,7 +242,8 @@ TEST_F(ImuFactorTest, JacobianCheck) {
             int worst_row = 0;
             double worst_err = 0;
             for (int row = 0; row < 15; ++row) {
-                double an = J[blk][row * stride + c];
+                double an = (blk == 0 || blk == 2) ? tangent_pose_jacobians[blk / 2](row, c)
+                                                   : J[blk][row * stride + c];
                 double scale = std::max({std::abs(an), std::abs(num[row]), 1e-8});
                 double err = std::abs(an - num[row]) / scale;
                 if (err > worst_err) {
@@ -242,8 +254,10 @@ TEST_F(ImuFactorTest, JacobianCheck) {
             if (worst_err > tol) nbad++;
             if (worst_err > 0.01) {
                 std::cout << "  col " << c << " max_err=" << worst_err << " @row=" << worst_row
-                          << " an=" << J[blk][worst_row * stride + c] << " num=" << num[worst_row]
-                          << (worst_err > tol ? " ***" : "") << "\n";
+                          << " an="
+                          << ((blk == 0 || blk == 2) ? tangent_pose_jacobians[blk / 2](worst_row, c)
+                                                     : J[blk][worst_row * stride + c])
+                          << " num=" << num[worst_row] << (worst_err > tol ? " ***" : "") << "\n";
             }
         }
     }
@@ -252,6 +266,34 @@ TEST_F(ImuFactorTest, JacobianCheck) {
     EXPECT_EQ(nbad, 0);
 
     delete factor;
+}
+
+TEST_F(ImuFactorTest, CeresGradientCheckerContract) {
+    SE3RightManifold manifold;
+    std::vector<const ceres::Manifold*> manifolds = {&manifold, nullptr, &manifold, nullptr};
+    ceres::NumericDiffOptions options;
+    options.relative_step_size = 1e-6;
+    for (int frame = 0; frame < num_frames_ - 1; ++frame) {
+        IMUFactor<MidPointIntegrator> factor(preints_[frame]);
+        ceres::GradientChecker checker(&factor, &manifolds, options);
+        const double* parameters[] = {
+            params_pose_[frame].data(), params_sb_[frame].data(), params_pose_[frame + 1].data(),
+            params_sb_[frame + 1].data()};
+        ceres::GradientChecker::ProbeResults results;
+        const bool relative_check_ok = checker.Probe(parameters, 5e-4, &results);
+        double maximum_absolute_error = 0.0;
+        for (size_t block = 0; block < results.local_jacobians.size(); ++block) {
+            maximum_absolute_error = std::max(
+                maximum_absolute_error,
+                (results.local_jacobians[block] - results.local_numeric_jacobians[block])
+                    .cwiseAbs()
+                    .maxCoeff());
+        }
+        EXPECT_TRUE(relative_check_ok || maximum_absolute_error < 1e-7)
+            << "frame=" << frame << " max_relative_error=" << results.maximum_relative_error
+            << " max_absolute_error=" << maximum_absolute_error << "\n"
+            << results.error_log;
+    }
 }
 
 // =============================================================================

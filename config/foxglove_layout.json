@@ -29,8 +29,13 @@
         "/odom/camera": { "visible": true },
                     "/vo/path": {
                       "visible": true,
-                      "lineWidth": 0.005,
+                      "lineWidth": 0.015,
           "color": "#ef4444"
+        },
+        "/ground_truth/path": {
+          "visible": true,
+          "lineWidth": 0.015,
+          "color": "#22c55e"
         },
         "/landmarks": {
           "visible": true,

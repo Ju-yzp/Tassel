@@ -79,6 +79,7 @@ bool VisualFactor::Evaluate(
                 -reduce * ric.transpose() * A_j * R_j.transpose() * R_i *
                 (Sophus::SO3d::hat(A_i * pi_in_I) +
                  0.5 * Sophus::SO3d::hat((a_i - ba_i) * dt_i * dt_i));
+            jacobian_pose_i.block<2, 3>(0, 3) *= Sophus::SO3d::leftJacobian(-phi_i);
         }
 
         if (jacobians[1]) {
@@ -87,6 +88,7 @@ bool VisualFactor::Evaluate(
             jacobian_pose_j.block<2, 3>(0, 3) =
                 reduce * ric.transpose() * A_j *
                 Sophus::SO3d::hat(R_j.transpose() * (pi_in_G - (P_j + v_j * dt_j)));
+            jacobian_pose_j.block<2, 3>(0, 3) *= Sophus::SO3d::leftJacobian(-phi_j);
         }
 
         if (jacobians[2]) {

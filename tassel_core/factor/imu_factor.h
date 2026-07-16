@@ -84,6 +84,7 @@ public:
                 jacobian_pose_i.template block<3, 3>(6, 3) =
                     Sophus::SO3d::hat(R_i.transpose() * (G * sum_dt + V_j - V_i));
                 jacobian_pose_i = sqrt_info * jacobian_pose_i;
+                jacobian_pose_i.template block<15, 3>(0, 3) *= Sophus::SO3d::leftJacobian(-phi_i);
             }
             if (jacobians[1]) {
                 Eigen::Map<Eigen::Matrix<double, 15, 9, Eigen::RowMajor>> jacobian_speedbias_i(
@@ -112,6 +113,7 @@ public:
                 jacobian_pose_j.block<3, 3>(0, 0) = R_i.transpose();
                 jacobian_pose_j.block<3, 3>(3, 3) = Jr_inv;
                 jacobian_pose_j = sqrt_info * jacobian_pose_j;
+                jacobian_pose_j.template block<15, 3>(0, 3) *= Sophus::SO3d::leftJacobian(-phi_j);
             }
             if (jacobians[3]) {
                 Eigen::Map<Eigen::Matrix<double, 15, 9, Eigen::RowMajor>> jacobian_speedbias_j(

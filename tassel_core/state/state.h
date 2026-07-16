@@ -2,7 +2,6 @@
 #define TASSEL_CORE_STATE_H_
 
 #include <Eigen/Core>
-#include <Eigen/Eigenvalues>
 #include <array>
 #include <cmath>
 #include <sophus/se3.hpp>
@@ -30,26 +29,8 @@ struct State {
     }
 
     void stateToParam(int idx) {
-        static constexpr double kSinThetaEps = 1e-6;
-        static constexpr double kPiMinusThetaEps = 1e-4;
-
         const Eigen::Matrix3d& R = Rs[idx];
-        double cos_theta = (R.trace() - 1.0) / 2.0;
-        cos_theta = std::clamp(cos_theta, -1.0, 1.0);
-        double theta = std::acos(cos_theta);
-        double sin_theta = std::sin(theta);
-
-        Eigen::Vector3d phi;
-        if (sin_theta < kSinThetaEps) {
-            phi = Sophus::SO3d::vee(R - R.transpose()) * (0.5 - theta * theta / 12.0);
-        } else if (M_PI - theta < kPiMinusThetaEps) {
-            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(R);
-            int idx_max = es.eigenvalues().maxCoeff();
-            phi = es.eigenvectors().col(idx_max).normalized() * theta;
-            if ((Sophus::SO3d::vee(R - R.transpose())).dot(phi) < 0) phi = -phi;
-        } else {
-            phi = Sophus::SO3d::vee(R - R.transpose()) * (theta / (2.0 * sin_theta));
-        }
+        const Eigen::Vector3d phi = Sophus::SO3d(R).log();
 
         params_pose[idx][0] = Ps[idx].x();
         params_pose[idx][1] = Ps[idx].y();

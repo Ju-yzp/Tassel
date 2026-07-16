@@ -7,6 +7,7 @@ bridge:
         - /tf_static
         - /odom/camera
         - /vo/path
+        - /ground_truth/path
         - /landmarks
         - /stereo/image
         - /optimization/.*
@@ -19,5 +20,5 @@ studio:
 viewer:
     point_size: 1.75
     path_color: '#ef4444'
-    path_line_width: 0.005
+    path_line_width: 0.015
     cost_window_seconds: 15

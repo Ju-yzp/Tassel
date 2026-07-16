@@ -40,47 +40,55 @@ void LandmarkBlock::linearize(
     Eigen::Vector3d uv_i = observations[0].uv;
     int start_frame_id = feature.start_frame_id;
     double depth = feature.estimated_depth;
-    Eigen::Matrix<double, 2, 6> jacobian_pose_i, jacobian_pose_j;
+    Eigen::Matrix<double, 2, 6, Eigen::RowMajor> jacobian_pose_i, jacobian_pose_j;
     Eigen::Matrix<double, 2, 1> jacobian_dt;
     Eigen::Matrix<double, 2, 1> jacobian_landmark;
     Eigen::Matrix<double, 2, 1> residual;
 
     Eigen::Matrix2d sqrt_info = state.visual_sqrt_info;
-    int offset = 1;
-    int target_id = start_frame_id + offset;
-    Eigen::Vector2d pt_j(observations[offset].pt.x, observations[offset].pt.y);
     double inv_depth = 1.0 / depth;
-    VisualFactor visual_factor(
-        uv_i, pt_j, ric, tic, state.gyro_vec[start_frame_id], state.gyro_vec[target_id],
-        state.acc_vec[start_frame_id], state.acc_vec[target_id],
-        state.params_speed_bias[start_frame_id].data(), state.params_speed_bias[target_id].data(),
-        state.params_speed_bias[start_frame_id].data() + 6,
-        state.params_speed_bias[target_id].data() + 6,
-        state.params_speed_bias[start_frame_id].data() + 3,
-        state.params_speed_bias[target_id].data() + 3, sqrt_info, state.camera,
-        observations[0].applied_delay, observations[offset].applied_delay);
+    for (size_t offset = 1; offset < 2; ++offset) {
+        int target_id = start_frame_id + static_cast<int>(offset);
+        Eigen::Vector2d pt_j(observations[offset].pt.x, observations[offset].pt.y);
+        VisualFactor visual_factor(
+            uv_i, pt_j, ric, tic, state.gyro_vec[start_frame_id], state.gyro_vec[target_id],
+            state.acc_vec[start_frame_id], state.acc_vec[target_id],
+            state.params_speed_bias[start_frame_id].data(),
+            state.params_speed_bias[target_id].data(),
+            state.params_speed_bias[start_frame_id].data() + 6,
+            state.params_speed_bias[target_id].data() + 6,
+            state.params_speed_bias[start_frame_id].data() + 3,
+            state.params_speed_bias[target_id].data() + 3, sqrt_info, state.camera,
+            observations[0].applied_delay, observations[offset].applied_delay);
 
-    std::vector<double*> jacobians = {
-        jacobian_pose_i.data(), jacobian_pose_j.data(), jacobian_dt.data(),
-        jacobian_landmark.data()};
-    std::vector<double const*> parameters = {
-        state.params_pose[start_frame_id].data(), state.params_pose[target_id].data(),
-        &state.param_delay_time, &inv_depth};
-    visual_factor.Evaluate(parameters.data(), residual.data(), jacobians.data());
+        std::vector<double*> jacobians = {
+            jacobian_pose_i.data(), jacobian_pose_j.data(), jacobian_dt.data(),
+            jacobian_landmark.data()};
+        std::vector<double const*> parameters = {
+            state.params_pose[start_frame_id].data(), state.params_pose[target_id].data(),
+            &state.param_delay_time, &inv_depth};
+        visual_factor.Evaluate(parameters.data(), residual.data(), jacobians.data());
+        jacobian_pose_i.block<2, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Eigen::Vector3d(
+            state.params_pose[start_frame_id][3], state.params_pose[start_frame_id][4],
+            state.params_pose[start_frame_id][5]));
+        jacobian_pose_j.block<2, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Eigen::Vector3d(
+            state.params_pose[target_id][3], state.params_pose[target_id][4],
+            state.params_pose[target_id][5]));
 
-    double scale = 1.0;
-    if (loss_) {
-        double rho[3];
-        loss_->Evaluate(residual.squaredNorm(), rho);
-        scale = std::sqrt(rho[1]);
+        double scale = 1.0;
+        if (loss_) {
+            double rho[3];
+            loss_->Evaluate(residual.squaredNorm(), rho);
+            scale = std::sqrt(rho[1]);
+        }
+
+        int row = (static_cast<int>(offset) - 1) * 2;
+        storage_.block<2, 6>(row, start_frame_id * dim_) = scale * jacobian_pose_i;
+        storage_.block<2, 6>(row, target_id * dim_) = scale * jacobian_pose_j;
+        storage_.block<2, 1>(row, delay_idx_) = scale * jacobian_dt;
+        storage_.block<2, 1>(row, lm_idx_) = scale * jacobian_landmark;
+        storage_.block<2, 1>(row, res_idx_) = scale * residual;
     }
-
-    int row = (offset - 1) * 2;
-    storage_.block<2, 6>(row, start_frame_id * dim_) = scale * jacobian_pose_i;
-    storage_.block<2, 6>(row, target_id * dim_) = scale * jacobian_pose_j;
-    storage_.block<2, 1>(row, delay_idx_) = scale * jacobian_dt;
-    storage_.block<2, 1>(row, lm_idx_) = scale * jacobian_landmark;
-    storage_.block<2, 1>(row, res_idx_) = scale * residual;
 }
 
 void LandmarkBlock::performQR() {

@@ -58,6 +58,7 @@ struct Parameters {
     double min_translation;
     double min_depth;
     double max_depth;
+    double keyframe_new_feature_ratio;
 
     // Sliding-window optimization: consumed by Estimator::optimize/buildPrior/reset.
     int num_iterations;
@@ -135,6 +136,7 @@ private:
         min_translation = parser.as<double>("min_translation");
         min_depth = parser.as<double>("min_depth");
         max_depth = parser.as<double>("max_depth");
+        keyframe_new_feature_ratio = parser.as<double>("keyframe_new_feature_ratio");
     }
 
     void loadEstimator(ParamsParser& parser) {

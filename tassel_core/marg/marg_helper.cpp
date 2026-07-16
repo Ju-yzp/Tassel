@@ -1,12 +1,71 @@
 #include <Eigen/Householder>
 
+#include "factor/marginalization_prior_factor.h"
 #include "marg_helper.h"
 #include "tassel_utils/macros.h"
+#include "tassel_utils/se3_right_manifold.h"
 
 #include <cmath>
 #include <limits>
 
 namespace tassel_core {
+
+MargLinData MargHelper::rebasePrior(
+    const MargLinData& prior, const std::vector<std::array<double, 6>>& poses,
+    const std::vector<std::array<double, 9>>& speed_bias, double delay_time) {
+    const int num_kept = static_cast<int>(prior.linearization_poses.size());
+    TASSEL_ASSERT(static_cast<int>(poses.size()) == num_kept);
+    TASSEL_ASSERT(static_cast<int>(speed_bias.size()) == num_kept);
+    TASSEL_ASSERT(static_cast<int>(prior.linearization_speed_bias.size()) == num_kept);
+    TASSEL_ASSERT(prior.H.cols() == num_kept * 15 + 1);
+
+    MarginalizationPriorFactor factor(prior);
+    std::vector<const double*> parameters;
+    parameters.reserve(num_kept * 2 + 1);
+    for (int i = 0; i < num_kept; ++i) {
+        parameters.push_back(poses[i].data());
+        parameters.push_back(speed_bias[i].data());
+    }
+    parameters.push_back(&delay_time);
+
+    const int rows = factor.num_residuals();
+    std::vector<std::vector<double>> jacobian_storage;
+    std::vector<double*> jacobians;
+    jacobian_storage.reserve(num_kept * 2 + 1);
+    jacobians.reserve(num_kept * 2 + 1);
+    for (int i = 0; i < num_kept; ++i) {
+        jacobian_storage.emplace_back(rows * 6);
+        jacobians.push_back(jacobian_storage.back().data());
+        jacobian_storage.emplace_back(rows * 9);
+        jacobians.push_back(jacobian_storage.back().data());
+    }
+    jacobian_storage.emplace_back(rows);
+    jacobians.push_back(jacobian_storage.back().data());
+
+    MargLinData rebased;
+    rebased.b.resize(rows);
+    factor.Evaluate(parameters.data(), rebased.b.data(), jacobians.data());
+    rebased.H.resize(rows, num_kept * 15 + 1);
+    rebased.linearization_poses = poses;
+    rebased.linearization_speed_bias = speed_bias;
+    rebased.linearization_delay_time = delay_time;
+
+    SE3RightManifold manifold;
+    for (int i = 0; i < num_kept; ++i) {
+        Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 6, Eigen::RowMajor>> pose_jacobian(
+            jacobians[2 * i], rows, 6);
+        Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 9, Eigen::RowMajor>> sb_jacobian(
+            jacobians[2 * i + 1], rows, 9);
+        double plus_data[36];
+        manifold.PlusJacobian(poses[i].data(), plus_data);
+        Eigen::Map<Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus(plus_data);
+        rebased.H.block(0, i * 15, rows, 6) = pose_jacobian * plus;
+        rebased.H.block(0, i * 15 + 6, rows, 9) = sb_jacobian;
+    }
+    Eigen::Map<Eigen::VectorXd> delay_jacobian(jacobians.back(), rows);
+    rebased.H.col(rebased.H.cols() - 1) = delay_jacobian;
+    return rebased;
+}
 
 void MargHelper::marginalizeSqrtToSqrt(
     size_t marg_size, size_t keep_size, Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r,

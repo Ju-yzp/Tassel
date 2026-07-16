@@ -27,6 +27,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -59,6 +60,11 @@ struct StereoFrame {
     double timestamp = 0.0;
     fs::path left_path;
     fs::path right_path;
+};
+
+struct GroundTruthPose {
+    double timestamp = 0.0;
+    Sophus::SE3d pose;
 };
 
 struct LatestDisplayImage {
@@ -276,6 +282,50 @@ std::vector<tassel_utils::IMUMeasurement> loadImuCsv(const fs::path& csv_path) {
     return measurements;
 }
 
+std::vector<GroundTruthPose> loadGroundTruthCsv(const fs::path& csv_path) {
+    std::ifstream file(csv_path);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open ground truth csv: " + csv_path.string());
+    }
+
+    std::vector<GroundTruthPose> poses;
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        const auto fields = splitCsvLine(line);
+        if (fields.size() < 8) continue;
+
+        Eigen::Vector3d position(std::stod(fields[1]), std::stod(fields[2]), std::stod(fields[3]));
+        Eigen::Quaterniond orientation(
+            std::stod(fields[4]), std::stod(fields[5]), std::stod(fields[6]), std::stod(fields[7]));
+        orientation.normalize();
+        poses.push_back({nsToSec(fields[0]), Sophus::SE3d(orientation, position)});
+    }
+    return poses;
+}
+
+std::optional<Sophus::SE3d> interpolateGroundTruth(
+    const std::vector<GroundTruthPose>& poses, double timestamp) {
+    if (poses.empty() || timestamp < poses.front().timestamp ||
+        timestamp > poses.back().timestamp) {
+        return std::nullopt;
+    }
+    const auto upper = std::lower_bound(
+        poses.begin(), poses.end(), timestamp,
+        [](const GroundTruthPose& pose, double value) { return pose.timestamp < value; });
+    if (upper == poses.begin()) return upper->pose;
+    if (upper == poses.end()) return poses.back().pose;
+
+    const auto lower = std::prev(upper);
+    const double duration = upper->timestamp - lower->timestamp;
+    const double alpha = duration > 0.0 ? (timestamp - lower->timestamp) / duration : 0.0;
+    const Eigen::Vector3d position =
+        (1.0 - alpha) * lower->pose.translation() + alpha * upper->pose.translation();
+    const Eigen::Quaterniond orientation =
+        lower->pose.unit_quaternion().slerp(alpha, upper->pose.unit_quaternion()).normalized();
+    return Sophus::SE3d(orientation, position);
+}
+
 fs::path resolveSequenceDir(const fs::path& sequence_dir) {
     if (fs::exists(sequence_dir / "mav0" / "cam0" / "data.csv")) {
         return sequence_dir;
@@ -360,6 +410,8 @@ int main(int argc, char** argv) {
     tassel_tools::Parameters params(config_path.string());
     auto frames = makeStereoFrames(resolved_sequence_dir);
     auto imu_measurements = loadImuCsv(resolved_sequence_dir / "mav0" / "imu0" / "data.csv");
+    auto ground_truth = loadGroundTruthCsv(
+        resolved_sequence_dir / "mav0" / "state_groundtruth_estimate0" / "data.csv");
 
     if (frames.empty() || imu_measurements.empty()) {
         std::cerr << "[EuRoC] empty stereo or IMU stream under " << resolved_sequence_dir << "\n";
@@ -379,13 +431,13 @@ int main(int argc, char** argv) {
     viewer->createCompressedImagePublisher("stereo/image", image_qos);
     viewer->createOdometryPublisher("imu", "odom/camera");
     viewer->createPathPublisher("vo/path", rclcpp::QoS(10), params.viewer_path_max_poses);
+    viewer->createPathPublisher("ground_truth/path", rclcpp::QoS(10), params.viewer_path_max_poses);
     viewer->createPointCloudPublisher("landmarks");
     rclcpp::QoS telemetry_qos(rclcpp::KeepLast(1));
     telemetry_qos.reliable().durability_volatile();
     for (const char* topic :
          {"optimization/total_reduction", "optimization/visual_reduction",
-          "optimization/imu_reduction", "optimization/prior_reduction", "optimization/valid_count",
-          "optimization/invalid_count", "optimization/valid"}) {
+          "optimization/imu_reduction", "optimization/prior_reduction"}) {
         viewer->createScalarPublisher(topic, telemetry_qos);
     }
     viewer->createIntArrayPublisher("optimization/visual_factors_per_frame", telemetry_qos);
@@ -419,12 +471,27 @@ int main(int argc, char** argv) {
     Estimator estimator(params, state, feature_manager);
     state->camera = camera_ptr;
     estimator.setCamera(camera_ptr);
-    estimator.setPoseCallback([&viewer](double ts, const Sophus::SE3d& pose) {
+    std::optional<Sophus::SE3d> ground_truth_alignment;
+    estimator.setRealtimePoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment](
+                                          double ts, const Sophus::SE3d& pose) {
         viewer->publishOdometry(
             "odom/camera", pose.translation(), pose.unit_quaternion(), Eigen::Vector3d::Zero(),
             Eigen::Vector3d::Zero());
-        viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion());
-        std::cout << "[pose] t=" << ts << " p=" << pose.translation().transpose() << "\n";
+        if (const auto truth = interpolateGroundTruth(ground_truth, ts)) {
+            if (!ground_truth_alignment) {
+                ground_truth_alignment = pose * truth->inverse();
+            }
+            const Sophus::SE3d aligned_truth = *ground_truth_alignment * *truth;
+            viewer->publishPath(
+                "ground_truth/path", aligned_truth.translation(), aligned_truth.unit_quaternion(),
+                ts);
+        }
+        const Eigen::Vector3d& velocity = state->Vs[state->cur_frame_count];
+        std::cout << "[pose] t=" << ts << " p=" << pose.translation().transpose()
+                  << " |V|=" << velocity.norm() << "\n";
+    });
+    estimator.setPoseCallback([&viewer](double ts, const Sophus::SE3d& pose) {
+        viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion(), ts);
     });
     estimator.setCloudCallback([&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
         viewer->publishPointCloud("landmarks", pts);
@@ -438,10 +505,6 @@ int main(int argc, char** argv) {
             "optimization/imu_reduction", stats.imu_cost_before - stats.imu_cost_after);
         viewer->publishScalar(
             "optimization/prior_reduction", stats.prior_cost_before - stats.prior_cost_after);
-        viewer->publishScalar("optimization/valid_count", static_cast<double>(stats.valid_count));
-        viewer->publishScalar(
-            "optimization/invalid_count", static_cast<double>(stats.invalid_count));
-        viewer->publishScalar("optimization/valid", stats.valid ? 1.0 : 0.0);
         viewer->publishIntArray(
             "optimization/visual_factors_per_frame", stats.visual_factors_per_frame);
         viewer->publishVisualFactorWindow(

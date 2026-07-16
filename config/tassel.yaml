@@ -48,6 +48,7 @@ min_depth: 0.3
 max_depth: 5.0
 min_translation: 0.06
 min_tracked_pts: 50
+keyframe_new_feature_ratio: 0.25
 
 num_iterations: 16
 max_frame_count: 10
@@ -70,6 +71,7 @@ acc_bias: [0.720, -0.022, -0.199]
 num_threads: 1
 gravity_diff_threshold: 0.21
 dt_gyro_threshold: 0.2
+keyframe_time_threshold: 1.5
 imu_repropagate_ba_threshold: 0.02
 imu_repropagate_bg_threshold: 0.002
 sfm_min_seed_pts: 10

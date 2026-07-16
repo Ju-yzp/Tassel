@@ -5,7 +5,6 @@
 #include <Eigen/Core>
 #include <Eigen/SVD>
 #include <cstddef>
-#include <limits>
 #include <sophus/so3.hpp>
 #include <vector>
 
@@ -66,26 +65,6 @@ bool linearAlignment(
 
     A = A * 1000.0;
     b = b * 1000.0;
-
-    Eigen::JacobiSVD<Eigen::MatrixXd> svd(A);
-    const Eigen::VectorXd singular_values = svd.singularValues();
-    const double max_singular = singular_values.size() > 0 ? singular_values(0) : 0.0;
-    const double min_singular =
-        singular_values.size() > 0 ? singular_values(singular_values.size() - 1) : 0.0;
-    const double condition_number = (min_singular > 0.0) ? (max_singular / min_singular)
-                                                         : std::numeric_limits<double>::infinity();
-    const double rank_tolerance =
-        std::numeric_limits<double>::epsilon() * static_cast<double>(A.rows()) * max_singular;
-    const int rank = static_cast<int>((singular_values.array() > rank_tolerance).count());
-    const bool is_full_rank = (rank == A.rows());
-    spdlog::info(
-        "LinearAlignment: rank={}/{} sigma_min={:.6e} sigma_max={:.6e} cond={:.6e} tol={:.6e}",
-        rank, A.rows(), min_singular, max_singular, condition_number, rank_tolerance);
-    if (!is_full_rank) {
-        spdlog::warn("LinearAlignment: A is not full rank");
-    } else if (condition_number > 1e8) {
-        spdlog::warn("LinearAlignment: A is full rank but ill-conditioned");
-    }
 
     Eigen::VectorXd x = A.ldlt().solve(b);
 

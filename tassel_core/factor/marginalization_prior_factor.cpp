@@ -90,12 +90,26 @@ bool MarginalizationPriorFactor::Evaluate(
                     Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 6, Eigen::RowMajor>> J(
                         jacobians[i], b_.size(), 6);
                     J = H_.block(0, i * 6, b_.size(), 6);
+                    const double* pose = parameters[i];
+                    Eigen::Vector3d phi(pose[3], pose[4], pose[5]);
+                    Eigen::Vector3d phi_lin(lin_poses_[i][3], lin_poses_[i][4], lin_poses_[i][5]);
+                    Eigen::Vector3d delta =
+                        (Sophus::SO3d::exp(phi_lin).inverse() * Sophus::SO3d::exp(phi)).log();
+                    J.rightCols(3) *= Sophus::SO3d::leftJacobianInverse(-delta) *
+                                      Sophus::SO3d::leftJacobian(-phi);
                 }
             } else {
                 if (jacobians[2 * i]) {
                     Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 6, Eigen::RowMajor>> J_pose(
                         jacobians[2 * i], b_.size(), 6);
                     J_pose = H_.block(0, i * 15, b_.size(), 6);
+                    const double* pose = parameters[2 * i];
+                    Eigen::Vector3d phi(pose[3], pose[4], pose[5]);
+                    Eigen::Vector3d phi_lin(lin_poses_[i][3], lin_poses_[i][4], lin_poses_[i][5]);
+                    Eigen::Vector3d delta =
+                        (Sophus::SO3d::exp(phi_lin).inverse() * Sophus::SO3d::exp(phi)).log();
+                    J_pose.rightCols(3) *= Sophus::SO3d::leftJacobianInverse(-delta) *
+                                           Sophus::SO3d::leftJacobian(-phi);
                 }
                 if (jacobians[2 * i + 1]) {
                     Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 9, Eigen::RowMajor>> J_sb(

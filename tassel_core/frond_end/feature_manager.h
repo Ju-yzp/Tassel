@@ -14,6 +14,21 @@ namespace tassel_core {
 struct State;
 struct SFMFeature;
 
+struct FeatureInputStats {
+    size_t input_count = 0;
+    size_t matched_count = 0;
+    size_t created_count = 0;
+    double average_parallax = 0.0;
+};
+
+struct OutlierStats {
+    size_t checked_count = 0;
+    size_t removed_count = 0;
+    double average_error = 0.0;
+    double maximum_error = 0.0;
+    double removed_average_error = 0.0;
+};
+
 class FeatureManager {
 public:
     FeatureManager(
@@ -36,7 +51,10 @@ public:
 
     void removeNewest(size_t frame_count);
 
-    void removeOutliers(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
+    OutlierStats removeOutliers(
+        const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
+
+    const FeatureInputStats& lastInputStats() const { return last_input_stats_; }
 
     void reset();
 
@@ -65,6 +83,8 @@ private:
     double min_translation_;
 
     double min_depth_, max_depth_;
+
+    FeatureInputStats last_input_stats_;
 
     std::unordered_map<int, Feature> features_;
 };

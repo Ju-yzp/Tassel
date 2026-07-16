@@ -44,10 +44,11 @@ reproj_huber_thres: 1.0
 
 parallax_thres: 20.0
 tracked_times_thres: 3
-min_depth: 0.2
+min_depth: 0.1
 max_depth: 10.0
 min_translation: 0.06
 min_tracked_pts: 70
+keyframe_new_feature_ratio: 0.25
 
 num_iterations: 6
 max_frame_count: 10
@@ -55,14 +56,14 @@ integrator_type: midpoint
 
 initial_exposure_time_us: 6000
 
-visual_factor_weight: 110.0
+visual_factor_weight: 89.0
 
 num_init_iterations: 8
 
-acc_n: 2.5000e-2
-acc_w: 3.0000e-4
-gyr_n: 3.0000e-4
-gyr_w: 5.0000e-6
+acc_n: 1.2200e-2
+acc_w: 1.1000e-4
+gyr_n: 2.110e-5
+gyr_w: 1.1000e-6
 
 g_norm: 9.81
 
@@ -84,4 +85,4 @@ sfm_ba_max_iterations: 10
 sfm_ba_num_threads: 5
 
 viewer:
-    path_max_poses: 300
+    path_max_poses: 4000
