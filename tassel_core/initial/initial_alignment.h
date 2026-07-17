@@ -18,7 +18,7 @@ bool linearAlignment(
 
 // 重力方向 (2-DOF) + 速度 + 尺度的线性迭代精化，固定模长 g_mag
 // Rs/Ps: 相机系姿态与位置 (C0 参考系), Vs: IMU 体系速度, ric: R_I_C
-void refineGravitySpeeds(
+bool refineGravitySpeeds(
     std::vector<Eigen::Vector3d>& Vs, const std::vector<Eigen::Matrix3d>& Rs,
     const std::vector<Eigen::Vector3d>& Ps, const std::vector<Eigen::Vector3d>& delta_vs,
     const std::vector<Eigen::Vector3d>& delta_ps, const std::vector<double>& dts,

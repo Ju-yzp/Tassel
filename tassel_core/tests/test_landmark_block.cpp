@@ -40,7 +40,6 @@ TEST_F(LandmarkBlockTest, AllocateSetsDimensions) {
     lb.allocate(3, 2, 6);
 
     EXPECT_EQ(lb.get_num_rows(), 4);
-    EXPECT_EQ(lb.get_kept_rows(), 3);
     EXPECT_EQ(lb.get_padding_index(), 18);
 }
 
@@ -49,7 +48,6 @@ TEST_F(LandmarkBlockTest, AllocateSingleFrame) {
     lb.allocate(1, 1, 6);
 
     EXPECT_EQ(lb.get_num_rows(), 2);
-    EXPECT_EQ(lb.get_kept_rows(), 1);
     EXPECT_EQ(lb.get_padding_index(), 6);
 }
 
@@ -58,7 +56,6 @@ TEST_F(LandmarkBlockTest, AllocateWithDifferentDim) {
     lb.allocate(2, 3, 15);
 
     EXPECT_EQ(lb.get_num_rows(), 6);
-    EXPECT_EQ(lb.get_kept_rows(), 5);
     EXPECT_EQ(lb.get_padding_index(), 30);
 }
 
@@ -124,6 +121,26 @@ TEST_F(LandmarkBlockTest, QRZeroLandmarkColumnSkipsAllZeros) {
     for (int r = 0; r < lb.get_num_rows(); ++r) {
         EXPECT_NEAR(s(r, lb.get_landmark_index()), 0.0, kQrTol);
     }
+    EXPECT_EQ(lb.get_kept_rows(), lb.get_num_rows());
+}
+
+TEST_F(LandmarkBlockTest, ZeroLandmarkJacobianKeepsEveryPoseConstraint) {
+    LandmarkBlock lb(6, nullptr);
+    lb.allocate(2, 1, 6);
+    auto& storage = lb.get_mutable_storage();
+    storage.setRandom();
+    storage.col(lb.get_landmark_index()).setZero();
+    const auto original = storage;
+
+    lb.performQR();
+    Eigen::MatrixXd J(lb.get_kept_rows(), lb.get_padding_index() + 1);
+    Eigen::VectorXd r(lb.get_kept_rows());
+    lb.get_dense_Q2Jp_Q2r(J, r, 0);
+
+    ASSERT_EQ(lb.get_kept_rows(), 2);
+    EXPECT_TRUE(
+        J.leftCols(lb.get_padding_index()).isApprox(original.leftCols(lb.get_padding_index())));
+    EXPECT_TRUE(r.isApprox(original.col(lb.get_residual_index())));
 }
 
 // ── QR: single observation pair (2 rows) ───────────────────────────────

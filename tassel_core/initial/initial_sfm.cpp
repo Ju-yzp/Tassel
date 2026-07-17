@@ -1,7 +1,5 @@
 #include "initial/initial_sfm.h"
 
-#include <cassert>
-
 #include <spdlog/spdlog.h>
 
 #include <ceres/ceres.h>
@@ -10,6 +8,7 @@
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/core/types.hpp>
 
+#include "tassel_utils/macros.h"
 #include "tassel_utils/rotation.h"
 #include "tassel_utils/triangulation.h"
 
@@ -66,98 +65,71 @@ struct EpipolarSampsonFactor {
 
 }  // namespace
 
-void InitialSFM::collectStereoDepths(
-    int frame_num, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
-    const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1,
-    std::vector<std::vector<Observation>>& all_frames) {
-    for (auto& [id, feature] : feature_manager.features()) {
-        int start_id = static_cast<int>(feature.start_frame_id);
-        for (size_t k = 0; k < feature.observations.size(); ++k) {
-            int abs_id = start_id + static_cast<int>(k);
-            if (abs_id >= frame_num) continue;
-            Observation obs;
-            obs.feature_id = id;
-            auto& obs_per = feature.observations[k];
-            obs.is_stereo = obs_per.is_stereo;
-            obs.uv_l = obs_per.uv;
-            obs.uv_r = obs_per.uv_r;
-            all_frames[abs_id].push_back(obs);
+int InitialSFM::selectSeedFrame(int frame_num, const std::vector<SFMFeature>& sfm_f) {
+    std::vector<int> feature_count(frame_num, 0);
+    std::vector<int> connectivity_per_frame(frame_num, 0);
+    for (const auto& feature : sfm_f) {
+        for (const auto& [frame_id, _] : feature.observation) {
+            if (frame_id < 0 || frame_id >= frame_num) continue;
+            ++feature_count[frame_id];
+            for (const auto& [other_id, __] : feature.observation) {
+                const int distance = std::abs(frame_id - other_id);
+                if (distance > 0 && distance <= 3) {
+                    connectivity_per_frame[frame_id] += 4 - distance;
+                }
+            }
         }
-    }
-
-    Eigen::Matrix3d R_lr = ric1.transpose() * ric;
-    Eigen::Vector3d P_lr = ric1.transpose() * (tic - tic1);
-    for (auto& frame_obs : all_frames) {
-        for (auto& obs : frame_obs) {
-            if (obs.is_stereo) obs.depth = triangulateStereo(obs.uv_l, obs.uv_r, R_lr, P_lr);
-        }
-    }
-}
-
-int InitialSFM::selectSeedFrame(
-    int frame_num, const std::vector<std::vector<Observation>>& all_frames) {
-    std::vector<int> valid_per_frame(frame_num, 0);
-    for (int i = 0; i < frame_num; ++i) {
-        for (const auto& obs : all_frames[i])
-            if (!std::isnan(obs.depth)) ++valid_per_frame[i];
     }
 
     int seed_id = -1;
-    int best_score = 0;
+    int best_score = -1;
     for (int i = 0; i < frame_num; ++i) {
-        if (valid_per_frame[i] < min_seed_pts_) continue;
-        int score = 0;
-        std::set<int> seed_fids;
-        for (const auto& obs : all_frames[i])
-            if (!std::isnan(obs.depth)) seed_fids.insert(obs.feature_id);
-        for (int n = 1; n <= 3; ++n) {
-            int weight = 4 - n;
-            for (int delta : {-n, n}) {
-                int nb = i + delta;
-                if (nb < 0 || nb >= frame_num) continue;
-                for (const auto& obs : all_frames[nb])
-                    if (seed_fids.count(obs.feature_id)) score += weight;
-            }
-        }
-        if (score > best_score) {
-            best_score = score;
+        if (feature_count[i] < min_seed_pts_) continue;
+        if (connectivity_per_frame[i] > best_score) {
+            best_score = connectivity_per_frame[i];
             seed_id = i;
         }
     }
+
     if (seed_id < 0) {
-        for (int i = 0; i < frame_num; ++i)
-            if (valid_per_frame[i] > valid_per_frame[seed_id]) seed_id = i;
-    }
-    spdlog::info(
-        "SFM seed frame {}: {} depths, connectivity={}", seed_id, valid_per_frame[seed_id],
-        best_score);
-    if (valid_per_frame[seed_id] < min_seed_pts_) {
-        spdlog::warn("SFM: insufficient stereo depths ({})", valid_per_frame[seed_id]);
+        spdlog::warn("SFM: no frame has enough tracked features for a seed");
         return -1;
     }
+
+    spdlog::info(
+        "SFM mono seed frame {}: features={}, connectivity={}", seed_id, feature_count[seed_id],
+        best_score);
     return seed_id;
 }
 
 std::vector<std::pair<int, int>> InitialSFM::findParallaxFrames(
-    int seed_id, int frame_num, const std::vector<std::vector<Observation>>& all_frames,
-    const std::vector<SFMFeature>& sfm_f) {
+    int seed_id, int frame_num, const std::vector<SFMFeature>& sfm_f) {
     std::vector<std::pair<int, int>> other_candidates;
     for (int i = 0; i < frame_num; ++i) {
         if (i == seed_id) continue;
         int common = 0;
+        std::vector<double> parallaxes;
         for (const auto& f : sfm_f) {
             bool in_seed = false, in_other = false;
+            Eigen::Vector2d uv_seed, uv_other;
             for (const auto& [fid, uv] : f.observation) {
-                if (fid == seed_id) in_seed = true;
-                if (fid == i) in_other = true;
+                if (fid == seed_id) {
+                    in_seed = true;
+                    uv_seed = uv;
+                }
+                if (fid == i) {
+                    in_other = true;
+                    uv_other = uv;
+                }
             }
             if (!in_seed || !in_other) continue;
-            for (const auto& obs : all_frames[seed_id])
-                if (obs.feature_id == f.id && !std::isnan(obs.depth)) {
-                    ++common;
-                    break;
-                }
+            ++common;
+            parallaxes.push_back((uv_seed - uv_other).norm());
         }
+        if (common < min_seed_pts_) continue;
+        const size_t mid = parallaxes.size() / 2;
+        std::nth_element(parallaxes.begin(), parallaxes.begin() + mid, parallaxes.end());
+        if (parallaxes[mid] <= e_ransac_threshold_) continue;
         other_candidates.emplace_back(i, common);
     }
     std::sort(other_candidates.begin(), other_candidates.end(), [](const auto& a, const auto& b) {
@@ -194,7 +166,7 @@ bool InitialSFM::computeEssential(
             pts_other.emplace_back(uv_other.x(), uv_other.y());
         }
     }
-    if (static_cast<int>(pts_seed.size()) < 10) return false;
+    if (static_cast<int>(pts_seed.size()) < std::max(5, min_e_inliers_)) return false;
 
     cv::Mat K_cv = cv::Mat::eye(3, 3, CV_64F);
     cv::Mat inlier_mask;
@@ -356,6 +328,7 @@ bool InitialSFM::runBA(
             "SFM epipolar: {} edges, {}, iters={}, cost={:.4e}", n_epipolar_edges,
             summary.termination_type == ceres::CONVERGENCE ? "CONV" : "NOCONV",
             summary.iterations.size(), summary.final_cost);
+        if (!summary.IsSolutionUsable()) return false;
 
         for (int i = 0; i < frame_num; i++) {
             c_Quat[i] = Eigen::Quaterniond(
@@ -383,6 +356,7 @@ bool InitialSFM::runBA(
             }
             Eigen::Vector3d point_3d =
                 tassel_utils::dehomogenize(tassel_utils::triangulateMultiView(obs_poses, obs_uvs));
+            if (!point_3d.allFinite()) continue;
             bool ok = true;
             for (int j = 0; j < nobs; j++) {
                 int frame_idx = sfm_f[i].observation[j].first;
@@ -461,6 +435,11 @@ bool InitialSFM::registerFramePnP(
     for (int k = 0; k < n_pts; ++k) {
         Eigen::Vector3d p3e(pts_3_vector[k].x, pts_3_vector[k].y, pts_3_vector[k].z);
         Eigen::Vector3d p3_proj = R_pnp * p3e + T_pnp;
+        if (!p3_proj.allFinite() || p3_proj.z() <= 1e-12) {
+            ++bad;
+            sum_err += pnp_reproj_threshold_ * 2.0;
+            continue;
+        }
         double u = p3_proj(0) / p3_proj(2);
         double v = p3_proj(1) / p3_proj(2);
         double err = std::sqrt(
@@ -482,7 +461,7 @@ bool InitialSFM::registerFramePnP(
 void InitialSFM::triangulateTwoFrames(
     int frame0, Eigen::Matrix<double, 3, 4>& Pose0, int frame1, Eigen::Matrix<double, 3, 4>& Pose1,
     std::vector<SFMFeature>& sfm_f) {
-    assert(frame0 != frame1);
+    TASSEL_ASSERT(frame0 != frame1);
     for (int j = 0; j < feature_num_; j++) {
         if (sfm_f[j].state == true) continue;
         bool has_0 = false, has_1 = false;
@@ -502,30 +481,13 @@ void InitialSFM::triangulateTwoFrames(
             Eigen::Vector3d point_3d;
             point_3d = tassel_utils::dehomogenize(
                 tassel_utils::triangulateTwoView(Pose0, point0, Pose1, point1));
+            if (!point_3d.allFinite()) continue;
             sfm_f[j].state = true;
             sfm_f[j].position[0] = point_3d(0);
             sfm_f[j].position[1] = point_3d(1);
             sfm_f[j].position[2] = point_3d(2);
         }
     }
-}
-
-double InitialSFM::triangulateStereo(
-    const Eigen::Vector3d& uv_l, const Eigen::Vector3d& uv_r, const Eigen::Matrix3d& R_lr,
-    const Eigen::Vector3d& P_lr) {
-    Eigen::Matrix<double, 3, 4> pose0 = Eigen::Matrix<double, 3, 4>::Identity();
-    Eigen::Matrix<double, 3, 4> pose1;
-    pose1.block<3, 3>(0, 0) = R_lr;
-    pose1.block<3, 1>(0, 3) = P_lr;
-
-    double cond;
-    Eigen::Vector4d h =
-        tassel_utils::triangulateTwoView(pose0, uv_l.head<2>(), pose1, uv_r.head<2>(), &cond);
-    if (cond < 1e6) {
-        Eigen::Vector3d p = tassel_utils::dehomogenize(h);
-        if (p.z() > min_depth_ && p.z() < max_depth_) return p.z();
-    }
-    return std::numeric_limits<double>::quiet_NaN();
 }
 
 void InitialSFM::decomposeEssentialMat(
@@ -594,20 +556,17 @@ void InitialSFM::scoreByCheirality(
 
 bool InitialSFM::construct(
     State& cur_state, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
-    const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1,
     std::vector<Eigen::Matrix3d>& Rs_out, std::vector<Eigen::Vector3d>& Ps_out) {
     int frame_num = cur_state.cur_frame_count + 1;
     if (frame_num < 2) return false;
 
-    auto sfm_f = feature_manager.collectSFMFeatures(frame_num);
+    auto sfm_f = feature_manager.collectSFMFeatures(cur_state);
 
-    std::vector<std::vector<Observation>> all_frames(frame_num);
-    collectStereoDepths(frame_num, feature_manager, ric, tic, ric1, tic1, all_frames);
-    int seed_id = selectSeedFrame(frame_num, all_frames);
+    int seed_id = selectSeedFrame(frame_num, sfm_f);
     if (seed_id < 0) return false;
 
-    auto other_candidates = findParallaxFrames(seed_id, frame_num, all_frames, sfm_f);
-    if (other_candidates.empty() || other_candidates[0].second < 10) return false;
+    auto other_candidates = findParallaxFrames(seed_id, frame_num, sfm_f);
+    if (other_candidates.empty() || other_candidates[0].second < min_seed_pts_) return false;
 
     std::vector<Eigen::Quaterniond> q_cam_i0(frame_num);
     for (int i = 0; i < frame_num; i++) {

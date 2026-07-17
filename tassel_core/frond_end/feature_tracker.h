@@ -23,8 +23,6 @@ public:
         Camera camera, int per_grid_rows = 4, int per_grid_cols = 4, int grid_edge_rows = 2,
         int grid_edge_cols = 2, double mask_radius = 15.0, int min_feature_num = 100);
 
-    void predict();
-
     std::unordered_map<int, FeaturePerFrame> monoTracking(size_t camera_id, const cv::Mat& img);
 
     std::unordered_map<int, FeaturePerFrame> stereoTracking(

@@ -181,6 +181,8 @@ ros2 topic hz /optimization/total_reduction
 | 2026-06-23 | 基本完成 VIO，实现多传感器时间延迟在线估计等功能 | ![](media/VID_20260623232412.gif) | 消费级 MEMS 初始化、退化运动下的鲁棒性以及静止下的预积分器缓冲区数据累计。 |
 | 2026-07-06 | 增加 EuRoC 数据集测试 | ![](media/MAV.gif) | 静止下无法抑制速度的问题。 |
 | 2026-07-13 | 增加 foxglove 可视化，以便于定位问题以及调试 | ![](media/viewer.png) |  |
+| 2026-07-18 | 路标管理解决静止下速度漂移问题 | ![](media/2026-07-18-03-02-23.gif) | 由于特征点的像素观测小范围跳动，同时yaw也存在漂移 |
+
 ## 参考文献
 
 1. Li M, Mourikis A I. Online temporal calibration for camera-IMU systems: Theory and algorithms[J]. *The International Journal of Robotics Research*, 2014, 33(7): 947-964.

@@ -65,10 +65,11 @@ public:
         res.template block<3, 1>(12, 0) = Bg_j - Bg_i;
 
         // 信息矩阵
+        Eigen::LLT<Eigen::Matrix<double, 15, 15>> covariance_llt(integrator->covariance);
+        if (covariance_llt.info() != Eigen::Success) return false;
         Eigen::Matrix<double, 15, 15> sqrt_info =
-            Eigen::LLT<Eigen::Matrix<double, 15, 15>>(integrator->covariance.inverse())
-                .matrixL()
-                .transpose();
+            covariance_llt.matrixL().solve(Eigen::Matrix<double, 15, 15>::Identity());
+        if (!sqrt_info.allFinite()) return false;
 
         Eigen::Matrix3d Jr_inv =
             Sophus::SO3d::leftJacobianInverse(res.block<3, 1>(3, 0)).transpose();

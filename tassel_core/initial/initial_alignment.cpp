@@ -2,9 +2,12 @@
 
 #include <spdlog/spdlog.h>
 
+#include <Eigen/Cholesky>
 #include <Eigen/Core>
 #include <Eigen/SVD>
+#include <cmath>
 #include <cstddef>
+#include <limits>
 #include <sophus/so3.hpp>
 #include <vector>
 
@@ -19,6 +22,14 @@ bool linearAlignment(
     Eigen::Vector3d& final_g, double& s, const Eigen::Matrix3d ric, const Eigen::Vector3d tic,
     double g_norm_thres, double target_g_norm) {
     int n_frames = static_cast<int>(Rs.size());
+    if (n_frames < 2 || Ps.size() != Rs.size() || Vs.size() != Rs.size() ||
+        delta_vs.size() != Rs.size() - 1 || delta_ps.size() != Rs.size() - 1 ||
+        dts.size() != Rs.size() - 1) {
+        return false;
+    }
+    for (double dt : dts) {
+        if (!std::isfinite(dt) || dt <= 0.0) return false;
+    }
     int n_state = n_frames * 3 + 4;
 
     Eigen::MatrixXd A = Eigen::MatrixXd::Zero(n_state, n_state);
@@ -66,7 +77,10 @@ bool linearAlignment(
     A = A * 1000.0;
     b = b * 1000.0;
 
-    Eigen::VectorXd x = A.ldlt().solve(b);
+    Eigen::LDLT<Eigen::MatrixXd> ldlt(A);
+    if (ldlt.info() != Eigen::Success) return false;
+    Eigen::VectorXd x = ldlt.solve(b);
+    if (ldlt.info() != Eigen::Success || !x.allFinite()) return false;
 
     s = x(n_state - 1) / 100.0;
     final_g = x.segment<3>(n_state - 4);
@@ -74,7 +88,8 @@ bool linearAlignment(
     spdlog::info(
         "LinearAlignment: |g|={:.4f} g=({:.3f},{:.3f},{:.3f}) s={:.4f}", final_g.norm(),
         final_g.x(), final_g.y(), final_g.z(), s);
-    if (s <= 0 || std::abs(final_g.norm() - target_g_norm) > g_norm_thres) {
+    if (!std::isfinite(s) || !final_g.allFinite() || s <= 0 ||
+        std::abs(final_g.norm() - target_g_norm) > g_norm_thres) {
         return false;
     }
 
@@ -85,13 +100,18 @@ bool linearAlignment(
     return true;
 }
 
-void refineGravitySpeeds(
+bool refineGravitySpeeds(
     std::vector<Eigen::Vector3d>& Vs, const std::vector<Eigen::Matrix3d>& Rs,
     const std::vector<Eigen::Vector3d>& Ps, const std::vector<Eigen::Vector3d>& delta_vs,
     const std::vector<Eigen::Vector3d>& delta_ps, const std::vector<double>& dts,
     Eigen::Vector3d& G, double& s, const Eigen::Matrix3d ric, const Eigen::Vector3d tic,
     double g_mag) {
     int n_frames = static_cast<int>(Vs.size());
+    if (n_frames < 2 || Rs.size() != Vs.size() || Ps.size() != Vs.size() ||
+        delta_vs.size() != Vs.size() - 1 || delta_ps.size() != Vs.size() - 1 ||
+        dts.size() != Vs.size() - 1 || !G.allFinite() || G.norm() < 1e-12) {
+        return false;
+    }
     int n_state = n_frames * 3 + 3;
     int col_dg = n_frames * 3;
     int col_s = n_frames * 3 + 2;
@@ -109,6 +129,7 @@ void refineGravitySpeeds(
         for (int i = 0; i < n_frames - 1; ++i) {
             int j = i + 1;
             double dt = dts[i];
+            if (!std::isfinite(dt) || dt <= 0.0) return false;
             double dt2 = 0.5 * dt * dt;
 
             Eigen::Matrix3d R = ric * Rs[i].transpose() * ric.transpose();
@@ -163,7 +184,10 @@ void refineGravitySpeeds(
 
         A = A * 1000.0;
         b = b * 1000.0;
-        Eigen::VectorXd x = A.ldlt().solve(b);
+        Eigen::LDLT<Eigen::MatrixXd> ldlt(A);
+        if (ldlt.info() != Eigen::Success) return false;
+        Eigen::VectorXd x = ldlt.solve(b);
+        if (ldlt.info() != Eigen::Success || !x.allFinite()) return false;
 
         Eigen::Vector2d w(x[col_dg], x[col_dg + 1]);
         Eigen::Vector3d dg = T.transpose() * w;
@@ -174,6 +198,7 @@ void refineGravitySpeeds(
     }
 
     G = g_mag * g0_dir;
+    return G.allFinite() && std::isfinite(s);
 }
 
 Eigen::Vector3d solveGyroBias(
@@ -203,7 +228,11 @@ Eigen::Vector3d solveGyroBias(
         b += dq_dbgs[i].transpose() * phi;
     }
 
-    Eigen::Vector3d bg = A.ldlt().solve(b);
+    Eigen::LDLT<Eigen::Matrix3d> ldlt(A);
+    Eigen::Vector3d bg = ldlt.solve(b);
+    if (ldlt.info() != Eigen::Success || !bg.allFinite()) {
+        return Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
+    }
     spdlog::info("Gyro bias: ({:.6f}, {:.6f}, {:.6f})", bg.x(), bg.y(), bg.z());
     return bg;
 }

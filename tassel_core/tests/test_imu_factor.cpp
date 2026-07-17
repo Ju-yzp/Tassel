@@ -19,6 +19,7 @@
 #include <Eigen/Geometry>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -349,6 +350,37 @@ TEST_F(ImuFactorTest, BiasRecovery) {
 
     EXPECT_LT(avg_dBa, 0.03) << "Ba should move toward truth";
     EXPECT_LT(avg_dBg, 0.01) << "Bg should move toward truth";
+}
+
+TEST(IntegratorBaseTest, FrameIntervalSurvivesResetAndRepropagation) {
+    const Eigen::Matrix<double, 18, 18> noise = Eigen::Matrix<double, 18, 18>::Identity();
+    MidPointIntegrator integrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise);
+    integrator.setFrameInterval(100, 200);
+
+    integrator.reset(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise);
+    EXPECT_EQ(integrator.start_frame_id, 100);
+    EXPECT_EQ(integrator.end_frame_id, 200);
+
+    integrator.clearFrameInterval();
+    EXPECT_EQ(integrator.start_frame_id, tassel_utils::kInvalidFrameId);
+    EXPECT_EQ(integrator.end_frame_id, tassel_utils::kInvalidFrameId);
+}
+
+TEST(IntegratorBaseTest, RejectsDuplicateAndNonFiniteMeasurements) {
+    const Eigen::Matrix<double, 18, 18> noise = Eigen::Matrix<double, 18, 18>::Identity();
+    MidPointIntegrator integrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise);
+
+    tassel_utils::IMUMeasurement measurement;
+    measurement.timestamp = 1.0;
+    measurement.acc = Eigen::Vector3d::Zero();
+    measurement.gyro = Eigen::Vector3d::Zero();
+    EXPECT_TRUE(integrator.propagate(measurement));
+    EXPECT_FALSE(integrator.propagate(measurement));
+
+    measurement.timestamp = 2.0;
+    measurement.acc.x() = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_FALSE(integrator.propagate(measurement));
+    EXPECT_EQ(integrator.buffer.size(), 1);
 }
 
 }  // namespace

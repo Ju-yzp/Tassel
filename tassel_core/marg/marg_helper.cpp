@@ -74,7 +74,7 @@ void MargHelper::marginalizeSqrtToSqrt(
     TASSEL_ASSERT(Q2Jp.rows() == Q2r.rows());
 
     if (Q2Jp.rows() == 0) {
-        marg_sqrt_H.resize(0, 0);
+        marg_sqrt_H.resize(0, static_cast<Eigen::Index>(keep_size));
         marg_sqrt_b.resize(0);
         return;
     }
@@ -118,7 +118,15 @@ void MargHelper::marginalizeSqrtToSqrt(
         }
     }
 
-    Eigen::Index keep_valid_rows = std::max(total_rank - marg_rank, Eigen::Index(1));
+    const Eigen::Index keep_valid_rows = total_rank - marg_rank;
+
+    if (keep_valid_rows == 0) {
+        marg_sqrt_H.resize(0, static_cast<Eigen::Index>(keep_size));
+        marg_sqrt_b.resize(0);
+        Q2Jp.resize(0, 0);
+        Q2r.resize(0);
+        return;
+    }
 
     marg_sqrt_H = Q2Jp.block(marg_rank, marg_size, keep_valid_rows, keep_size);
     marg_sqrt_b = Q2r.segment(marg_rank, keep_valid_rows);

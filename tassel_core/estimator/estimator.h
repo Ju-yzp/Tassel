@@ -8,6 +8,7 @@
 #include <variant>
 #include <vector>
 
+#include "estimator/window_marginalization_plan.h"
 #include "factor/integrator_base.h"
 #include "frond_end/feature_manager.h"
 #include "marg/marg_lin_data.h"
@@ -42,7 +43,8 @@ public:
         std::shared_ptr<FeatureManager> fm);
 
     void processMeasurement(
-        double ts, const std::unordered_map<int, FeaturePerFrame>& feature_frame,
+        tassel_utils::FrameId frame_id,
+        const std::unordered_map<int, FeaturePerFrame>& feature_frame,
         const std::vector<tassel_utils::IMUMeasurement>& imu_measurements = {},
         double applied_delay = 0.0);
 
@@ -73,9 +75,11 @@ private:
     using PreintegratorStorage =
         std::variant<IntegratorVector<MidPointIntegrator>, IntegratorVector<EulerIntegrator>>;
 
-    void buildPrior();
+    void buildPrior(const WindowMarginalizationPlan& plan);
 
-    void slideWindow();
+    void slideInitializationWindow();
+
+    void slideWindow(const WindowMarginalizationPlan& plan);
 
     bool tryInitialize();
 

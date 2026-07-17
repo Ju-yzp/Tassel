@@ -22,13 +22,10 @@ struct SFMFeature {
 class InitialSFM {
 public:
     InitialSFM(
-        double min_depth = 0.1, double max_depth = 3.0, int min_seed_pts = 10,
-        int min_e_inliers = 8, double e_ransac_threshold = 0.004, int min_pnp_pts = 10,
-        double pnp_reproj_threshold = 0.03, double max_bad_pnp_ratio = 0.3,
+        int min_seed_pts = 10, int min_e_inliers = 8, double e_ransac_threshold = 0.004,
+        int min_pnp_pts = 10, double pnp_reproj_threshold = 0.03, double max_bad_pnp_ratio = 0.3,
         int ba_max_iterations = 30, int ba_num_threads = 5)
-        : min_depth_(min_depth),
-          max_depth_(max_depth),
-          min_seed_pts_(min_seed_pts),
+        : min_seed_pts_(min_seed_pts),
           min_e_inliers_(min_e_inliers),
           e_ransac_threshold_(e_ransac_threshold),
           min_pnp_pts_(min_pnp_pts),
@@ -39,33 +36,19 @@ public:
 
     bool construct(
         State& cur_state, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
-        const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1,
         std::vector<Eigen::Matrix3d>& Rs_out, std::vector<Eigen::Vector3d>& Ps_out);
 
 private:
-    struct Observation {
-        bool is_stereo = false;
-        Eigen::Vector3d uv_l, uv_r;
-        double depth = std::numeric_limits<double>::quiet_NaN();
-        int feature_id = -1;
-    };
-
     struct PoseCandidate {
         Eigen::Matrix3d R;
         Eigen::Vector3d t;
         int score = 0;
     };
 
-    void collectStereoDepths(
-        int frame_num, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
-        const Eigen::Vector3d& tic, const Eigen::Matrix3d& ric1, const Eigen::Vector3d& tic1,
-        std::vector<std::vector<Observation>>& all_frames);
-
-    int selectSeedFrame(int frame_num, const std::vector<std::vector<Observation>>& all_frames);
+    int selectSeedFrame(int frame_num, const std::vector<SFMFeature>& sfm_f);
 
     std::vector<std::pair<int, int>> findParallaxFrames(
-        int seed_id, int frame_num, const std::vector<std::vector<Observation>>& all_frames,
-        const std::vector<SFMFeature>& sfm_f);
+        int seed_id, int frame_num, const std::vector<SFMFeature>& sfm_f);
 
     bool computeEssential(
         int seed_id, int other_id, const std::vector<SFMFeature>& sfm_f,
@@ -92,17 +75,12 @@ private:
         int frame0, Eigen::Matrix<double, 3, 4>& Pose0, int frame1,
         Eigen::Matrix<double, 3, 4>& Pose1, std::vector<SFMFeature>& sfm_f);
 
-    double triangulateStereo(
-        const Eigen::Vector3d& uv_l, const Eigen::Vector3d& uv_r, const Eigen::Matrix3d& R_lr,
-        const Eigen::Vector3d& P_lr);
-
     void decomposeEssentialMat(const Eigen::Matrix3d& E, std::vector<PoseCandidate>& candidates);
 
     void scoreByCheirality(
         const std::vector<PoseCandidate>& candidates, const std::vector<cv::Point2f>& pts_seed,
         const std::vector<cv::Point2f>& pts_other, std::vector<PoseCandidate>& scored);
 
-    double min_depth_, max_depth_;
     int min_seed_pts_, min_e_inliers_;
     double e_ransac_threshold_;
     int min_pnp_pts_;

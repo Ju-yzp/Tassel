@@ -3,6 +3,8 @@
 #include <cmath>
 #include <sophus/so3.hpp>
 
+#include "tassel_utils/types.h"
+
 namespace tassel_core {
 
 VisualFactor::VisualFactor(
@@ -50,11 +52,11 @@ bool VisualFactor::Evaluate(
     Eigen::Matrix3d A_j = Sophus::SO3d::exp((bg_j - w_j) * dt_j).matrix();
     Eigen::Vector3d pi_in_C = uv_i / inv_depth;
     Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
-    Eigen::Vector3d pi_in_G =
-        R_i * A_i * pi_in_I + P_i + v_i * dt_i + 0.5 * R_i * (a_i - ba_i) * dt_i * dt_i;
+    Eigen::Vector3d pi_in_G = R_i * A_i * pi_in_I + P_i + v_i * dt_i +
+                              0.5 * (R_i * (a_i - ba_i) - tassel_utils::G) * dt_i * dt_i;
     Eigen::Vector3d pj_in_I =
         A_j * R_j.transpose() *
-        (pi_in_G - (P_j + v_j * dt_j + 0.5 * R_j * (a_j - ba_j) * dt_j * dt_j));
+        (pi_in_G - (P_j + v_j * dt_j + 0.5 * (R_j * (a_j - ba_j) - tassel_utils::G) * dt_j * dt_j));
     Eigen::Vector3d pj_in_C = ric.transpose() * (pj_in_I - tic);
 
     double inv_z = 1.0 / pj_in_C.z();
@@ -87,14 +89,16 @@ bool VisualFactor::Evaluate(
             jacobian_pose_j.block<2, 3>(0, 0) = -reduce * ric.transpose() * A_j * R_j.transpose();
             jacobian_pose_j.block<2, 3>(0, 3) =
                 reduce * ric.transpose() * A_j *
-                Sophus::SO3d::hat(R_j.transpose() * (pi_in_G - (P_j + v_j * dt_j)));
+                Sophus::SO3d::hat(
+                    R_j.transpose() *
+                    (pi_in_G - P_j - v_j * dt_j + 0.5 * tassel_utils::G * dt_j * dt_j));
             jacobian_pose_j.block<2, 3>(0, 3) *= Sophus::SO3d::leftJacobian(-phi_j);
         }
 
         if (jacobians[2]) {
             Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_dt(jacobians[2]);
-            const Eigen::Vector3d dP_i_dt = v_i + R_i * (a_i - ba_i) * dt_i;
-            const Eigen::Vector3d dP_j_dt = v_j + R_j * (a_j - ba_j) * dt_j;
+            const Eigen::Vector3d dP_i_dt = v_i + (R_i * (a_i - ba_i) - tassel_utils::G) * dt_i;
+            const Eigen::Vector3d dP_j_dt = v_j + (R_j * (a_j - ba_j) - tassel_utils::G) * dt_j;
             jacobian_dt =
                 reduce * ric.transpose() *
                 (Sophus::SO3d::hat(bg_j - w_j) * pj_in_I +

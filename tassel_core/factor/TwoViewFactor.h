@@ -24,9 +24,9 @@ private:
     Eigen::Vector3d tic;
     Eigen::Vector3d w_i, w_j;
     Eigen::Vector3d a_i, a_j;
-    const double *v_i, *v_j;
-    const double *bg_i_lin, *bg_j_lin;
-    const double *ba_i_lin, *ba_j_lin;
+    Eigen::Vector3d v_i, v_j;
+    Eigen::Vector3d bg_i_lin, bg_j_lin;
+    Eigen::Vector3d ba_i_lin, ba_j_lin;
     double sqrt_info;
 };
 

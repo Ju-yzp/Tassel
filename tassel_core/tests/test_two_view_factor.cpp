@@ -77,7 +77,7 @@ FrameData setupFrame(
 }
 
 // ==============================================================================
-// JacobianCheck — single factor, relaxed tolerance
+// JacobianCheck — single factor
 // ==============================================================================
 
 class TwoViewJacobianTest : public ::testing::Test {
@@ -119,7 +119,7 @@ protected:
     double bg_arr_[3], ba_arr_[3];
 };
 
-TEST_F(TwoViewJacobianTest, RelaxedTolerance) {
+TEST_F(TwoViewJacobianTest, AnalyticJacobianMatchesFiniteDifference) {
     TwoViewFactor factor(
         fd_i_.uv_cam, fd_j_.uv_cam, ric_, tic_, fd_i_.w, fd_j_.w, fd_i_.a, fd_j_.a, fd_i_.V_arr,
         fd_j_.V_arr, bg_arr_, bg_arr_, ba_arr_, ba_arr_, 1.0);
@@ -132,10 +132,19 @@ TEST_F(TwoViewJacobianTest, RelaxedTolerance) {
     double* jac_ptrs[] = {J0, J1, J2};
     factor.Evaluate(params, &r, jac_ptrs);
 
+    double plus_i_data[36], plus_j_data[36];
+    ASSERT_TRUE(manifold.PlusJacobian(fd_i_.pose, plus_i_data));
+    ASSERT_TRUE(manifold.PlusJacobian(fd_j_.pose, plus_j_data));
+    const Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus_i(plus_i_data);
+    const Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus_j(plus_j_data);
+    const Eigen::Map<const Eigen::Matrix<double, 1, 6, Eigen::RowMajor>> ambient_i(J0);
+    const Eigen::Map<const Eigen::Matrix<double, 1, 6, Eigen::RowMajor>> ambient_j(J1);
+    const Eigen::Matrix<double, 1, 6> tangent_i = ambient_i * plus_i;
+    const Eigen::Matrix<double, 1, 6> tangent_j = ambient_j * plus_j;
+
     std::cout << "residual = " << r << "\n";
 
-    // --- tolerance: relative < 0.02, floor 1e-4 for small values ---
-    const double rel_tol = 0.03;
+    const double rel_tol = 5e-4;
     const double floor = 1e-4;
     int nbad = 0;
 
@@ -169,8 +178,8 @@ TEST_F(TwoViewJacobianTest, RelaxedTolerance) {
         }
     };
 
-    check("pose_i", J0, 6, [&](int c) { return num_pose(0, params[0], c); });
-    check("pose_j", J1, 6, [&](int c) { return num_pose(1, params[1], c); });
+    check("pose_i", tangent_i.data(), 6, [&](int c) { return num_pose(0, params[0], c); });
+    check("pose_j", tangent_j.data(), 6, [&](int c) { return num_pose(1, params[1], c); });
 
     // td
     {
@@ -217,6 +226,10 @@ TEST(TwoViewFactorTest, MultiFrameTdConvergence) {
 
     ceres::Problem problem;
     double td_est = 0.0;
+    auto* manifold = new SE3RightManifold();
+    for (int k = 0; k < N; ++k) {
+        problem.AddParameterBlock(frm[k].pose, 6, manifold);
+    }
     for (int k = 0; k < N - 1; ++k) {
         problem.AddResidualBlock(
             new TwoViewFactor(

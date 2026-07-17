@@ -49,7 +49,7 @@ public:
         jacobians.push_back(jacobian_pose_j.data());
         jacobians.push_back(jacobian_speed_bias_j.data());
 
-        imu_factor_->Evaluate(parameters.data(), residual.data(), jacobians.data());
+        TASSEL_ASSERT(imu_factor_->Evaluate(parameters.data(), residual.data(), jacobians.data()));
         jacobian_pose_i.block<15, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Q_i);
         jacobian_pose_j.block<15, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Q_j);
 

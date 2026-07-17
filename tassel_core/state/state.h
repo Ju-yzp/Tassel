@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <sophus/se3.hpp>
+#include <stdexcept>
 #include <vector>
 
 #include "tassel_utils/types.h"
@@ -13,19 +14,20 @@ namespace tassel_core {
 class CameraBase;
 struct State {
     State(int max_frame_count_ = 10) : max_frame_count(max_frame_count_), cur_frame_count(0) {
+        if (max_frame_count < 1) {
+            throw std::runtime_error("max_frame_count must be greater than 0");
+        }
         Rs.resize(max_frame_count, Eigen::Matrix3d::Identity());
         Ps.resize(max_frame_count, Eigen::Vector3d::Zero());
         Vs.resize(max_frame_count, Eigen::Vector3d::Zero());
         Bas.resize(max_frame_count, Eigen::Vector3d::Zero());
         Bgs.resize(max_frame_count, Eigen::Vector3d::Zero());
         frame_delays.resize(max_frame_count, 0.0);
+        frame_ids.resize(max_frame_count, tassel_utils::kInvalidFrameId);
         params_pose.resize(max_frame_count, std::array<double, 6>{0, 0, 0, 0, 0, 0});
         params_speed_bias.resize(max_frame_count, std::array<double, 9>{0, 0, 0, 0, 0, 0, 0, 0, 0});
         delay_time = 0.0;
         param_delay_time = 0.0;
-        if (max_frame_count < 1) {
-            throw std::runtime_error("max_frame_count must be greater than 0");
-        }
     }
 
     void stateToParam(int idx) {
@@ -73,6 +75,26 @@ struct State {
         delay_time = param_delay_time;
     }
 
+    int findFrameSlot(tassel_utils::FrameId frame_id) const {
+        if (frame_id == tassel_utils::kInvalidFrameId) return -1;
+        for (int i = 0; i <= cur_frame_count; ++i) {
+            if (frame_ids[i] == frame_id) return i;
+        }
+        return -1;
+    }
+
+    int firstActiveImuSlot() const { return has_retained_host ? 1 : 0; }
+
+    void copyFrameSlot(int source, int destination) {
+        Rs[destination] = Rs[source];
+        Ps[destination] = Ps[source];
+        Vs[destination] = Vs[source];
+        Bas[destination] = Bas[source];
+        Bgs[destination] = Bgs[source];
+        frame_delays[destination] = frame_delays[source];
+        frame_ids[destination] = frame_ids[source];
+    }
+
     State get_compensated_state() const {
         State compensated = *this;
         for (int i = 0; i < cur_frame_count; ++i) {
@@ -86,6 +108,7 @@ struct State {
 
     void reset() {
         cur_frame_count = 0;
+        has_retained_host = false;
         acc_vec.clear();
         gyro_vec.clear();
         std::fill(Rs.begin(), Rs.end(), Eigen::Matrix3d::Identity());
@@ -94,6 +117,7 @@ struct State {
         std::fill(Bas.begin(), Bas.end(), Eigen::Vector3d::Zero());
         std::fill(Bgs.begin(), Bgs.end(), Eigen::Vector3d::Zero());
         std::fill(frame_delays.begin(), frame_delays.end(), 0.0);
+        std::fill(frame_ids.begin(), frame_ids.end(), tassel_utils::kInvalidFrameId);
         std::fill(params_pose.begin(), params_pose.end(), std::array<double, 6>{0, 0, 0, 0, 0, 0});
         std::fill(
             params_speed_bias.begin(), params_speed_bias.end(),
@@ -103,7 +127,9 @@ struct State {
     }
 
     int max_frame_count;
+    // Index of the newest populated slot; during a full window it is max_frame_count - 1.
     int cur_frame_count;
+    bool has_retained_host = false;
     // 位姿 / 速度 / 偏置 / 时间延迟
     std::vector<Eigen::Matrix3d> Rs;
     std::vector<Eigen::Vector3d> Ps;
@@ -111,6 +137,7 @@ struct State {
     std::vector<Eigen::Vector3d> Bas;
     std::vector<Eigen::Vector3d> Bgs;
     std::vector<double> frame_delays;
+    std::vector<tassel_utils::FrameId> frame_ids;
     double delay_time;
 
     // 保存imu(t)时刻采样的imu体坐标系下的加速度和角速度

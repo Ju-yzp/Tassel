@@ -40,3 +40,9 @@ tassel_add_tests(
   $<$<BOOL:${TASSEL_ENABLE_HARDWARE_TESTS}>:depthai::core>
   INCLUDE_DIRS
   "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Temporarily keep the hardware estimator executable buildable without running
+# it in CTest.
+if(TEST test_estimator)
+  set_tests_properties(test_estimator PROPERTIES DISABLED TRUE)
+endif()

@@ -140,7 +140,9 @@ int main(int argc, char** argv) {
             if (!left_frame || !right_frame) return;
 
             auto stereo_msg = std::make_shared<tassel_utils::StereoObservation>();
-            stereo_msg->timestamp = left_frame->getTimestamp().time_since_epoch().count() / 1e9;
+            stereo_msg->timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        left_frame->getTimestamp().time_since_epoch())
+                                        .count();
             stereo_msg->left_img = cv::Mat(
                                        left_frame->getHeight(), left_frame->getWidth(), CV_8UC1,
                                        left_frame->getData().data())
@@ -216,7 +218,7 @@ int main(int argc, char** argv) {
             auto& stereo_ptr = package.get<0>();
             auto& imu_vec = package.get<1>();
 
-            double ts = stereo_ptr->timestamp;
+            const tassel_utils::FrameId ts = stereo_ptr->timestamp;
 
             std::unordered_map<int, FeaturePerFrame> feature_frame;
             {

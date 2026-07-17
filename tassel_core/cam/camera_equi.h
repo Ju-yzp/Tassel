@@ -95,6 +95,13 @@ public:
         double k3 = camera_values(6);
         double k4 = camera_values(7);
 
+        if (r <= 1e-8) {
+            H_dz_dzn = Eigen::Matrix2d::Zero();
+            H_dz_dzn(0, 0) = fx;
+            H_dz_dzn(1, 1) = fy;
+            return;
+        }
+
         double theta_d = theta + k1 * std::pow(theta, 3) + k2 * std::pow(theta, 5) +
                          k3 * std::pow(theta, 7) + k4 * std::pow(theta, 9);
 

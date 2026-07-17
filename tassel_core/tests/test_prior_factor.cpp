@@ -161,6 +161,21 @@ TEST(MarginalizeSqrtToSqrtTest, EmptyInput) {
     EXPECT_EQ(marg_sqrt_b.rows(), 0);
 }
 
+TEST(MarginalizeSqrtToSqrtTest, NoConstraintRemainsAfterElimination) {
+    Eigen::MatrixXd Q2Jp(1, 2);
+    Q2Jp << 2.0, 3.0;
+    Eigen::VectorXd Q2r(1);
+    Q2r << 1.0;
+
+    Eigen::MatrixXd marg_sqrt_H;
+    Eigen::VectorXd marg_sqrt_b;
+    MargHelper::marginalizeSqrtToSqrt(1, 1, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+
+    EXPECT_EQ(marg_sqrt_H.rows(), 0);
+    EXPECT_EQ(marg_sqrt_H.cols(), 1);
+    EXPECT_EQ(marg_sqrt_b.rows(), 0);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MarginalizationPriorFactor cost function tests
 // ═══════════════════════════════════════════════════════════════════════════

@@ -4,7 +4,10 @@
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
+#include <cmath>
+#include <cstdint>
 #include <functional>
+#include <limits>
 #include <opencv2/core.hpp>
 #include <vector>
 
@@ -13,6 +16,15 @@
 namespace tassel_utils {
 
 inline Eigen::Vector3d G{0.0, 0.0, 9.8};
+
+using FrameId = std::int64_t;
+inline constexpr FrameId kInvalidFrameId = std::numeric_limits<FrameId>::min();
+
+inline FrameId secondsToFrameId(double timestamp) {
+    return static_cast<FrameId>(std::llround(timestamp * 1e9));
+}
+
+inline double frameIdToSeconds(FrameId frame_id) { return static_cast<double>(frame_id) * 1e-9; }
 
 using MatrixRowMajor = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 
@@ -27,9 +39,9 @@ struct IMUMeasurement {
 struct StereoObservation {
     cv::Mat left_img;
     cv::Mat right_img;
-    double timestamp;
-    inline double get_timestamp() const { return timestamp; }
-    inline void set_timestamp(double ts) { timestamp = ts; }
+    FrameId timestamp = kInvalidFrameId;
+    inline double get_timestamp() const { return frameIdToSeconds(timestamp); }
+    inline void set_timestamp(double ts) { timestamp = secondsToFrameId(ts); }
 };
 
 enum class IntegratorType {

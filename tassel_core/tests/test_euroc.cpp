@@ -51,13 +51,13 @@ namespace fs = std::filesystem;
 namespace {
 
 struct ImageEntry {
-    double timestamp = 0.0;
+    tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
     std::string timestamp_ns;
     std::string filename;
 };
 
 struct StereoFrame {
-    double timestamp = 0.0;
+    tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
     fs::path left_path;
     fs::path right_path;
 };
@@ -116,17 +116,17 @@ public:
         std::unique_lock<std::mutex> lock(mutex_);
         cv_.wait(lock, [&]() {
             if (stereo_queue_.empty()) return stereo_done_;
-            const double sync_ts = stereo_queue_.front()->timestamp + applied_delay;
+            const double sync_ts = stereo_queue_.front()->get_timestamp() + applied_delay;
             return imu_done_ || (!imu_queue_.empty() && imu_queue_.back().timestamp >= sync_ts);
         });
 
         if (stereo_queue_.empty()) {
             return false;
         }
-        const double sync_ts = stereo_queue_.front()->timestamp + applied_delay;
+        const double sync_ts = stereo_queue_.front()->get_timestamp() + applied_delay;
         if (imu_queue_.empty() || imu_queue_.back().timestamp < sync_ts) {
             std::cerr << "[EuRoC] missing IMU coverage for stereo t="
-                      << stereo_queue_.front()->timestamp << " sync t=" << sync_ts
+                      << stereo_queue_.front()->get_timestamp() << " sync t=" << sync_ts
                       << " applied_delay=" << applied_delay << "\n";
             return false;
         }
@@ -252,7 +252,8 @@ std::vector<ImageEntry> loadImageCsv(const fs::path& csv_path) {
         if (fields.size() < 2) {
             continue;
         }
-        entries.push_back({nsToSec(fields[0]), fields[0], fields[1]});
+        entries.push_back(
+            {static_cast<tassel_utils::FrameId>(std::stoll(fields[0])), fields[0], fields[1]});
     }
     return entries;
 }
@@ -358,7 +359,7 @@ std::vector<StereoFrame> makeStereoFrames(const fs::path& sequence_dir) {
             continue;
         }
         frames.push_back(
-            {left.timestamp, cam0_dir / "data" / left.filename, cam1_dir / "data" / it->second});
+            {left.frame_id, cam0_dir / "data" / left.filename, cam1_dir / "data" / it->second});
     }
     return frames;
 }
@@ -536,12 +537,13 @@ int main(int argc, char** argv) {
             cv::Mat left_img = cv::imread(frame.left_path.string(), cv::IMREAD_GRAYSCALE);
             cv::Mat right_img = cv::imread(frame.right_path.string(), cv::IMREAD_GRAYSCALE);
             if (left_img.empty() || right_img.empty()) {
-                std::cerr << "[EuRoC] failed to read stereo image at t=" << frame.timestamp << "\n";
+                std::cerr << "[EuRoC] failed to read stereo image at t="
+                          << tassel_utils::frameIdToSeconds(frame.frame_id) << "\n";
                 break;
             }
 
             auto stereo_msg = std::make_shared<tassel_utils::StereoObservation>();
-            stereo_msg->timestamp = frame.timestamp;
+            stereo_msg->timestamp = frame.frame_id;
             stereo_msg->left_img = std::move(left_img);
             stereo_msg->right_img = std::move(right_img);
 
@@ -572,11 +574,14 @@ int main(int argc, char** argv) {
         });
     }
 
+    const double first_frame_ts = tassel_utils::frameIdToSeconds(frames.front().frame_id);
     const double nominal_frame_dt =
-        (frame_limit > 1) ? (frames[1].timestamp - frames[0].timestamp) : (1.0 / replay_hz);
-    const double playback_end_ts = frames[frame_limit - 1].timestamp + nominal_frame_dt;
+        (frame_limit > 1) ? tassel_utils::frameIdToSeconds(frames[1].frame_id - frames[0].frame_id)
+                          : (1.0 / replay_hz);
+    const double playback_end_ts =
+        tassel_utils::frameIdToSeconds(frames[frame_limit - 1].frame_id) + nominal_frame_dt;
     const double playback_scale = (1.0 / replay_hz) / nominal_frame_dt;
-    const double playback_start_ts = frames.front().timestamp;
+    const double playback_start_ts = first_frame_ts;
     const auto playback_start_time = std::chrono::steady_clock::now();
 
     auto sleep_until_sensor_time = [&](double sensor_ts) {
@@ -637,7 +642,7 @@ int main(int argc, char** argv) {
             }
             loaded_stereo_cv.notify_all();
 
-            sleep_until_sensor_time(stereo_msg->timestamp);
+            sleep_until_sensor_time(stereo_msg->get_timestamp());
             if (!rclcpp::ok() || stop_reader.load()) break;
             sync.pushStereo(stereo_msg);
             ++produced;
