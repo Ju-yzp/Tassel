@@ -77,10 +77,21 @@ int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
     auto viewer = std::make_shared<tassel_tools::Viewer>("world");
 
-    viewer->createImagePublisher("stereo/image");
-    viewer->createOdometryPublisher("camera", "odom/camera");
-    viewer->createPathPublisher("vo/path");
+    rclcpp::QoS image_qos(rclcpp::KeepLast(1));
+    image_qos.best_effort().durability_volatile();
+    viewer->createCompressedImagePublisher("stereo/image", image_qos);
+    viewer->createOdometryPublisher("imu", "odom/camera");
+    viewer->createPathPublisher("vo/path", rclcpp::QoS(10), params.viewer_path_max_poses);
     viewer->createPointCloudPublisher("landmarks");
+    rclcpp::QoS telemetry_qos(rclcpp::KeepLast(1));
+    telemetry_qos.reliable().durability_volatile();
+    for (const char* topic :
+         {"optimization/total_reduction", "optimization/visual_reduction",
+          "optimization/imu_reduction", "optimization/prior_reduction"}) {
+        viewer->createScalarPublisher(topic, telemetry_qos);
+    }
+    viewer->createIntArrayPublisher("optimization/visual_factors_per_frame", telemetry_qos);
+    viewer->createImagePublisher("optimization/visual_window", telemetry_qos);
 
     auto stereo_buffer = StereoBuf::createShared(15);
     auto imu_buffer = IMUBuf::createShared(600);
@@ -129,7 +140,9 @@ int main(int argc, char** argv) {
             if (!left_frame || !right_frame) return;
 
             auto stereo_msg = std::make_shared<tassel_utils::StereoObservation>();
-            stereo_msg->timestamp = left_frame->getTimestamp().time_since_epoch().count() / 1e9;
+            stereo_msg->timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        left_frame->getTimestamp().time_since_epoch())
+                                        .count();
             stereo_msg->left_img = cv::Mat(
                                        left_frame->getHeight(), left_frame->getWidth(), CV_8UC1,
                                        left_frame->getData().data())
@@ -173,12 +186,28 @@ int main(int argc, char** argv) {
     Estimator estimator(params, state, feature_manager);
     state->camera = camera_ptr;
     estimator.setCamera(camera_ptr);
-    estimator.setPoseCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
+    estimator.setRealtimePoseCallback([&viewer](double /*ts*/, const Sophus::SE3d& pose) {
         viewer->publishOdometry("odom/camera", pose.translation(), pose.unit_quaternion());
-        viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion());
+    });
+    estimator.setPoseCallback([&viewer](double ts, const Sophus::SE3d& pose) {
+        viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion(), ts);
     });
     estimator.setCloudCallback([&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
         viewer->publishPointCloud("landmarks", pts);
+    });
+    estimator.setOptimizationCallback([&viewer](double /*ts*/, const OptimizationStats& stats) {
+        viewer->publishScalar(
+            "optimization/total_reduction", stats.total_cost_before - stats.total_cost_after);
+        viewer->publishScalar(
+            "optimization/visual_reduction", stats.visual_cost_before - stats.visual_cost_after);
+        viewer->publishScalar(
+            "optimization/imu_reduction", stats.imu_cost_before - stats.imu_cost_after);
+        viewer->publishScalar(
+            "optimization/prior_reduction", stats.prior_cost_before - stats.prior_cost_after);
+        viewer->publishIntArray(
+            "optimization/visual_factors_per_frame", stats.visual_factors_per_frame);
+        viewer->publishVisualFactorWindow(
+            "optimization/visual_window", stats.visual_factors_per_frame);
     });
 
     rclcpp::Rate rate(30);
@@ -189,7 +218,7 @@ int main(int argc, char** argv) {
             auto& stereo_ptr = package.get<0>();
             auto& imu_vec = package.get<1>();
 
-            double ts = stereo_ptr->timestamp;
+            const tassel_utils::FrameId ts = stereo_ptr->timestamp;
 
             std::unordered_map<int, FeaturePerFrame> feature_frame;
             {
@@ -209,7 +238,7 @@ int main(int argc, char** argv) {
             cv::Mat stereo_disp;
             cv::hconcat(disp_left, disp_right, stereo_disp);
 
-            viewer->publishImage("stereo/image", "camera", stereo_disp);
+            viewer->publishCompressedImage("stereo/image", "camera", stereo_disp, "jpeg");
         }
         rclcpp::spin_some(viewer);
         rate.sleep();

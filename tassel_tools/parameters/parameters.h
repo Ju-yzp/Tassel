@@ -25,6 +25,8 @@ struct Parameters {
         loadImu(parser);
         loadInitialization(parser);
         loadHardware(parser);
+        loadViewer(parser);
+        validate();
     }
 
     // Camera calibration: consumed by test_estimator camera construction, FeatureManager
@@ -34,8 +36,6 @@ struct Parameters {
     std::map<size_t, cv::Mat> cam_intrinsic_map;
     Eigen::Matrix3d ric = Eigen::Matrix3d::Identity();
     Eigen::Vector3d tic = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d ric1 = Eigen::Matrix3d::Identity();
-    Eigen::Vector3d tic1 = Eigen::Vector3d::Zero();
 
     // Image and feature-tracker settings: consumed by FeatureTracker and camera creation.
     int rows, cols;
@@ -57,6 +57,7 @@ struct Parameters {
     double min_translation;
     double min_depth;
     double max_depth;
+    double keyframe_new_feature_ratio;
 
     // Sliding-window optimization: consumed by Estimator::optimize/buildPrior/reset.
     int num_iterations;
@@ -64,6 +65,8 @@ struct Parameters {
     double visual_factor_weight;
     int num_threads = 1;
     double dt_gyro_threshold = 0.7;
+    double imu_repropagate_ba_threshold = 0.02;
+    double imu_repropagate_bg_threshold = 0.002;
     tassel_utils::IntegratorType integrator_type = tassel_utils::IntegratorType::kMidPoint;
 
     // IMU model and calibration: consumed by Estimator propagation, preintegration, and init.
@@ -73,8 +76,6 @@ struct Parameters {
     Eigen::Vector3d acc_bias = Eigen::Vector3d::Zero();
 
     // Visual-inertial initialization and SFM: consumed by Estimator::tryInitialize.
-    int num_init_iterations;
-    double init_time_span = 5.0;
     double gravity_diff_threshold = 0.17;
     int sfm_min_seed_pts = 10;
     int sfm_min_e_inliers = 8;
@@ -88,7 +89,28 @@ struct Parameters {
     // Hardware capture: consumed by OAK/DepthAI integration tests.
     int initial_exposure_time_us;
 
+    // Visualization: consumed by Viewer publishers.
+    size_t viewer_path_max_poses = 300;
+
 private:
+    void validate() const {
+        if (!(min_depth > 0.0 && max_depth > min_depth)) {
+            throw std::invalid_argument("Expected 0 < min_depth < max_depth");
+        }
+        if (max_frame_count < 3) {
+            throw std::invalid_argument("max_frame_count must be at least 3");
+        }
+        if (num_iterations <= 0 || num_threads <= 0 || visual_factor_weight <= 0.0) {
+            throw std::invalid_argument("Invalid optimization parameters");
+        }
+        if (acc_n <= 0.0 || acc_w <= 0.0 || gyr_n <= 0.0 || gyr_w <= 0.0 || g_norm <= 0.0) {
+            throw std::invalid_argument("IMU noise and gravity parameters must be positive");
+        }
+        if (keyframe_new_feature_ratio < 0.0 || keyframe_new_feature_ratio > 1.0) {
+            throw std::invalid_argument("keyframe_new_feature_ratio must be in [0, 1]");
+        }
+    }
+
     static void loadCamera(ParamsParser& parser, size_t id, Parameters& params) {
         const std::string cam_key = "cam" + std::to_string(id);
         params.cam_intrinsic_map[id] = parser.as<cv::Mat>(cam_key, "intrinsics");
@@ -101,8 +123,6 @@ private:
         loadCamera(parser, 1, *this);
         ric = T_cam_imu_map[0].block<3, 3>(0, 0);
         tic = T_cam_imu_map[0].block<3, 1>(0, 3);
-        ric1 = T_cam_imu_map[1].block<3, 3>(0, 0);
-        tic1 = T_cam_imu_map[1].block<3, 1>(0, 3);
     }
 
     void loadTracker(ParamsParser& parser) {
@@ -129,6 +149,7 @@ private:
         min_translation = parser.as<double>("min_translation");
         min_depth = parser.as<double>("min_depth");
         max_depth = parser.as<double>("max_depth");
+        keyframe_new_feature_ratio = parser.as<double>("keyframe_new_feature_ratio");
     }
 
     void loadEstimator(ParamsParser& parser) {
@@ -137,6 +158,8 @@ private:
         visual_factor_weight = parser.as<double>("visual_factor_weight");
         num_threads = parser.as<int>("num_threads");
         dt_gyro_threshold = parser.as<double>("dt_gyro_threshold");
+        imu_repropagate_ba_threshold = parser.as<double>("imu_repropagate_ba_threshold");
+        imu_repropagate_bg_threshold = parser.as<double>("imu_repropagate_bg_threshold");
         integrator_type = parseIntegratorType(parser.as<std::string>("integrator_type"));
     }
 
@@ -150,8 +173,6 @@ private:
     }
 
     void loadInitialization(ParamsParser& parser) {
-        num_init_iterations = parser.as<int>("num_init_iterations");
-        init_time_span = parser.as<double>("init_time_span");
         gravity_diff_threshold = parser.as<double>("gravity_diff_threshold");
         sfm_min_seed_pts = parser.as<int>("sfm_min_seed_pts");
         sfm_min_e_inliers = parser.as<int>("sfm_min_e_inliers");
@@ -165,6 +186,10 @@ private:
 
     void loadHardware(ParamsParser& parser) {
         initial_exposure_time_us = parser.as<int>("initial_exposure_time_us");
+    }
+
+    void loadViewer(ParamsParser& parser) {
+        viewer_path_max_poses = parser.as<size_t>("viewer", "path_max_poses");
     }
 
     static std::string normalizeToken(std::string value) {

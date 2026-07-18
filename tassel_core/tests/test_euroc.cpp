@@ -27,6 +27,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -50,15 +51,20 @@ namespace fs = std::filesystem;
 namespace {
 
 struct ImageEntry {
-    double timestamp = 0.0;
+    tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
     std::string timestamp_ns;
     std::string filename;
 };
 
 struct StereoFrame {
-    double timestamp = 0.0;
+    tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
     fs::path left_path;
     fs::path right_path;
+};
+
+struct GroundTruthPose {
+    double timestamp = 0.0;
+    Sophus::SE3d pose;
 };
 
 struct LatestDisplayImage {
@@ -68,6 +74,7 @@ struct LatestDisplayImage {
 struct SyncedPacket {
     std::shared_ptr<tassel_utils::StereoObservation> stereo;
     std::vector<tassel_utils::IMUMeasurement> imu_slice;
+    double applied_delay = 0.0;
 };
 
 class BlockingDatasetSync {
@@ -105,27 +112,29 @@ public:
         cv_.notify_all();
     }
 
-    bool waitPop(SyncedPacket& packet) {
+    bool waitPop(SyncedPacket& packet, double applied_delay) {
         std::unique_lock<std::mutex> lock(mutex_);
         cv_.wait(lock, [&]() {
             if (stereo_queue_.empty()) return stereo_done_;
-            const double ts = stereo_queue_.front()->timestamp;
-            return imu_done_ || (!imu_queue_.empty() && imu_queue_.back().timestamp >= ts);
+            const double sync_ts = stereo_queue_.front()->get_timestamp() + applied_delay;
+            return imu_done_ || (!imu_queue_.empty() && imu_queue_.back().timestamp >= sync_ts);
         });
 
         if (stereo_queue_.empty()) {
             return false;
         }
-        if (imu_queue_.empty() || imu_queue_.back().timestamp < stereo_queue_.front()->timestamp) {
+        const double sync_ts = stereo_queue_.front()->get_timestamp() + applied_delay;
+        if (imu_queue_.empty() || imu_queue_.back().timestamp < sync_ts) {
             std::cerr << "[EuRoC] missing IMU coverage for stereo t="
-                      << stereo_queue_.front()->timestamp << "\n";
+                      << stereo_queue_.front()->get_timestamp() << " sync t=" << sync_ts
+                      << " applied_delay=" << applied_delay << "\n";
             return false;
         }
 
         packet.stereo = std::move(stereo_queue_.front());
         stereo_queue_.pop_front();
+        packet.applied_delay = applied_delay;
 
-        const double ts = packet.stereo->timestamp;
         packet.imu_slice.clear();
         if (has_boundary_) {
             packet.imu_slice.push_back(boundary_imu_);
@@ -133,18 +142,18 @@ public:
 
         const double prev_ts = has_boundary_ ? boundary_imu_.timestamp : -1.0;
         for (const auto& imu : imu_queue_) {
-            if (imu.timestamp >= ts) break;
+            if (imu.timestamp >= sync_ts) break;
             if (prev_ts < 0.0 || imu.timestamp > prev_ts) {
                 packet.imu_slice.push_back(imu);
             }
         }
 
-        auto boundary = interpolateBoundary(ts);
+        auto boundary = interpolateBoundary(sync_ts);
         if (packet.imu_slice.empty() || packet.imu_slice.back().timestamp < boundary.timestamp) {
             packet.imu_slice.push_back(boundary);
         }
 
-        while (!imu_queue_.empty() && imu_queue_.front().timestamp <= ts) {
+        while (!imu_queue_.empty() && imu_queue_.front().timestamp <= sync_ts) {
             imu_queue_.pop_front();
         }
         boundary_imu_ = boundary;
@@ -243,7 +252,8 @@ std::vector<ImageEntry> loadImageCsv(const fs::path& csv_path) {
         if (fields.size() < 2) {
             continue;
         }
-        entries.push_back({nsToSec(fields[0]), fields[0], fields[1]});
+        entries.push_back(
+            {static_cast<tassel_utils::FrameId>(std::stoll(fields[0])), fields[0], fields[1]});
     }
     return entries;
 }
@@ -271,6 +281,50 @@ std::vector<tassel_utils::IMUMeasurement> loadImuCsv(const fs::path& csv_path) {
         measurements.push_back(m);
     }
     return measurements;
+}
+
+std::vector<GroundTruthPose> loadGroundTruthCsv(const fs::path& csv_path) {
+    std::ifstream file(csv_path);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open ground truth csv: " + csv_path.string());
+    }
+
+    std::vector<GroundTruthPose> poses;
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        const auto fields = splitCsvLine(line);
+        if (fields.size() < 8) continue;
+
+        Eigen::Vector3d position(std::stod(fields[1]), std::stod(fields[2]), std::stod(fields[3]));
+        Eigen::Quaterniond orientation(
+            std::stod(fields[4]), std::stod(fields[5]), std::stod(fields[6]), std::stod(fields[7]));
+        orientation.normalize();
+        poses.push_back({nsToSec(fields[0]), Sophus::SE3d(orientation, position)});
+    }
+    return poses;
+}
+
+std::optional<Sophus::SE3d> interpolateGroundTruth(
+    const std::vector<GroundTruthPose>& poses, double timestamp) {
+    if (poses.empty() || timestamp < poses.front().timestamp ||
+        timestamp > poses.back().timestamp) {
+        return std::nullopt;
+    }
+    const auto upper = std::lower_bound(
+        poses.begin(), poses.end(), timestamp,
+        [](const GroundTruthPose& pose, double value) { return pose.timestamp < value; });
+    if (upper == poses.begin()) return upper->pose;
+    if (upper == poses.end()) return poses.back().pose;
+
+    const auto lower = std::prev(upper);
+    const double duration = upper->timestamp - lower->timestamp;
+    const double alpha = duration > 0.0 ? (timestamp - lower->timestamp) / duration : 0.0;
+    const Eigen::Vector3d position =
+        (1.0 - alpha) * lower->pose.translation() + alpha * upper->pose.translation();
+    const Eigen::Quaterniond orientation =
+        lower->pose.unit_quaternion().slerp(alpha, upper->pose.unit_quaternion()).normalized();
+    return Sophus::SE3d(orientation, position);
 }
 
 fs::path resolveSequenceDir(const fs::path& sequence_dir) {
@@ -305,7 +359,7 @@ std::vector<StereoFrame> makeStereoFrames(const fs::path& sequence_dir) {
             continue;
         }
         frames.push_back(
-            {left.timestamp, cam0_dir / "data" / left.filename, cam1_dir / "data" / it->second});
+            {left.frame_id, cam0_dir / "data" / left.filename, cam1_dir / "data" / it->second});
     }
     return frames;
 }
@@ -329,7 +383,7 @@ std::vector<tassel_core::Camera> initializeCameras(const tassel_tools::Parameter
 void publishStereoImage(
     const std::shared_ptr<tassel_tools::Viewer>& viewer, const LatestDisplayImage& image) {
     if (image.image.empty()) return;
-    viewer->publishImage("stereo/image", "camera", image.image);
+    viewer->publishCompressedImage("stereo/image", "camera", image.image, "jpeg");
 }
 
 }  // namespace
@@ -357,6 +411,8 @@ int main(int argc, char** argv) {
     tassel_tools::Parameters params(config_path.string());
     auto frames = makeStereoFrames(resolved_sequence_dir);
     auto imu_measurements = loadImuCsv(resolved_sequence_dir / "mav0" / "imu0" / "data.csv");
+    auto ground_truth = loadGroundTruthCsv(
+        resolved_sequence_dir / "mav0" / "state_groundtruth_estimate0" / "data.csv");
 
     if (frames.empty() || imu_measurements.empty()) {
         std::cerr << "[EuRoC] empty stereo or IMU stream under " << resolved_sequence_dir << "\n";
@@ -371,10 +427,22 @@ int main(int argc, char** argv) {
 
     rclcpp::init(argc, argv);
     auto viewer = std::make_shared<tassel_tools::Viewer>("world");
-    viewer->createImagePublisher("stereo/image");
-    viewer->createOdometryPublisher("camera", "odom/camera");
-    viewer->createPathPublisher("vo/path");
+    rclcpp::QoS image_qos(rclcpp::KeepLast(1));
+    image_qos.best_effort().durability_volatile();
+    viewer->createCompressedImagePublisher("stereo/image", image_qos);
+    viewer->createOdometryPublisher("imu", "odom/camera");
+    viewer->createPathPublisher("vo/path", rclcpp::QoS(10), params.viewer_path_max_poses);
+    viewer->createPathPublisher("ground_truth/path", rclcpp::QoS(10), params.viewer_path_max_poses);
     viewer->createPointCloudPublisher("landmarks");
+    rclcpp::QoS telemetry_qos(rclcpp::KeepLast(1));
+    telemetry_qos.reliable().durability_volatile();
+    for (const char* topic :
+         {"optimization/total_reduction", "optimization/visual_reduction",
+          "optimization/imu_reduction", "optimization/prior_reduction"}) {
+        viewer->createScalarPublisher(topic, telemetry_qos);
+    }
+    viewer->createIntArrayPublisher("optimization/visual_factors_per_frame", telemetry_qos);
+    viewer->createImagePublisher("optimization/visual_window", telemetry_qos);
 
     rclcpp::executors::SingleThreadedExecutor executor;
     executor.add_node(viewer);
@@ -404,13 +472,44 @@ int main(int argc, char** argv) {
     Estimator estimator(params, state, feature_manager);
     state->camera = camera_ptr;
     estimator.setCamera(camera_ptr);
+    std::optional<Sophus::SE3d> ground_truth_alignment;
+    estimator.setRealtimePoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment](
+                                          double ts, const Sophus::SE3d& pose) {
+        viewer->publishOdometry(
+            "odom/camera", pose.translation(), pose.unit_quaternion(), Eigen::Vector3d::Zero(),
+            Eigen::Vector3d::Zero());
+        if (const auto truth = interpolateGroundTruth(ground_truth, ts)) {
+            if (!ground_truth_alignment) {
+                ground_truth_alignment = pose * truth->inverse();
+            }
+            const Sophus::SE3d aligned_truth = *ground_truth_alignment * *truth;
+            viewer->publishPath(
+                "ground_truth/path", aligned_truth.translation(), aligned_truth.unit_quaternion(),
+                ts);
+        }
+        const Eigen::Vector3d& velocity = state->Vs[state->cur_frame_count];
+        std::cout << "[pose] t=" << ts << " p=" << pose.translation().transpose()
+                  << " |V|=" << velocity.norm() << "\n";
+    });
     estimator.setPoseCallback([&viewer](double ts, const Sophus::SE3d& pose) {
-        viewer->publishOdometry("odom/camera", pose.translation(), pose.unit_quaternion());
-        viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion());
-        std::cout << "[pose] t=" << ts << " p=" << pose.translation().transpose() << "\n";
+        viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion(), ts);
     });
     estimator.setCloudCallback([&viewer](double /*ts*/, const std::vector<Eigen::Vector3d>& pts) {
         viewer->publishPointCloud("landmarks", pts);
+    });
+    estimator.setOptimizationCallback([&viewer](double /*ts*/, const OptimizationStats& stats) {
+        viewer->publishScalar(
+            "optimization/total_reduction", stats.total_cost_before - stats.total_cost_after);
+        viewer->publishScalar(
+            "optimization/visual_reduction", stats.visual_cost_before - stats.visual_cost_after);
+        viewer->publishScalar(
+            "optimization/imu_reduction", stats.imu_cost_before - stats.imu_cost_after);
+        viewer->publishScalar(
+            "optimization/prior_reduction", stats.prior_cost_before - stats.prior_cost_after);
+        viewer->publishIntArray(
+            "optimization/visual_factors_per_frame", stats.visual_factors_per_frame);
+        viewer->publishVisualFactorWindow(
+            "optimization/visual_window", stats.visual_factors_per_frame);
     });
 
     const size_t frame_limit =
@@ -438,12 +537,13 @@ int main(int argc, char** argv) {
             cv::Mat left_img = cv::imread(frame.left_path.string(), cv::IMREAD_GRAYSCALE);
             cv::Mat right_img = cv::imread(frame.right_path.string(), cv::IMREAD_GRAYSCALE);
             if (left_img.empty() || right_img.empty()) {
-                std::cerr << "[EuRoC] failed to read stereo image at t=" << frame.timestamp << "\n";
+                std::cerr << "[EuRoC] failed to read stereo image at t="
+                          << tassel_utils::frameIdToSeconds(frame.frame_id) << "\n";
                 break;
             }
 
             auto stereo_msg = std::make_shared<tassel_utils::StereoObservation>();
-            stereo_msg->timestamp = frame.timestamp;
+            stereo_msg->timestamp = frame.frame_id;
             stereo_msg->left_img = std::move(left_img);
             stereo_msg->right_img = std::move(right_img);
 
@@ -474,11 +574,14 @@ int main(int argc, char** argv) {
         });
     }
 
+    const double first_frame_ts = tassel_utils::frameIdToSeconds(frames.front().frame_id);
     const double nominal_frame_dt =
-        (frame_limit > 1) ? (frames[1].timestamp - frames[0].timestamp) : (1.0 / replay_hz);
-    const double playback_end_ts = frames[frame_limit - 1].timestamp + nominal_frame_dt;
+        (frame_limit > 1) ? tassel_utils::frameIdToSeconds(frames[1].frame_id - frames[0].frame_id)
+                          : (1.0 / replay_hz);
+    const double playback_end_ts =
+        tassel_utils::frameIdToSeconds(frames[frame_limit - 1].frame_id) + nominal_frame_dt;
     const double playback_scale = (1.0 / replay_hz) / nominal_frame_dt;
-    const double playback_start_ts = frames.front().timestamp;
+    const double playback_start_ts = first_frame_ts;
     const auto playback_start_time = std::chrono::steady_clock::now();
 
     auto sleep_until_sensor_time = [&](double sensor_ts) {
@@ -539,7 +642,7 @@ int main(int argc, char** argv) {
             }
             loaded_stereo_cv.notify_all();
 
-            sleep_until_sensor_time(stereo_msg->timestamp);
+            sleep_until_sensor_time(stereo_msg->get_timestamp());
             if (!rclcpp::ok() || stop_reader.load()) break;
             sync.pushStereo(stereo_msg);
             ++produced;
@@ -552,7 +655,7 @@ int main(int argc, char** argv) {
     size_t processed = 0;
     while (rclcpp::ok()) {
         SyncedPacket packet;
-        if (!sync.waitPop(packet)) break;
+        if (!sync.waitPop(packet, state->delay_time)) break;
         if (!packet.stereo) continue;
 
         std::unordered_map<int, FeaturePerFrame> feature_frame;
@@ -560,6 +663,10 @@ int main(int argc, char** argv) {
             tassel_utils::Timer t("euroc_stereo_tracking");
             feature_frame =
                 tracker.stereoTracking(0, packet.stereo->left_img, 1, packet.stereo->right_img);
+        }
+        for (auto& [id, feature] : feature_frame) {
+            (void)id;
+            feature.applied_delay = packet.applied_delay;
         }
 
         cv::Mat left_tracking = packet.stereo->left_img.clone();
@@ -573,7 +680,8 @@ int main(int argc, char** argv) {
             latest_image.image = std::move(tracking_disp);
         }
 
-        estimator.processMeasurement(packet.stereo->timestamp, feature_frame, packet.imu_slice);
+        estimator.processMeasurement(
+            packet.stereo->timestamp, feature_frame, packet.imu_slice, packet.applied_delay);
 
         ++processed;
 

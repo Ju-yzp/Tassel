@@ -22,7 +22,11 @@ FeatureTracker::FeatureTracker(
       max_square_move_dist_(max_square_move_dist),
       enable_statistics_(enable_statistics),
       tracked_times_thres_(tracked_times_thres),
-      min_gradient_thres_(min_gradient) {}
+      min_gradient_thres_(min_gradient) {
+    if (max_square_move_dist_ < 0.0 || tracked_times_thres_ <= 0 || min_gradient_thres_ < 0.0) {
+        throw std::invalid_argument("Invalid FeatureTracker configuration");
+    }
+}
 
 void FeatureTracker::addCamera(
     Camera camera, int per_grid_rows, int per_grid_cols, int grid_edge_rows, int grid_edge_cols,
@@ -33,6 +37,18 @@ void FeatureTracker::addCamera(
     if (ctc.camera == nullptr) {
         throw std::invalid_argument(
             "Camera pointer cannot be null for camera " + std::to_string(camera_id));
+    }
+    if (per_grid_rows <= 0 || per_grid_cols <= 0) {
+        throw std::invalid_argument(
+            "Invalid per-grid parameters for camera " + std::to_string(camera_id));
+    }
+    if (grid_edge_rows < 0 || grid_edge_cols < 0) {
+        throw std::invalid_argument(
+            "Invalid grid edge parameters for camera " + std::to_string(camera_id));
+    }
+    if (mask_radius <= 0 || min_feature_num < 0) {
+        throw std::invalid_argument(
+            "Invalid feature extraction parameters for camera " + std::to_string(camera_id));
     }
     ctc.per_grid_rows = per_grid_rows;
     ctc.per_grid_cols = per_grid_cols;
@@ -47,14 +63,6 @@ void FeatureTracker::addCamera(
         throw std::invalid_argument(
             "Invalid grid parameters for camera " + std::to_string(camera_id));
     }
-    if (mask_radius <= 0) {
-        throw std::invalid_argument("Invalid mask radius for camera " + std::to_string(camera_id));
-    }
-    if (per_grid_rows <= 0 || per_grid_cols <= 0) {
-        throw std::invalid_argument(
-            "Invalid per-grid parameters for camera " + std::to_string(camera_id));
-    }
-
     ctc.grid_mask.resize(ctc.grid_rows * ctc.grid_cols, false);
     ctc.feature_count = 0;
     ctc.min_feature_num = min_feature_num;
@@ -71,6 +79,11 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::monoTracking(
         return std::unordered_map<int, FeaturePerFrame>();
     }
     CameraTrackingContext& ctc = ctc_map_[camera_id];
+    if (img.empty() || img.type() != CV_8UC1 || img.rows != ctc.camera->get_height() ||
+        img.cols != ctc.camera->get_width()) {
+        spdlog::error("FeatureTracker::monoTracking: invalid image for camera_id {}", camera_id);
+        return std::unordered_map<int, FeaturePerFrame>();
+    }
     cv::Mat& prev_img = ctc.prev_img;
     std::vector<cv::Point2f>& prev_pts = ctc.prev_pts;
     std::vector<cv::Point2f>& cur_pts = ctc.cur_pts;
@@ -82,12 +95,6 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::monoTracking(
 
     if (!prev_pts.empty()) {
         monoMatching(camera_id, prev_img, img, prev_pts, cur_pts, prev_ids, cur_ids);
-    }
-
-    if (img.empty() || img.type() != CV_8UC1 || img.rows != ctc.camera->get_height() ||
-        img.cols != ctc.camera->get_width()) {
-        spdlog::error("FeatureTracker::monoTracking: invalid image for camera_id {}", camera_id);
-        return std::unordered_map<int, FeaturePerFrame>();
     }
 
     if (static_cast<int>(cur_pts.size()) < ctc.min_feature_num) {
@@ -124,9 +131,25 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::monoTracking(
 std::unordered_map<int, FeaturePerFrame> FeatureTracker::stereoTracking(
     size_t left_camera_id, const cv::Mat& left_img, size_t right_camera_id,
     const cv::Mat& right_img) {
+    if (!ctc_map_.contains(left_camera_id) || !ctc_map_.contains(right_camera_id)) {
+        spdlog::error(
+            "FeatureTracker::stereoTracking: unknown camera pair ({}, {})", left_camera_id,
+            right_camera_id);
+        return {};
+    }
+    const CameraTrackingContext& right_context = ctc_map_.at(right_camera_id);
+    if (right_img.empty() || right_img.type() != CV_8UC1 ||
+        right_img.rows != right_context.camera->get_height() ||
+        right_img.cols != right_context.camera->get_width()) {
+        spdlog::error(
+            "FeatureTracker::stereoTracking: invalid right image for camera_id {}",
+            right_camera_id);
+        return {};
+    }
     auto feature_frame = monoTracking(left_camera_id, left_img);
-    CameraTrackingContext& r_ctc = ctc_map_[right_camera_id];
-    CameraTrackingContext& l_ctc = ctc_map_[left_camera_id];
+    if (feature_frame.empty()) return feature_frame;
+    CameraTrackingContext& r_ctc = ctc_map_.at(right_camera_id);
+    CameraTrackingContext& l_ctc = ctc_map_.at(left_camera_id);
     r_ctc.prev_img = l_ctc.prev_img;
     r_ctc.prev_pts = l_ctc.prev_pts;
     r_ctc.cur_pts = l_ctc.prev_pts;
@@ -157,7 +180,8 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::stereoTracking(
 }
 
 void FeatureTracker::reset() {
-    for (auto& [id, ctc] : ctc_map_) {
+    for (auto& item : ctc_map_) {
+        auto& ctc = item.second;
         ctc.prev_pts.clear();
         ctc.cur_pts.clear();
         ctc.prev_ids.clear();
@@ -187,11 +211,14 @@ void FeatureTracker::drawTrackingResult(size_t camera_id, cv::Mat& img) {
         for (size_t i = 0; i < prev_pts.size(); ++i) {
             float ratio = std::min(tracked_times[i], tracked_times_thres_) /
                           static_cast<float>(tracked_times_thres_);
-            cv::circle(img, prev_pts[i], 6, cv::Scalar(255 * (1.0 - ratio), 0, 255 * ratio), 3);
+            const cv::Scalar color(255 * (1.0 - ratio), 0, 255 * ratio);
+            cv::circle(img, prev_pts[i], 4, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+            cv::circle(img, prev_pts[i], 3, color, -1, cv::LINE_AA);
         }
     } else {
-        for (auto pt : prev_pts) {
-            cv::circle(img, pt, 2, cv::Scalar(255, 0, 0), -1);
+        for (const auto& pt : prev_pts) {
+            cv::circle(img, pt, 4, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+            cv::circle(img, pt, 3, cv::Scalar(0, 220, 0), -1, cv::LINE_AA);
         }
     }
 }
@@ -308,9 +335,6 @@ void FeatureTracker::extractNewFeatures(
     cv::sqrt(diff_sq + ixy_sq, term);
     ctc.grad = (Ix2 + Iy2 - term) * 0.5f;
 
-    cv::Mat grad_mask;
-    cv::threshold(ctc.grad, grad_mask, min_gradient_thres_, 255.0, cv::THRESH_BINARY);
-
     const int rows = ctc.camera->get_height();
     const int cols = ctc.camera->get_width();
     const int grid_rows = ctc.grid_rows;
@@ -331,7 +355,6 @@ void FeatureTracker::extractNewFeatures(
     for (int y = y0; y < y1; ++y) {
         const uchar* mask_row = ctc.mask.ptr<uchar>(y);
         const float* grad_row = ctc.grad.ptr<float>(y);
-        const float* gmask_row = grad_mask.ptr<float>(y);
         for (int x = x0; x < x1; ++x) {
             if (mask_row[x] == 0) continue;
             int cell_r = (y - y0) / cell_h;

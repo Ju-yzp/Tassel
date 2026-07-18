@@ -40,7 +40,6 @@ TEST_F(LandmarkBlockTest, AllocateSetsDimensions) {
     lb.allocate(3, 2, 6);
 
     EXPECT_EQ(lb.get_num_rows(), 4);
-    EXPECT_EQ(lb.get_kept_rows(), 3);
     EXPECT_EQ(lb.get_padding_index(), 18);
 }
 
@@ -49,7 +48,6 @@ TEST_F(LandmarkBlockTest, AllocateSingleFrame) {
     lb.allocate(1, 1, 6);
 
     EXPECT_EQ(lb.get_num_rows(), 2);
-    EXPECT_EQ(lb.get_kept_rows(), 1);
     EXPECT_EQ(lb.get_padding_index(), 6);
 }
 
@@ -58,7 +56,6 @@ TEST_F(LandmarkBlockTest, AllocateWithDifferentDim) {
     lb.allocate(2, 3, 15);
 
     EXPECT_EQ(lb.get_num_rows(), 6);
-    EXPECT_EQ(lb.get_kept_rows(), 5);
     EXPECT_EQ(lb.get_padding_index(), 30);
 }
 
@@ -124,6 +121,26 @@ TEST_F(LandmarkBlockTest, QRZeroLandmarkColumnSkipsAllZeros) {
     for (int r = 0; r < lb.get_num_rows(); ++r) {
         EXPECT_NEAR(s(r, lb.get_landmark_index()), 0.0, kQrTol);
     }
+    EXPECT_EQ(lb.get_kept_rows(), lb.get_num_rows());
+}
+
+TEST_F(LandmarkBlockTest, ZeroLandmarkJacobianKeepsEveryPoseConstraint) {
+    LandmarkBlock lb(6, nullptr);
+    lb.allocate(2, 1, 6);
+    auto& storage = lb.get_mutable_storage();
+    storage.setRandom();
+    storage.col(lb.get_landmark_index()).setZero();
+    const auto original = storage;
+
+    lb.performQR();
+    Eigen::MatrixXd J(lb.get_kept_rows(), lb.get_padding_index() + 1);
+    Eigen::VectorXd r(lb.get_kept_rows());
+    lb.get_dense_Q2Jp_Q2r(J, r, 0);
+
+    ASSERT_EQ(lb.get_kept_rows(), 2);
+    EXPECT_TRUE(
+        J.leftCols(lb.get_padding_index()).isApprox(original.leftCols(lb.get_padding_index())));
+    EXPECT_TRUE(r.isApprox(original.col(lb.get_residual_index())));
 }
 
 // ── QR: single observation pair (2 rows) ───────────────────────────────
@@ -207,7 +224,7 @@ TEST_F(LandmarkBlockTest, GetDenseExtractsCorrectRows) {
     int kept = lb.get_kept_rows();
     int pad = lb.get_padding_index();
 
-    Eigen::MatrixXd Q2Jp(kept, pad);
+    Eigen::MatrixXd Q2Jp(kept, pad + 1);
     Eigen::VectorXd Q2r(kept);
     lb.get_dense_Q2Jp_Q2r(Q2Jp, Q2r, 0);
 
@@ -215,6 +232,7 @@ TEST_F(LandmarkBlockTest, GetDenseExtractsCorrectRows) {
         for (int c = 0; c < pad; ++c) {
             EXPECT_DOUBLE_EQ(Q2Jp(r, c), s(r + 1, c));
         }
+        EXPECT_DOUBLE_EQ(Q2Jp(r, pad), s(r + 1, lb.get_delay_index()));
         EXPECT_DOUBLE_EQ(Q2r(r), s(r + 1, lb.get_residual_index()));
     }
 }
@@ -232,14 +250,14 @@ TEST_F(LandmarkBlockTest, GetDenseWithOffsetPreservesPrefix) {
     int pad = lb.get_padding_index();
     int offset = 3;
 
-    Eigen::MatrixXd Q2Jp(offset + kept, pad);
+    Eigen::MatrixXd Q2Jp(offset + kept, pad + 1);
     Eigen::VectorXd Q2r(offset + kept);
     Q2Jp.setConstant(-1.0);
     Q2r.setConstant(-1.0);
     lb.get_dense_Q2Jp_Q2r(Q2Jp, Q2r, offset);
 
     for (int r = 0; r < offset; ++r) {
-        for (int c = 0; c < pad; ++c) {
+        for (int c = 0; c < pad + 1; ++c) {
             EXPECT_DOUBLE_EQ(Q2Jp(r, c), -1.0) << "offset prefix was overwritten";
         }
         EXPECT_DOUBLE_EQ(Q2r(r), -1.0);
@@ -248,6 +266,7 @@ TEST_F(LandmarkBlockTest, GetDenseWithOffsetPreservesPrefix) {
         for (int c = 0; c < pad; ++c) {
             EXPECT_DOUBLE_EQ(Q2Jp(offset + r, c), s(r + 1, c));
         }
+        EXPECT_DOUBLE_EQ(Q2Jp(offset + r, pad), s(r + 1, lb.get_delay_index()));
         EXPECT_DOUBLE_EQ(Q2r(offset + r), s(r + 1, lb.get_residual_index()));
     }
 }

@@ -262,6 +262,13 @@ TEST_F(CameraEquiTest, ZeroDistortionRoundTrip) {
 
 TEST_F(CameraEquiTest, JacobianDZN) { expectDznMatchesFiniteDiff(cam_.get(), true); }
 
+TEST_F(CameraEquiTest, JacobianDZNAtOpticalAxis) {
+    Eigen::MatrixXd analytic;
+    const Eigen::Vector2d center = Eigen::Vector2d::Zero();
+    cam_->get_jacobian_dzn(center, analytic);
+    expectMatrixNear(analytic, numerical_dzn(cam_.get(), center), 1e-6, center);
+}
+
 TEST_F(CameraEquiTest, JacobianDZeta) {
     expectDzetaMatchesFiniteDiff<tassel_core::CameraEqui>(cam_.get(), equi_K, equi_D, true);
 }

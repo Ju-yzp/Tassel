@@ -8,6 +8,7 @@
 #include <variant>
 #include <vector>
 
+#include "estimator/window_marginalization_plan.h"
 #include "factor/integrator_base.h"
 #include "frond_end/feature_manager.h"
 #include "marg/marg_lin_data.h"
@@ -23,6 +24,18 @@ namespace tassel_core {
 
 class CameraBase;
 
+struct OptimizationStats {
+    double total_cost_before = 0.0;
+    double total_cost_after = 0.0;
+    double visual_cost_before = 0.0;
+    double visual_cost_after = 0.0;
+    double prior_cost_before = 0.0;
+    double prior_cost_after = 0.0;
+    double imu_cost_before = 0.0;
+    double imu_cost_after = 0.0;
+    std::vector<int> visual_factors_per_frame;
+};
+
 class Estimator {
 public:
     Estimator(
@@ -30,21 +43,29 @@ public:
         std::shared_ptr<FeatureManager> fm);
 
     void processMeasurement(
-        double ts, const std::unordered_map<int, FeaturePerFrame>& feature_frame,
-        const std::vector<tassel_utils::IMUMeasurement>& imu_measurements = {});
+        tassel_utils::FrameId frame_id,
+        const std::unordered_map<int, FeaturePerFrame>& feature_frame,
+        const std::vector<tassel_utils::IMUMeasurement>& imu_measurements = {},
+        double applied_delay = 0.0);
 
     void setPoseCallback(std::function<void(double, const Sophus::SE3d&)> cb) {
         pose_callback_ = std::move(cb);
     }
+    void setRealtimePoseCallback(std::function<void(double, const Sophus::SE3d&)> cb) {
+        realtime_pose_callback_ = std::move(cb);
+    }
     void setCloudCallback(std::function<void(double, const std::vector<Eigen::Vector3d>&)> cb) {
         cloud_callback_ = std::move(cb);
+    }
+    void setOptimizationCallback(std::function<void(double, const OptimizationStats&)> cb) {
+        optimization_callback_ = std::move(cb);
     }
     void setCamera(const CameraBase* camera) {
         camera_ = camera;
         if (state_) state_->camera = camera;
     }
 
-    void optimize();
+    void optimize(double timestamp = -1.0);
 
     void reset();
 
@@ -54,9 +75,11 @@ private:
     using PreintegratorStorage =
         std::variant<IntegratorVector<MidPointIntegrator>, IntegratorVector<EulerIntegrator>>;
 
-    void buildPrior();
+    void buildPrior(const WindowMarginalizationPlan& plan);
 
-    void slideWindow();
+    void slideInitializationWindow();
+
+    void slideWindow(const WindowMarginalizationPlan& plan);
 
     bool tryInitialize();
 
@@ -83,7 +106,9 @@ private:
     bool gravity_initialized_ = false;
 
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
+    std::function<void(double, const Sophus::SE3d&)> realtime_pose_callback_;
     std::function<void(double, const std::vector<Eigen::Vector3d>&)> cloud_callback_;
+    std::function<void(double, const OptimizationStats&)> optimization_callback_;
 
     PreintegratorStorage preintegrators_;
     double last_ts_ = -1;

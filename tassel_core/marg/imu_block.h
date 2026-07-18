@@ -33,8 +33,8 @@ public:
         param_speed_bias_j = {V_j.x(),  V_j.y(),  V_j.z(),  Ba_j.x(), Ba_j.y(),
                               Ba_j.z(), Bg_j.x(), Bg_j.y(), Bg_j.z()};
 
-        Eigen::Matrix<double, 15, 6> jacobian_pose_i, jacobian_pose_j;
-        Eigen::Matrix<double, 15, 9> jacobian_speed_bias_i, jacobian_speed_bias_j;
+        Eigen::Matrix<double, 15, 6, Eigen::RowMajor> jacobian_pose_i, jacobian_pose_j;
+        Eigen::Matrix<double, 15, 9, Eigen::RowMajor> jacobian_speed_bias_i, jacobian_speed_bias_j;
         Eigen::Matrix<double, 15, 1> residual;
 
         std::vector<double*> parameters;
@@ -49,7 +49,9 @@ public:
         jacobians.push_back(jacobian_pose_j.data());
         jacobians.push_back(jacobian_speed_bias_j.data());
 
-        imu_factor_->Evaluate(parameters.data(), residual.data(), jacobians.data());
+        TASSEL_ASSERT(imu_factor_->Evaluate(parameters.data(), residual.data(), jacobians.data()));
+        jacobian_pose_i.block<15, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Q_i);
+        jacobian_pose_j.block<15, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Q_j);
 
         b_ = residual;
         Jp_.template block<15, 6>(0, 0) = jacobian_pose_i;

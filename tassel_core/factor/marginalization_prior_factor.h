@@ -23,7 +23,10 @@ private:
     Eigen::VectorXd b_;
     std::vector<std::array<double, 6>> lin_poses_;
     std::vector<std::array<double, 9>> lin_speed_bias_;
+    double lin_delay_time_;
     int num_kept_;
+    bool has_speed_bias_;
+    bool has_delay_;
 };
 
 }  // namespace tassel_core

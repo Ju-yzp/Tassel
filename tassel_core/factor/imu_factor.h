@@ -65,10 +65,11 @@ public:
         res.template block<3, 1>(12, 0) = Bg_j - Bg_i;
 
         // 信息矩阵
+        Eigen::LLT<Eigen::Matrix<double, 15, 15>> covariance_llt(integrator->covariance);
+        if (covariance_llt.info() != Eigen::Success) return false;
         Eigen::Matrix<double, 15, 15> sqrt_info =
-            Eigen::LLT<Eigen::Matrix<double, 15, 15>>(integrator->covariance.inverse())
-                .matrixL()
-                .transpose();
+            covariance_llt.matrixL().solve(Eigen::Matrix<double, 15, 15>::Identity());
+        if (!sqrt_info.allFinite()) return false;
 
         Eigen::Matrix3d Jr_inv =
             Sophus::SO3d::leftJacobianInverse(res.block<3, 1>(3, 0)).transpose();
@@ -84,6 +85,7 @@ public:
                 jacobian_pose_i.template block<3, 3>(6, 3) =
                     Sophus::SO3d::hat(R_i.transpose() * (G * sum_dt + V_j - V_i));
                 jacobian_pose_i = sqrt_info * jacobian_pose_i;
+                jacobian_pose_i.template block<15, 3>(0, 3) *= Sophus::SO3d::leftJacobian(-phi_i);
             }
             if (jacobians[1]) {
                 Eigen::Map<Eigen::Matrix<double, 15, 9, Eigen::RowMajor>> jacobian_speedbias_i(
@@ -112,6 +114,7 @@ public:
                 jacobian_pose_j.block<3, 3>(0, 0) = R_i.transpose();
                 jacobian_pose_j.block<3, 3>(3, 3) = Jr_inv;
                 jacobian_pose_j = sqrt_info * jacobian_pose_j;
+                jacobian_pose_j.template block<15, 3>(0, 3) *= Sophus::SO3d::leftJacobian(-phi_j);
             }
             if (jacobians[3]) {
                 Eigen::Map<Eigen::Matrix<double, 15, 9, Eigen::RowMajor>> jacobian_speedbias_j(

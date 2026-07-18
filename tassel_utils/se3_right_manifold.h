@@ -58,9 +58,14 @@ public:
         return true;
     }
 
-    bool MinusJacobian(const double* /* x */, double* jacobian) const override {
+    bool MinusJacobian(const double* x, double* jacobian) const override {
         std::fill_n(jacobian, 36, 0.0);
-        for (int i = 0; i < 6; ++i) jacobian[i * 6 + i] = 1.0;
+        Eigen::Vector3d phi(x[3], x[4], x[5]);
+        Eigen::Matrix3d Jr = Sophus::SO3d::leftJacobian(-phi);
+
+        for (int i = 0; i < 3; ++i) jacobian[i * 6 + i] = 1.0;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) jacobian[(3 + i) * 6 + (3 + j)] = Jr(i, j);
         return true;
     }
 

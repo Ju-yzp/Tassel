@@ -22,6 +22,7 @@
 #include <vector>
 
 #include <ceres/ceres.h>
+#include <ceres/gradient_checker.h>
 #include <sophus/so3.hpp>
 
 #include "cam/camera_rad_tan.h"
@@ -160,6 +161,16 @@ TEST_F(VisualFactorTest, JacobianCheck) {
     double r[2];
     factor->Evaluate(params, r, jac_ptrs);
 
+    double plus_i_data[36], plus_j_data[36];
+    manifold.PlusJacobian(pose_i_, plus_i_data);
+    manifold.PlusJacobian(pose_j_, plus_j_data);
+    Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> J0_ambient(J0);
+    Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> J1_ambient(J1);
+    Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus_i(plus_i_data);
+    Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus_j(plus_j_data);
+    const Eigen::Matrix<double, 2, 6, Eigen::RowMajor> J0_tangent = J0_ambient * plus_i;
+    const Eigen::Matrix<double, 2, 6, Eigen::RowMajor> J1_tangent = J1_ambient * plus_j;
+
     auto num_pose = [&](int blk, const double* x, int col) {
         Eigen::VectorXd delta = Eigen::VectorXd::Zero(6);
         delta(col) = eps;
@@ -211,9 +222,9 @@ TEST_F(VisualFactorTest, JacobianCheck) {
     };
 
     std::cout << "\n--- pose_i (2x6) ---\n";
-    for (int c = 0; c < 6; ++c) check("J_pose_i", J0, c, num_pose(0, pose_i_, c), 6);
+    for (int c = 0; c < 6; ++c) check("J_pose_i", J0_tangent.data(), c, num_pose(0, pose_i_, c), 6);
     std::cout << "--- pose_j (2x6) ---\n";
-    for (int c = 0; c < 6; ++c) check("J_pose_j", J1, c, num_pose(1, pose_j_, c), 6);
+    for (int c = 0; c < 6; ++c) check("J_pose_j", J1_tangent.data(), c, num_pose(1, pose_j_, c), 6);
     std::cout << "--- dt (2x1) ---\n";
     check("J_dt", J2, 0, num_scalar(2, dt_val), 1);
     std::cout << "--- inv_depth (2x1) ---\n";
@@ -223,6 +234,88 @@ TEST_F(VisualFactorTest, JacobianCheck) {
     EXPECT_EQ(nbad, 0);
 
     delete factor;
+}
+
+TEST_F(VisualFactorTest, CeresGradientCheckerContract) {
+    SE3RightManifold manifold;
+    std::vector<const ceres::Manifold*> manifolds = {&manifold, &manifold, nullptr, nullptr};
+    ceres::NumericDiffOptions options;
+    options.relative_step_size = 1e-6;
+    for (size_t k = 0; k < lms_.size(); ++k) {
+        std::unique_ptr<VisualFactor> factor(makeFactor(static_cast<int>(k)));
+        ceres::GradientChecker checker(factor.get(), &manifolds, options);
+        double inv_depth = lms_[k].inv_depth;
+        double delay = td_;
+        const double* parameters[] = {pose_i_, pose_j_, &delay, &inv_depth};
+        ceres::GradientChecker::ProbeResults results;
+        EXPECT_TRUE(checker.Probe(parameters, 5e-5, &results))
+            << "landmark=" << k << " max_relative_error=" << results.maximum_relative_error << "\n"
+            << results.error_log;
+    }
+}
+
+TEST_F(VisualFactorTest, HuberCorrectionMatchesCeres) {
+    for (double delay : {td_, 0.2}) {
+        std::unique_ptr<VisualFactor> factor(makeFactor(0));
+        ceres::HuberLoss loss(1.0);
+        SE3RightManifold manifold;
+        ceres::Problem::Options problem_options;
+        problem_options.cost_function_ownership = ceres::DO_NOT_TAKE_OWNERSHIP;
+        problem_options.loss_function_ownership = ceres::DO_NOT_TAKE_OWNERSHIP;
+        problem_options.manifold_ownership = ceres::DO_NOT_TAKE_OWNERSHIP;
+        ceres::Problem problem(problem_options);
+        double inv_depth = lms_[0].inv_depth;
+        problem.AddParameterBlock(pose_i_, 6, &manifold);
+        problem.AddParameterBlock(pose_j_, 6, &manifold);
+        problem.AddParameterBlock(&delay, 1);
+        problem.AddParameterBlock(&inv_depth, 1);
+        const auto residual_id =
+            problem.AddResidualBlock(factor.get(), &loss, pose_i_, pose_j_, &delay, &inv_depth);
+
+        double ceres_residual[2];
+        double ceres_J0[12], ceres_J1[12], ceres_J2[2], ceres_J3[2];
+        double* ceres_jacobians[] = {ceres_J0, ceres_J1, ceres_J2, ceres_J3};
+        double cost = 0.0;
+        ASSERT_TRUE(problem.EvaluateResidualBlock(
+            residual_id, true, &cost, ceres_residual, ceres_jacobians));
+
+        double raw_residual[2];
+        double raw_J0[12], raw_J1[12], raw_J2[2], raw_J3[2];
+        double* raw_jacobians[] = {raw_J0, raw_J1, raw_J2, raw_J3};
+        const double* parameters[] = {pose_i_, pose_j_, &delay, &inv_depth};
+        factor->Evaluate(parameters, raw_residual, raw_jacobians);
+
+        double plus_i_data[36], plus_j_data[36];
+        manifold.PlusJacobian(pose_i_, plus_i_data);
+        manifold.PlusJacobian(pose_j_, plus_j_data);
+        Eigen::Map<const Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> raw_pose_i(raw_J0);
+        Eigen::Map<const Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> raw_pose_j(raw_J1);
+        Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus_i(plus_i_data);
+        Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus_j(plus_j_data);
+        Eigen::Matrix<double, 2, 6, Eigen::RowMajor> expected_J0 = raw_pose_i * plus_i;
+        Eigen::Matrix<double, 2, 6, Eigen::RowMajor> expected_J1 = raw_pose_j * plus_j;
+
+        double rho[3];
+        const Eigen::Map<const Eigen::Vector2d> raw_r(raw_residual);
+        loss.Evaluate(raw_r.squaredNorm(), rho);
+        const double scale = std::sqrt(rho[1]);
+        expected_J0 *= scale;
+        expected_J1 *= scale;
+        Eigen::Map<Eigen::Vector2d>(raw_J2) *= scale;
+        Eigen::Map<Eigen::Vector2d>(raw_J3) *= scale;
+        const Eigen::Vector2d expected_residual = scale * raw_r;
+
+        Eigen::Map<const Eigen::Vector2d> actual_residual(ceres_residual);
+        Eigen::Map<const Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> actual_J0(ceres_J0);
+        Eigen::Map<const Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> actual_J1(ceres_J1);
+        EXPECT_TRUE(actual_residual.isApprox(expected_residual, 1e-12));
+        EXPECT_TRUE(actual_J0.isApprox(expected_J0, 1e-12));
+        EXPECT_TRUE(actual_J1.isApprox(expected_J1, 1e-12));
+        EXPECT_TRUE(Eigen::Map<const Eigen::Vector2d>(ceres_J2).isApprox(
+            Eigen::Map<const Eigen::Vector2d>(raw_J2), 1e-12));
+        EXPECT_TRUE(Eigen::Map<const Eigen::Vector2d>(ceres_J3).isApprox(
+            Eigen::Map<const Eigen::Vector2d>(raw_J3), 1e-12));
+    }
 }
 
 // =============================================================================

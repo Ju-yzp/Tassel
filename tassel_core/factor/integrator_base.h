@@ -3,6 +3,7 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <cmath>
 #include <sophus/so3.hpp>
 #include <utility>
 #include <vector>
@@ -20,13 +21,31 @@ public:
         reset(ba_lin, bg_lin, init_noise);
     }
 
-    void propagate(const tassel_utils::IMUMeasurement& measurement) {
+    bool propagate(const tassel_utils::IMUMeasurement& measurement) {
+        if (!std::isfinite(measurement.timestamp) || !measurement.acc.allFinite() ||
+            !measurement.gyro.allFinite()) {
+            return false;
+        }
+        if (!buffer.empty() && measurement.timestamp <= buffer.back().timestamp) {
+            return false;
+        }
         buffer.push_back(measurement);
         if (buffer.size() > 1) {
             const auto& prev = buffer[buffer.size() - 2];
             const auto& cur = buffer[buffer.size() - 1];
             static_cast<Derived*>(this)->integrate(prev, cur);
         }
+        return true;
+    }
+
+    void setFrameInterval(tassel_utils::FrameId start, tassel_utils::FrameId end) {
+        start_frame_id = start;
+        end_frame_id = end;
+    }
+
+    void clearFrameInterval() {
+        start_frame_id = tassel_utils::kInvalidFrameId;
+        end_frame_id = tassel_utils::kInvalidFrameId;
     }
 
     void reset(
@@ -52,7 +71,8 @@ public:
         reset(ba_lin, bg_lin, init_noise);
 
         for (auto& measurement : tmp_buffer) {
-            propagate(measurement);
+            const bool accepted = propagate(measurement);
+            (void)accepted;
         }
     }
 
@@ -67,6 +87,9 @@ public:
     inline Eigen::Matrix3d get_dv_dba() const { return jacobian.template block<3, 3>(6, 9); }
 
     std::vector<tassel_utils::IMUMeasurement> buffer;
+
+    tassel_utils::FrameId start_frame_id = tassel_utils::kInvalidFrameId;
+    tassel_utils::FrameId end_frame_id = tassel_utils::kInvalidFrameId;
 
     double sum_dt;
 

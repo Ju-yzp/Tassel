@@ -18,15 +18,19 @@ add_subdirectory(tassel_utils)
 add_subdirectory(tassel_core)
 add_subdirectory(tassel_tools)
 
+install(FILES tassel_tools/__init__.py
+        DESTINATION lib/${PROJECT_NAME}/tassel_tools)
+
 install(
-  DIRECTORY tassel_foxglove/
-  DESTINATION lib/${PROJECT_NAME}/tassel_foxglove
+  DIRECTORY tassel_tools/viewer/
+  DESTINATION lib/${PROJECT_NAME}/tassel_tools/viewer
   FILES_MATCHING
   PATTERN "*.py"
-  PATTERN "*.yaml")
+  PATTERN "__pycache__" EXCLUDE)
 
 install(
   DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
   FILES_MATCHING
-  PATTERN "*.yaml")
+  PATTERN "*.yaml"
+  PATTERN "*.json")

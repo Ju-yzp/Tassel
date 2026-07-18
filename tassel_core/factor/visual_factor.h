@@ -32,7 +32,7 @@ public:
         const Eigen::Vector3d& a_i_, const Eigen::Vector3d& a_j_, const double* v_i_,
         const double* v_j_, const double* bg_i_lin_, const double* bg_j_lin_,
         const double* ba_i_lin_, const double* ba_j_lin_, const Eigen::Matrix2d& sqrt_info_,
-        const CameraBase* camera_);
+        const CameraBase* camera_, double applied_delay_i_ = 0.0, double applied_delay_j_ = 0.0);
 
     bool Evaluate(
         double const* const* parameters, double* residuals, double** jacobians) const override;
@@ -44,11 +44,12 @@ private:
     Eigen::Vector3d tic;
     Eigen::Vector3d w_i, w_j;
     Eigen::Vector3d a_i, a_j;
-    const double *v_i, *v_j;
-    const double *bg_i_lin, *bg_j_lin;
-    const double *ba_i_lin, *ba_j_lin;
+    Eigen::Vector3d v_i, v_j;
+    Eigen::Vector3d bg_i, bg_j;
+    Eigen::Vector3d ba_i, ba_j;
     Eigen::Matrix2d sqrt_info;
     const CameraBase* camera;
+    double applied_delay_i, applied_delay_j;
 };
 
 }  // namespace tassel_core
