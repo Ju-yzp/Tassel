@@ -12,16 +12,17 @@ namespace tassel_core {
 
 class MargHelper {
 public:
-    // 在当前状态的右扰动切空间中重新线性化已有平方根先验。
-    static MargLinData rebasePrior(
+    // 将固定先验传输到当前状态的右扰动切空间，不重新线性化原始因子。
+    static MargLinData transportPriorToCurrentTangent(
         const MargLinData& prior, const std::vector<std::array<double, 6>>& poses,
         const std::vector<std::array<double, 9>>& speed_bias, double delay_time);
 
-    // Householder QR 压缩 sqrt 形式 [Q2Jp | Q2r] → 新 sqrt 先验
-    // 列布局: [marg (丢弃) | keep (保留)]
-    static void marginalizeSqrtToSqrt(
-        size_t marg_size, size_t keep_size, Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r,
-        Eigen::MatrixXd& marg_sqrt_H, Eigen::VectorXd& marg_sqrt_b);
+    // 使用秩揭示 Householder QR 消去平方根系统前部的参数列。
+    // 列顺序为 [待消元参数 | 保留参数]。
+    static void eliminateSquareRootSystem(
+        size_t eliminated_size, size_t retained_size, Eigen::MatrixXd& jacobian,
+        Eigen::VectorXd& residual, Eigen::MatrixXd& prior_jacobian,
+        Eigen::VectorXd& prior_residual);
 };
 
 }  // namespace tassel_core

@@ -1,24 +1,24 @@
-// eigen
+// Eigen
 #include <Eigen/Core>
 #include <Eigen/SVD>
 
-// cpp
+// 标准库
 #include <cmath>
 #include <set>
 #include <stdexcept>
 #include <vector>
 
-// opencv
+// OpenCV
 #include <opencv2/calib3d.hpp>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/core/types.hpp>
 
-// tassel
+// Tassel
 #include "cam/camera_base.h"
-#include "factor/visual_factor.h"
 #include "feature.h"
 #include "feature_manager.h"
 #include "initial/initial_sfm.h"
+#include "reprojection.h"
 #include "state/state.h"
 
 #include <spdlog/spdlog.h>
@@ -36,6 +36,27 @@ inline bool canUseFeature(const Feature& feature, int tracked_times_thres) {
     const int observation_count = static_cast<int>(feature.observations.size());
     return feature.estimated_depth != INVALID_DEPTH && observation_count >= 2 &&
            (feature.has_been_marginalized || observation_count >= tracked_times_thres);
+}
+
+bool computeReprojectionError(
+    const FrameState& host, const FrameState& target, const FeaturePerFrame& host_observation,
+    const FeaturePerFrame& target_observation, double depth, double delay_time,
+    const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, const CameraBase& camera,
+    double& error) {
+    Eigen::Vector3d point_c;
+    if (!reprojectToTargetCamera(
+            host, target, host_observation.uv, depth, host_observation.sync_delay,
+            target_observation.sync_delay, delay_time, ric, tic, point_c)) {
+        return false;
+    }
+
+    const Eigen::Vector2d predicted = camera.distort(point_c.head<2>() / point_c.z());
+    const Eigen::Vector2d measured(target_observation.pt.x, target_observation.pt.y);
+    if (!predicted.allFinite() || !measured.allFinite()) {
+        return false;
+    }
+    error = (predicted - measured).norm();
+    return std::isfinite(error);
 }
 }  // namespace
 
@@ -57,36 +78,52 @@ FeatureManager::FeatureManager(
     features_.reserve(1000);
 }
 
+void FeatureManager::logInputStats(bool is_keyframe) const {
+    const double new_feature_ratio = last_input_stats_.input_count > 0
+                                         ? static_cast<double>(last_input_stats_.created_count) /
+                                               static_cast<double>(last_input_stats_.input_count)
+                                         : 1.0;
+    spdlog::info(
+        "Frame features: input={} matched={} new={} new_ratio={:.3f} kf_connected={} "
+        "kf_current_ratio={:.3f} kf_retention={:.3f} parallax={:.3f} keyframe={}",
+        last_input_stats_.input_count, last_input_stats_.matched_count,
+        last_input_stats_.created_count, new_feature_ratio,
+        last_input_stats_.connected_to_keyframe_count,
+        last_input_stats_.current_keyframe_connection_ratio,
+        last_input_stats_.keyframe_feature_retention_ratio, last_input_stats_.average_parallax,
+        is_keyframe);
+}
+
 bool FeatureManager::checkParallax(
-    tassel_utils::FrameId frame_id, const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
+    int frame_slot, const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
     double keyframe_parallax_sum = 0.0;
     size_t keyframe_parallax_count = 0;
     last_input_stats_ = {};
     last_input_stats_.input_count = feature_frame.size();
 
     for (const auto& [id, per_frame_feature] : feature_frame) {
-        if (latest_keyframe_feature_ids_.count(id) > 0) {
+        const auto keyframe_feature = latest_keyframe_features_.find(id);
+        if (keyframe_feature != latest_keyframe_features_.end()) {
             ++last_input_stats_.connected_to_keyframe_count;
         }
         FeaturePerFrame observation = per_frame_feature;
-        observation.frame_id = frame_id;
         auto it = features_.find(id);
         if (it != features_.end()) {
+            const int expected_slot =
+                it->second.start_slot + static_cast<int>(it->second.observations.size());
+            if (expected_slot != frame_slot) {
+                throw std::logic_error("Feature observation is not continuous");
+            }
             ++last_input_stats_.matched_count;
-            if (latest_keyframe_feature_ids_.count(id) > 0) {
-                const auto keyframe_observation = std::find_if(
-                    it->second.observations.begin(), it->second.observations.end(),
-                    [&](const auto& obs) { return obs.frame_id == latest_keyframe_id_; });
-                if (keyframe_observation != it->second.observations.end()) {
-                    keyframe_parallax_sum +=
-                        computeParallax(keyframe_observation->pt, per_frame_feature.pt);
-                    ++keyframe_parallax_count;
-                }
+            if (keyframe_feature != latest_keyframe_features_.end()) {
+                keyframe_parallax_sum +=
+                    computeParallax(keyframe_feature->second, per_frame_feature.pt);
+                ++keyframe_parallax_count;
             }
             it->second.observations.emplace_back(std::move(observation));
         } else {
             ++last_input_stats_.created_count;
-            Feature feature(frame_id, 15);
+            Feature feature(frame_slot, 15);
             feature.observations.emplace_back(std::move(observation));
             features_.emplace(id, std::move(feature));
         }
@@ -101,10 +138,10 @@ bool FeatureManager::checkParallax(
             static_cast<double>(last_input_stats_.connected_to_keyframe_count) /
             static_cast<double>(last_input_stats_.input_count);
     }
-    if (!latest_keyframe_feature_ids_.empty()) {
+    if (!latest_keyframe_features_.empty()) {
         last_input_stats_.keyframe_feature_retention_ratio =
             static_cast<double>(last_input_stats_.connected_to_keyframe_count) /
-            static_cast<double>(latest_keyframe_feature_ids_.size());
+            static_cast<double>(latest_keyframe_features_.size());
     }
 
     return !hasLatestKeyframe() ||
@@ -112,22 +149,11 @@ bool FeatureManager::checkParallax(
            last_input_stats_.average_parallax > parallax_thres_;
 }
 
-void FeatureManager::acceptKeyframe(
-    tassel_utils::FrameId frame_id, const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
-    latest_keyframe_id_ = frame_id;
-    keyframe_ids_.insert(frame_id);
-    latest_keyframe_feature_ids_.clear();
-    latest_keyframe_feature_ids_.reserve(feature_frame.size());
-    for (const auto& [feature_id, _] : feature_frame) {
-        latest_keyframe_feature_ids_.insert(feature_id);
-    }
-}
-
-void FeatureManager::retireKeyframe(tassel_utils::FrameId frame_id) {
-    keyframe_ids_.erase(frame_id);
-    if (latest_keyframe_id_ == frame_id) {
-        latest_keyframe_id_ = tassel_utils::kInvalidFrameId;
-        latest_keyframe_feature_ids_.clear();
+void FeatureManager::acceptKeyframe(const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
+    latest_keyframe_features_.clear();
+    latest_keyframe_features_.reserve(feature_frame.size());
+    for (const auto& [feature_id, observation] : feature_frame) {
+        latest_keyframe_features_.emplace(feature_id, observation.pt);
     }
 }
 
@@ -138,24 +164,25 @@ void FeatureManager::triangulate(
     }
 }
 
-void FeatureManager::removeOldest(
+void FeatureManager::removeOldestFrameObservations(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
-    if (state.cur_frame_count > 0) {
-        removeFrame(state.frame_ids[0], state, ric, tic);
+    if (state.newest_slot > 0) {
+        removeFrameObservations(0, state, ric, tic);
     }
 }
 
-void FeatureManager::removeFrame(
-    tassel_utils::FrameId removed_frame_id, const State& state, const Eigen::Matrix3d& ric,
-    const Eigen::Vector3d& tic) {
-    if (state.cur_frame_count > 0) {
-        retireKeyframe(removed_frame_id);
+void FeatureManager::removeFrameObservations(
+    int removed_slot, const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
+    if (state.newest_slot > 0) {
         std::erase_if(features_, [&](const auto& item) {
-            return item.second.host_frame_id == removed_frame_id &&
-                   item.second.observations.size() == 1;
+            return item.second.start_slot == removed_slot && item.second.observations.size() == 1;
         });
         for (auto& item : features_) {
-            item.second.removeFrame(removed_frame_id, state, ric, tic);
+            Feature& feature = item.second;
+            feature.removeFrame(removed_slot, state, ric, tic);
+            if (feature.start_slot > removed_slot) {
+                --feature.start_slot;
+            }
         }
 
         std::erase_if(
@@ -163,39 +190,52 @@ void FeatureManager::removeFrame(
     }
 }
 
-void FeatureManager::replaceHost(
-    tassel_utils::FrameId old_host_frame_id, tassel_utils::FrameId new_host_frame_id,
-    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
+void FeatureManager::replaceRetainedHost(
+    int old_host_slot, int new_host_slot, const State& state, const Eigen::Matrix3d& ric,
+    const Eigen::Vector3d& tic) {
     std::erase_if(features_, [&](auto& item) {
         Feature& feature = item.second;
-        if (feature.host_frame_id != old_host_frame_id) return false;
-        if (!feature.transferHost(new_host_frame_id, state, ric, tic)) return true;
-        feature.removeFrameObservation(old_host_frame_id);
+        if (feature.start_slot != old_host_slot) {
+            return false;
+        }
+        if (!feature.transferHost(new_host_slot, state, ric, tic)) {
+            return true;
+        }
+        feature.observations.erase(feature.observations.begin() + 1);
+        feature.start_slot = 0;
         return feature.observations.size() < 2;
     });
 
     for (auto& [_, feature] : features_) {
-        if (feature.host_frame_id != old_host_frame_id) {
-            feature.removeFrameObservation(old_host_frame_id);
+        if (feature.start_slot > old_host_slot) {
+            --feature.start_slot;
         }
     }
     std::erase_if(features_, [](const auto& item) { return item.second.observations.empty(); });
 }
 
-void FeatureManager::removeNewest(tassel_utils::FrameId frame_id) {
-    retireKeyframe(frame_id);
+void FeatureManager::removeNewestFrameObservations(int frame_slot) {
     for (auto& item : features_) {
-        item.second.removeFrameObservation(frame_id);
+        item.second.removeFrameObservation(frame_slot);
     }
 
     std::erase_if(features_, [&](const auto& item) { return item.second.observations.empty(); });
 }
 
-OutlierStats FeatureManager::removeOutliers(
+void FeatureManager::removeOutliers(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
-    OutlierStats stats;
+    struct OutlierStats {
+        size_t checked_count = 0;
+        size_t removed_count = 0;
+        size_t invalid_count = 0;
+        double average_error = 0.0;
+        double maximum_error = 0.0;
+        double removed_average_error = 0.0;
+    } stats;
+    size_t finite_error_count = 0;
+    size_t finite_removed_error_count = 0;
     if (!state.camera) {
-        return stats;
+        return;
     }
 
     std::set<int> removed_ids;
@@ -206,80 +246,88 @@ OutlierStats FeatureManager::removeOutliers(
             continue;
         }
 
-        const int host_slot = state.findFrameSlot(feature.host_frame_id);
-        if (host_slot < 0) continue;
+        const int host_slot = feature.start_slot;
+        if (host_slot < 0 || host_slot > state.newest_slot) {
+            removed_ids.insert(id);
+            ++stats.checked_count;
+            ++stats.invalid_count;
+            continue;
+        }
 
         double error_sum = 0.0;
         size_t valid_observation_count = 0;
+        bool invalid_projection = false;
         for (size_t k = 1; k < observations.size(); ++k) {
-            const int target_slot = state.findFrameSlot(observations[k].frame_id);
-            if (target_slot < 0) continue;
-            Eigen::Vector2d pt_meas(observations[k].pt.x, observations[k].pt.y);
-            VisualFactor factor(
-                observations[0].uv, pt_meas, ric, tic, state.gyro_vec[host_slot],
-                state.gyro_vec[target_slot], state.acc_vec[host_slot], state.acc_vec[target_slot],
-                state.params_speed_bias[host_slot].data(),
-                state.params_speed_bias[target_slot].data(),
-                state.params_speed_bias[host_slot].data() + 6,
-                state.params_speed_bias[target_slot].data() + 6,
-                state.params_speed_bias[host_slot].data() + 3,
-                state.params_speed_bias[target_slot].data() + 3, Eigen::Matrix2d::Identity(),
-                state.camera, observations[0].applied_delay, observations[k].applied_delay);
-            const double inv_depth = 1.0 / depth;
-            const double* parameters[] = {
-                state.params_pose[host_slot].data(), state.params_pose[target_slot].data(),
-                &state.param_delay_time, &inv_depth};
-            Eigen::Vector2d residual;
-            factor.Evaluate(parameters, residual.data(), nullptr);
-            error_sum += residual.norm();
+            const int target_slot = feature.observationSlot(k);
+            if (target_slot < 0 || target_slot > state.newest_slot) {
+                invalid_projection = true;
+                break;
+            }
+            double reprojection_error = 0.0;
+            if (!computeReprojectionError(
+                    state.frames[host_slot], state.frames[target_slot], observations[0],
+                    observations[k], depth, state.delay_time, ric, tic, *state.camera,
+                    reprojection_error)) {
+                invalid_projection = true;
+                break;
+            }
+            error_sum += reprojection_error;
             ++valid_observation_count;
         }
 
-        if (valid_observation_count == 0) continue;
-        double average_error = error_sum / static_cast<double>(valid_observation_count);
         ++stats.checked_count;
+        if (invalid_projection || valid_observation_count == 0) {
+            removed_ids.insert(id);
+            ++stats.invalid_count;
+            continue;
+        }
+        double average_error = error_sum / static_cast<double>(valid_observation_count);
+        ++finite_error_count;
         stats.average_error += average_error;
         stats.maximum_error = std::max(stats.maximum_error, average_error);
         if (average_error > reproj_err_thres_) {
             removed_ids.insert(id);
             stats.removed_average_error += average_error;
+            ++finite_removed_error_count;
         }
     }
 
     std::erase_if(features_, [&](const auto& item) { return removed_ids.count(item.first) > 0; });
     stats.removed_count = removed_ids.size();
-    if (stats.checked_count > 0) {
-        stats.average_error /= static_cast<double>(stats.checked_count);
+    if (finite_error_count > 0) {
+        stats.average_error /= static_cast<double>(finite_error_count);
     }
-    if (stats.removed_count > 0) {
-        stats.removed_average_error /= static_cast<double>(stats.removed_count);
+    if (finite_removed_error_count > 0) {
+        stats.removed_average_error /= static_cast<double>(finite_removed_error_count);
     }
-    return stats;
+    spdlog::info(
+        "Feature outliers: checked={} removed={} invalid={} mean={:.3f}px max={:.3f}px "
+        "removed_mean={:.3f}px",
+        stats.checked_count, stats.removed_count, stats.invalid_count, stats.average_error,
+        stats.maximum_error, stats.removed_average_error);
 }
 
 void FeatureManager::reset() {
     features_.clear();
-    latest_keyframe_id_ = tassel_utils::kInvalidFrameId;
-    keyframe_ids_.clear();
-    latest_keyframe_feature_ids_.clear();
+    latest_keyframe_features_.clear();
     last_input_stats_ = {};
 }
 
 std::vector<MarginalizedFeatureObservation> FeatureManager::collectMarginalizedObservations(
-    tassel_utils::FrameId host_frame_id, tassel_utils::FrameId target_frame_id) {
+    int host_slot, int target_slot) {
     std::vector<MarginalizedFeatureObservation> result;
     for (auto& item : features_) {
         auto& feature = item.second;
-        if (feature.host_frame_id != host_frame_id ||
-            !canUseFeature(feature, tracked_times_thres_)) {
+        if (feature.start_slot != host_slot || !canUseFeature(feature, tracked_times_thres_)) {
             continue;
         }
-        const auto target = std::find_if(
-            feature.observations.begin(), feature.observations.end(),
-            [&](const auto& observation) { return observation.frame_id == target_frame_id; });
-        if (target == feature.observations.end()) continue;
+        const int observation_index = target_slot - feature.start_slot;
+        if (observation_index <= 0 ||
+            observation_index >= static_cast<int>(feature.observations.size())) {
+            continue;
+        }
         feature.has_been_marginalized = true;
-        result.push_back({&feature, target_frame_id});
+        result.push_back({&feature, target_slot});
     }
     return result;
 }
@@ -293,11 +341,13 @@ std::vector<Eigen::Vector3d> FeatureManager::getPointCloud(
         if (feature.estimated_depth <= 0) {
             continue;
         }
-        const int host_slot = cs.findFrameSlot(feature.host_frame_id);
-        if (host_slot < 0) continue;
+        const int host_slot = feature.start_slot;
+        if (host_slot < 0 || host_slot > cs.newest_slot) {
+            continue;
+        }
         Eigen::Vector3d pt_in_C = feature.observations[0].uv * feature.estimated_depth;
         Eigen::Vector3d pt_in_I = ric * pt_in_C + tic;
-        Eigen::Vector3d pt_in_W = cs.Rs[host_slot] * pt_in_I + cs.Ps[host_slot];
+        Eigen::Vector3d pt_in_W = cs.frames[host_slot].R * pt_in_I + cs.frames[host_slot].P;
         points.push_back(pt_in_W);
     }
     return points;
@@ -325,9 +375,13 @@ std::vector<SFMFeature> FeatureManager::collectSFMFeatures(const State& state) c
         sfm_f.position[0] = 0;
         sfm_f.position[1] = 0;
         sfm_f.position[2] = 0;
-        for (const auto& observation : feature.observations) {
-            const int frame_slot = state.findFrameSlot(observation.frame_id);
-            if (frame_slot < 0) continue;
+        for (size_t observation_index = 0; observation_index < feature.observations.size();
+             ++observation_index) {
+            const auto& observation = feature.observations[observation_index];
+            const int frame_slot = feature.observationSlot(observation_index);
+            if (frame_slot > state.newest_slot) {
+                continue;
+            }
             Eigen::Vector2d uv_norm(observation.uv(0), observation.uv(1));
             sfm_f.observation.emplace_back(frame_slot, uv_norm);
         }

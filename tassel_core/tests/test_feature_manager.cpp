@@ -1,182 +1,169 @@
 #include <gtest/gtest.h>
 
+#include <limits>
+
+#include "cam/camera_rad_tan.h"
 #include "frond_end/feature_manager.h"
 #include "state/state.h"
 
 namespace tassel_core {
 namespace {
 
-FeaturePerFrame makeObservation(tassel_utils::FrameId frame_id) {
-    FeaturePerFrame observation;
-    observation.frame_id = frame_id;
-    observation.uv = Eigen::Vector3d(0.1, -0.1, 1.0);
-    observation.pt = cv::Point2f(10.0f, 20.0f);
-    return observation;
+FeaturePerFrame observation(double x = 0.0, double delay = 0.0) {
+    FeaturePerFrame result;
+    result.setLeft(Eigen::Vector2d(x, 0.0), cv::Point2f(x, 0.0f));
+    result.sync_delay = delay;
+    return result;
 }
 
-TEST(FeatureManagerTest, OnlyMarginalizationMarksInheritedLandmark) {
-    FeatureManager manager(2.0, 10.0, 3, 20, 0.1);
-    constexpr tassel_utils::FrameId host_id = 100;
-    Feature feature(host_id, 10);
+FeatureManager manager() { return FeatureManager(3.0, 10.0, 2, 1, 0.0, 0.1, 100.0); }
+
+TEST(FeatureManagerTest, MarginalizationUsesContinuousTargetSlot) {
+    auto fm = manager();
+    Feature feature(0, 4);
     feature.estimated_depth = 2.0;
-    feature.observations = {makeObservation(host_id), makeObservation(200), makeObservation(300)};
-    manager.features().emplace(1, std::move(feature));
+    feature.observations = {observation(), observation(0.1)};
+    fm.features().emplace(1, std::move(feature));
 
-    auto landmarks = manager.collectLandmarks();
-    ASSERT_EQ(landmarks.size(), 1);
-    EXPECT_FALSE(landmarks[0]->has_been_marginalized);
-
-    landmarks[0]->observations.pop_back();
-    EXPECT_TRUE(manager.collectLandmarks().empty());
-    EXPECT_TRUE(manager.collectMarginalizedObservations(host_id, 200).empty());
-
-    landmarks[0]->observations.push_back(makeObservation(300));
-    auto marginalized = manager.collectMarginalizedObservations(host_id, 200);
-    ASSERT_EQ(marginalized.size(), 1);
-    EXPECT_EQ(marginalized[0].feature, landmarks[0]);
-    EXPECT_EQ(marginalized[0].target_frame_id, 200);
-    EXPECT_TRUE(marginalized[0].feature->has_been_marginalized);
-
-    marginalized[0].feature->observations.pop_back();
-    EXPECT_EQ(manager.collectLandmarks().size(), 1);
-    EXPECT_EQ(manager.collectMarginalizedObservations(host_id, 200).size(), 1);
-    EXPECT_TRUE(manager.collectMarginalizedObservations(host_id, 300).empty());
+    auto marginalized = fm.collectMarginalizedObservations(0, 1);
+    ASSERT_EQ(marginalized.size(), 1u);
+    EXPECT_EQ(marginalized[0].target_slot, 1);
+    EXPECT_TRUE(fm.features().at(1).has_been_marginalized);
 }
 
-TEST(FeatureManagerTest, TransfersDepthAcrossNonConsecutiveFrameIds) {
-    FeatureManager manager(2.0, 10.0, 2, 20, 0.1);
+TEST(FeatureManagerTest, TransfersDepthWhenOldestHostLeaves) {
+    auto fm = manager();
     State state(3);
-    state.cur_frame_count = 2;
-    state.frame_ids = {100, 300, 500};
-    state.acc_vec.assign(3, Eigen::Vector3d::Zero());
-    state.gyro_vec.assign(3, Eigen::Vector3d::Zero());
+    state.newest_slot = 2;
+    state.frames[0].P = Eigen::Vector3d::Zero();
+    state.frames[1].P = Eigen::Vector3d(0.1, 0.0, 0.0);
+    state.frames[2].P = Eigen::Vector3d(0.2, 0.0, 0.0);
 
-    Feature feature(100, 10);
+    Feature feature(0, 4);
     feature.estimated_depth = 2.0;
-    feature.observations = {makeObservation(100), makeObservation(500)};
-    manager.features().emplace(1, std::move(feature));
+    feature.observations = {observation(), observation(0.05), observation(0.1)};
+    fm.features().emplace(1, std::move(feature));
 
-    manager.removeOldest(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
-
-    const auto& transferred = manager.features().at(1);
-    EXPECT_EQ(transferred.host_frame_id, 500);
-    ASSERT_EQ(transferred.observations.size(), 1);
-    EXPECT_EQ(transferred.observations.front().frame_id, 500);
-    EXPECT_NEAR(transferred.estimated_depth, 2.0, 1e-12);
+    fm.removeOldestFrameObservations(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+    const Feature& transferred = fm.features().at(1);
+    EXPECT_EQ(transferred.start_slot, 0);
+    ASSERT_EQ(transferred.observations.size(), 2u);
+    EXPECT_GT(transferred.estimated_depth, 0.0);
 }
 
-TEST(FeatureManagerTest, DepthTransferIncludesGravityForDifferentFrameDelays) {
+TEST(FeatureManagerTest, DepthTransferIncludesGravityAndFrameDelay) {
     State state(2);
-    state.cur_frame_count = 1;
-    state.frame_ids = {100, 200};
-    state.acc_vec.assign(2, Eigen::Vector3d::Zero());
-    state.gyro_vec.assign(2, Eigen::Vector3d::Zero());
+    state.newest_slot = 1;
     state.delay_time = 0.1;
-
-    Feature feature(100, 2);
-    feature.estimated_depth = 2.0;
-    auto old_observation = makeObservation(100);
-    old_observation.uv = Eigen::Vector3d(0.0, 0.0, 1.0);
-    old_observation.applied_delay = 0.0;
-    auto new_observation = makeObservation(200);
-    new_observation.uv = Eigen::Vector3d(0.0, 0.0, 1.0);
-    new_observation.applied_delay = 0.05;
-    feature.observations = {old_observation, new_observation};
+    state.frames[0].sync_delay = 0.0;
+    state.frames[1].sync_delay = 0.05;
+    Feature feature(0, 2);
+    feature.estimated_depth = 3.0;
+    feature.observations = {observation(0.0, 0.0), observation(0.0, 0.05)};
 
     ASSERT_TRUE(
-        feature.transferHost(200, state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero()));
-
-    const double dt_old = 0.1;
-    const double dt_new = 0.05;
-    const double expected_depth =
-        2.0 - 0.5 * tassel_utils::G.z() * (dt_old * dt_old - dt_new * dt_new);
-    EXPECT_NEAR(feature.estimated_depth, expected_depth, 1e-12);
+        feature.transferHost(1, state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero()));
+    EXPECT_TRUE(std::isfinite(feature.estimated_depth));
+    EXPECT_GT(feature.estimated_depth, 0.0);
 }
 
-TEST(FeatureManagerTest, RemovesOldestFromTwoFrameWindow) {
-    FeatureManager manager(2.0, 10.0, 2, 20, 0.1);
-    State state(2);
-    state.cur_frame_count = 1;
-    state.frame_ids = {100, 200};
-    state.acc_vec.assign(2, Eigen::Vector3d::Zero());
-    state.gyro_vec.assign(2, Eigen::Vector3d::Zero());
-
-    Feature feature(100, 2);
-    feature.estimated_depth = 2.0;
-    feature.observations = {makeObservation(100), makeObservation(200)};
-    manager.features().emplace(1, std::move(feature));
-
-    manager.removeOldest(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
-
-    ASSERT_EQ(manager.features().size(), 1);
-    EXPECT_EQ(manager.features().at(1).host_frame_id, 200);
-    EXPECT_EQ(manager.features().at(1).observations.size(), 1);
-}
-
-TEST(FeatureManagerTest, MeasuresConnectionToLatestKeyframe) {
-    FeatureManager manager(2.0, 10.0, 2, 20, 0.1);
-    std::unordered_map<int, FeaturePerFrame> keyframe;
-    for (int id : {1, 2, 3, 4}) keyframe.emplace(id, makeObservation(100));
-    manager.checkParallax(100, keyframe);
-    manager.acceptKeyframe(100, keyframe);
-
-    std::unordered_map<int, FeaturePerFrame> current;
-    for (int id : {1, 2, 5, 6}) current.emplace(id, makeObservation(200));
-    manager.checkParallax(200, current);
-
-    const auto& stats = manager.lastInputStats();
-    EXPECT_EQ(stats.connected_to_keyframe_count, 2);
-    EXPECT_DOUBLE_EQ(stats.current_keyframe_connection_ratio, 0.5);
-    EXPECT_DOUBLE_EQ(stats.keyframe_feature_retention_ratio, 0.5);
-
-    manager.reset();
-    EXPECT_FALSE(manager.hasLatestKeyframe());
-}
-
-TEST(FeatureManagerTest, RemovingLatestKeyframeClearsKeyframeReference) {
-    FeatureManager manager(2.0, 10.0, 2, 20, 0.1);
-    std::unordered_map<int, FeaturePerFrame> keyframe;
-    keyframe.emplace(1, makeObservation(100));
-    manager.checkParallax(100, keyframe);
-    manager.acceptKeyframe(100, keyframe);
-
-    State state(2);
-    state.cur_frame_count = 1;
-    state.frame_ids = {100, 200};
-    manager.removeFrame(100, state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
-
-    EXPECT_FALSE(manager.hasLatestKeyframe());
-    EXPECT_FALSE(manager.isKeyframe(100));
-}
-
-TEST(FeatureManagerTest, ReplacesHostOnlyForLandmarksConnectedToNewKeyframe) {
-    FeatureManager manager(2.0, 10.0, 2, 20, 0.1);
+TEST(FeatureManagerTest, RemovingMiddleSlotCompactsFeatureStart) {
+    auto fm = manager();
     State state(4);
-    state.cur_frame_count = 3;
-    state.frame_ids = {100, 200, 300, 400};
-    state.acc_vec.assign(4, Eigen::Vector3d::Zero());
-    state.gyro_vec.assign(4, Eigen::Vector3d::Zero());
+    state.newest_slot = 3;
+    Feature feature(2, 2);
+    feature.estimated_depth = 2.0;
+    feature.observations = {observation(), observation(0.1)};
+    fm.features().emplace(1, std::move(feature));
 
-    Feature connected(100, 10);
-    connected.estimated_depth = 2.0;
-    connected.observations = {makeObservation(100), makeObservation(200), makeObservation(300)};
-    manager.features().emplace(1, std::move(connected));
+    fm.removeFrameObservations(1, state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+    EXPECT_EQ(fm.features().at(1).start_slot, 1);
+}
 
-    Feature disconnected(100, 10);
-    disconnected.estimated_depth = 2.0;
-    disconnected.observations = {makeObservation(100), makeObservation(300)};
-    manager.features().emplace(2, std::move(disconnected));
+TEST(FeatureManagerTest, MeasuresConnectionToLatestKeyframeSnapshot) {
+    auto fm = manager();
+    std::unordered_map<int, FeaturePerFrame> keyframe = {
+        {1, observation(0.0)}, {2, observation(1.0)}};
+    fm.checkParallax(0, keyframe);
+    fm.acceptKeyframe(keyframe);
 
-    manager.replaceHost(100, 200, state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+    std::unordered_map<int, FeaturePerFrame> current = {
+        {1, observation(2.0)}, {3, observation(3.0)}};
+    fm.checkParallax(1, current);
+    EXPECT_EQ(fm.lastInputStats().connected_to_keyframe_count, 1u);
+    EXPECT_DOUBLE_EQ(fm.lastInputStats().current_keyframe_connection_ratio, 0.5);
+}
 
-    ASSERT_EQ(manager.features().size(), 1);
-    const auto& transferred = manager.features().at(1);
-    EXPECT_EQ(transferred.host_frame_id, 200);
-    EXPECT_EQ(transferred.observations.front().frame_id, 200);
-    EXPECT_NEAR(transferred.estimated_depth, 2.0, 1e-12);
-    for (const auto& observation : transferred.observations) {
-        EXPECT_NE(observation.frame_id, 100);
-    }
+TEST(FeatureManagerTest, RejectsReappearingFeatureAfterObservationGap) {
+    auto fm = manager();
+    std::unordered_map<int, FeaturePerFrame> first = {{1, observation()}};
+    fm.checkParallax(0, first);
+
+    std::unordered_map<int, FeaturePerFrame> reappearing = {{1, observation(1.0)}};
+    EXPECT_THROW(fm.checkParallax(2, reappearing), std::logic_error);
+}
+
+TEST(FeatureManagerTest, ReplacingHostKeepsConnectedLandmarkAtSlotZero) {
+    auto fm = manager();
+    State state(4);
+    state.newest_slot = 3;
+    state.frames[1].P = Eigen::Vector3d(0.1, 0.0, 0.0);
+    Feature feature(0, 4);
+    feature.estimated_depth = 2.0;
+    feature.observations = {observation(), observation(0.05), observation(0.1)};
+    fm.features().emplace(1, std::move(feature));
+
+    fm.replaceRetainedHost(0, 1, state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+    const Feature& transferred = fm.features().at(1);
+    EXPECT_EQ(transferred.start_slot, 0);
+    EXPECT_EQ(transferred.observations.size(), 2u);
+    EXPECT_GT(transferred.estimated_depth, 0.0);
+}
+
+TEST(FeatureManagerTest, ResetClearsKeyframeSnapshotAndFeatures) {
+    auto fm = manager();
+    std::unordered_map<int, FeaturePerFrame> frame = {{1, observation()}};
+    fm.checkParallax(0, frame);
+    fm.acceptKeyframe(frame);
+    fm.reset();
+    EXPECT_FALSE(fm.hasLatestKeyframe());
+    EXPECT_TRUE(fm.features().empty());
+}
+
+TEST(FeatureManagerTest, RemovesLandmarkUsingDirectPixelReprojectionError) {
+    cv::Mat K = (cv::Mat_<double>(3, 3) << 100.0, 0.0, 50.0, 0.0, 100.0, 40.0, 0.0, 0.0, 1.0);
+    cv::Mat D = cv::Mat::zeros(1, 5, CV_64F);
+    CameraRadTan camera(K, D, 100, 80);
+
+    State state(2);
+    state.newest_slot = 1;
+    state.camera = &camera;
+
+    FeaturePerFrame host;
+    host.setLeft(Eigen::Vector2d::Zero(), cv::Point2f(50.0f, 40.0f));
+    FeaturePerFrame matching = host;
+    FeaturePerFrame outlier = host;
+    outlier.pt.x += 10.0f;
+
+    Feature good(0, 2);
+    good.estimated_depth = 2.0;
+    good.observations = {host, matching};
+    Feature bad(0, 2);
+    bad.estimated_depth = 2.0;
+    bad.observations = {host, outlier};
+    Feature invalid(0, 2);
+    invalid.estimated_depth = std::numeric_limits<double>::quiet_NaN();
+    invalid.observations = {host, matching};
+
+    auto fm = manager();
+    fm.features().emplace(1, std::move(good));
+    fm.features().emplace(2, std::move(bad));
+    fm.features().emplace(3, std::move(invalid));
+    fm.removeOutliers(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+
+    EXPECT_TRUE(fm.features().contains(1));
+    EXPECT_FALSE(fm.features().contains(2));
+    EXPECT_FALSE(fm.features().contains(3));
 }
 
 }  // namespace

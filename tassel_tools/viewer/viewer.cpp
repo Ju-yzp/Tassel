@@ -8,7 +8,9 @@ Viewer::Viewer(const std::string& frame_id) : Node("viewer"), frame_id_(frame_id
 }
 
 rclcpp::Time Viewer::messageStamp(double timestamp) const {
-    if (timestamp < 0.0) return this->now();
+    if (timestamp < 0.0) {
+        return this->now();
+    }
     return rclcpp::Time(static_cast<int64_t>(timestamp * 1e9), RCL_ROS_TIME);
 }
 
@@ -225,7 +227,9 @@ void Viewer::publishPointCloud(
         RCLCPP_ERROR(this->get_logger(), "PointCloud topic %s not found!", topic.c_str());
         return;
     }
-    if (points.empty()) return;
+    if (points.empty()) {
+        return;
+    }
 
     sensor_msgs::msg::PointCloud2 cloud;
     cloud.header.stamp = messageStamp(timestamp);
@@ -300,7 +304,9 @@ void Viewer::publishVisualFactorWindow(
     constexpr int kSegmentWidth = 64;
     constexpr int kImageHeight = 72;
     constexpr double kGreenFactorCount = 200.0;
-    if (counts.empty()) return;
+    if (counts.empty()) {
+        return;
+    }
 
     cv::Mat image(kImageHeight, kSegmentWidth * static_cast<int>(counts.size()), CV_8UC3);
     for (size_t i = 0; i < counts.size(); ++i) {

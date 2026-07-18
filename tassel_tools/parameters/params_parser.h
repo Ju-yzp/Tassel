@@ -27,14 +27,13 @@ concept IsMatrixType =
 template <typename T>
 concept IsStringLike = std::convertible_to<T, std::string_view>;
 
-// ── yaml-cpp cross-version compatibility ───────────────────────────────────
+// ── yaml-cpp 跨版本兼容 ───────────────────────────────────────────────────
 
 namespace detail {
 
-// yaml-cpp 0.6+ provides IsDefined(); 0.5.x only has IsNull().
-// operator[] in 0.5.x creates a Null node for missing keys, so IsNull()
-// catches a missing path. In 0.6+ a missing key returns an undefined node
-// that is neither defined nor null — only IsDefined() catches it.
+// yaml-cpp 0.6+ 提供 IsDefined()，0.5.x 只有 IsNull()。
+// 0.5.x 的 operator[] 对缺失键创建 Null 节点，因此 IsNull() 可以捕获缺失路径。
+// 0.6+ 的缺失键返回未定义节点，既非 defined 也非 null，只能由 IsDefined() 捕获。
 template <typename, typename = void>
 inline constexpr bool kHasIsDefined = false;
 template <typename T>
@@ -51,7 +50,7 @@ inline bool node_valid(const YAML::Node& node) {
 
 }  // namespace detail
 
-// ── ParamsParser ──────────────────────────────────────────────────────────
+// ── 参数解析器 ─────────────────────────────────────────────────────────────
 
 class ParamsParser {
 public:
@@ -77,8 +76,11 @@ public:
                 if (node.size() != rows || node[0].size() != cols) {
                     throw std::runtime_error("Nested matrix dimension mismatch");
                 }
-                for (int i = 0; i < rows; ++i)
-                    for (int j = 0; j < cols; ++j) matrix(i, j) = node[i][j].template as<Scalar>();
+                for (int i = 0; i < rows; ++i) {
+                    for (int j = 0; j < cols; ++j) {
+                        matrix(i, j) = node[i][j].template as<Scalar>();
+                    }
+                }
             } else if (node.IsSequence()) {
                 auto vec = node.template as<std::vector<Scalar>>();
                 if (vec.size() != static_cast<size_t>(rows * cols)) {
@@ -94,15 +96,18 @@ public:
                 size_t rows = node.size();
                 size_t cols = node[0].size();
                 cv::Mat mat(rows, cols, CV_64F);
-                for (size_t i = 0; i < rows; ++i)
-                    for (size_t j = 0; j < cols; ++j)
+                for (size_t i = 0; i < rows; ++i) {
+                    for (size_t j = 0; j < cols; ++j) {
                         mat.at<double>(i, j) = node[i][j].template as<double>();
+                    }
+                }
                 return mat;
             } else if (node.IsSequence()) {
                 size_t rows = node.size();
                 cv::Mat mat(rows, 1, CV_64F);
-                for (size_t i = 0; i < rows; ++i)
+                for (size_t i = 0; i < rows; ++i) {
                     mat.at<double>(i, 0) = node[i].template as<double>();
+                }
                 return mat;
             } else {
                 throw std::runtime_error("Parameter is not a sequence");

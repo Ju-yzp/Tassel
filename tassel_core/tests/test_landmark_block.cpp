@@ -1,14 +1,14 @@
 // =============================================================================
 // test_landmark_block.cpp
 //
-// Purpose:
+// 目的：
 //   验证 LandmarkBlock 的存储布局、landmark 列 QR 消元和消元后稠密系统提取。
 //
-// Test design:
+// 测试设计：
 //   构造不同帧数/观测数/状态维度的随机块, 对内部 storage 执行 QR; 同时用直接
 //   稠密计算作为参考, 检查 landmark 列被消掉、范数保持和边界尺寸处理。
 //
-// Pass criteria:
+// 通过条件：
 //   分配尺寸正确, QR 后 landmark 非 pivot 行接近 0, Frobenius 范数保持, 提取出的
 //   kept system 与参考计算一致, 压力测试不触发维度错误。
 // =============================================================================
@@ -33,7 +33,7 @@ protected:
     std::mt19937 rng_;
 };
 
-// ── Allocation ───────────────────────────────────────────────────────────
+// ── 内存分配 ───────────────────────────────────────────────────────────────
 
 TEST_F(LandmarkBlockTest, AllocateSetsDimensions) {
     LandmarkBlock lb(6, nullptr);
@@ -59,7 +59,7 @@ TEST_F(LandmarkBlockTest, AllocateWithDifferentDim) {
     EXPECT_EQ(lb.get_padding_index(), 30);
 }
 
-// Verify storage size is correct
+// 验证存储尺寸正确
 TEST_F(LandmarkBlockTest, AllocateStorageSize) {
     LandmarkBlock lb(6, nullptr);
     lb.allocate(5, 2, 6);
@@ -69,7 +69,7 @@ TEST_F(LandmarkBlockTest, AllocateStorageSize) {
     EXPECT_EQ(s.cols(), lb.get_residual_index() + 1);
 }
 
-// ── QR: landmark column zeroed below row 0 ─────────────────────────────
+// ── QR：第 0 行以下的路标列置零 ───────────────────────────────────────────
 
 TEST_F(LandmarkBlockTest, QRZerosLandmarkColumn) {
     LandmarkBlock lb(6, nullptr);
@@ -85,7 +85,7 @@ TEST_F(LandmarkBlockTest, QRZerosLandmarkColumn) {
     s.col(lb.get_landmark_index()).setRandom();
     s(0, lb.get_landmark_index()) = 1.0;
 
-    lb.performQR();
+    lb.eliminateLandmark();
 
     int lm = lb.get_landmark_index();
     for (int r = 1; r < lb.get_num_rows(); ++r) {
@@ -102,7 +102,7 @@ TEST_F(LandmarkBlockTest, QRFrobeniusNormPreserved) {
     s.setRandom();
 
     double norm_before = s.norm();
-    lb.performQR();
+    lb.eliminateLandmark();
     double norm_after = s.norm();
 
     EXPECT_NEAR(norm_before, norm_after, 1e-10);
@@ -116,7 +116,7 @@ TEST_F(LandmarkBlockTest, QRZeroLandmarkColumnSkipsAllZeros) {
     s.setRandom();
     s.col(lb.get_landmark_index()).setZero();
 
-    lb.performQR();
+    lb.eliminateLandmark();
 
     for (int r = 0; r < lb.get_num_rows(); ++r) {
         EXPECT_NEAR(s(r, lb.get_landmark_index()), 0.0, kQrTol);
@@ -132,10 +132,10 @@ TEST_F(LandmarkBlockTest, ZeroLandmarkJacobianKeepsEveryPoseConstraint) {
     storage.col(lb.get_landmark_index()).setZero();
     const auto original = storage;
 
-    lb.performQR();
+    lb.eliminateLandmark();
     Eigen::MatrixXd J(lb.get_kept_rows(), lb.get_padding_index() + 1);
     Eigen::VectorXd r(lb.get_kept_rows());
-    lb.get_dense_Q2Jp_Q2r(J, r, 0);
+    lb.writeReducedSystem(J, r, 0);
 
     ASSERT_EQ(lb.get_kept_rows(), 2);
     EXPECT_TRUE(
@@ -143,7 +143,7 @@ TEST_F(LandmarkBlockTest, ZeroLandmarkJacobianKeepsEveryPoseConstraint) {
     EXPECT_TRUE(r.isApprox(original.col(lb.get_residual_index())));
 }
 
-// ── QR: single observation pair (2 rows) ───────────────────────────────
+// ── QR：单观测对（2 行） ─────────────────────────────────────────────────
 
 TEST_F(LandmarkBlockTest, QRSingleObservation) {
     LandmarkBlock lb(6, nullptr);
@@ -152,12 +152,12 @@ TEST_F(LandmarkBlockTest, QRSingleObservation) {
     auto& s = lb.get_mutable_storage();
     s.setRandom();
 
-    lb.performQR();
+    lb.eliminateLandmark();
 
     EXPECT_NEAR(s(1, lb.get_landmark_index()), 0.0, kQrTol);
 }
 
-// ── QR: verify Householder reflection on a known 2-row case ──────────
+// ── QR：验证已知 2 行案例中的 Householder 反射 ───────────────────────────
 
 TEST_F(LandmarkBlockTest, QRGivensRotationExact) {
     LandmarkBlock lb(6, nullptr);
@@ -177,17 +177,17 @@ TEST_F(LandmarkBlockTest, QRGivensRotationExact) {
     s(1, res) = 6;
 
     double norm_before = s.norm();
-    lb.performQR();
+    lb.eliminateLandmark();
 
-    // landmark column zeroed below row 0
+    // 第 0 行以下的路标列被置零
     EXPECT_NEAR(s(1, lm), 0.0, kQrTol);
     EXPECT_NE(std::abs(s(0, lm)), 0.0);
 
-    // Frobenius norm preserved (Householder is orthogonal)
+    // Frobenius 范数保持不变（Householder 矩阵是正交矩阵）
     EXPECT_NEAR(s.norm(), norm_before, 1e-12);
 }
 
-// ── QR: 3-row case, verify two Givens rotations zero both rows ─────────
+// ── QR：3 行案例，验证两次 Givens 旋转将两行置零 ─────────────────────────
 
 TEST_F(LandmarkBlockTest, QRThreeRowCase) {
     LandmarkBlock lb(6, nullptr);
@@ -202,7 +202,7 @@ TEST_F(LandmarkBlockTest, QRThreeRowCase) {
     s(2, lm) = 4;
     s(3, lm) = 7;
 
-    lb.performQR();
+    lb.eliminateLandmark();
 
     for (int r = 1; r < lb.get_num_rows(); ++r) {
         EXPECT_NEAR(s(r, lm), 0.0, kQrTol);
@@ -210,7 +210,7 @@ TEST_F(LandmarkBlockTest, QRThreeRowCase) {
     EXPECT_NE(std::abs(s(0, lm)), 0.0);
 }
 
-// ── get_dense_Q2Jp_Q2r ──────────────────────────────────────────────────
+// 提取消元后的系统
 
 TEST_F(LandmarkBlockTest, GetDenseExtractsCorrectRows) {
     LandmarkBlock lb(6, nullptr);
@@ -219,14 +219,14 @@ TEST_F(LandmarkBlockTest, GetDenseExtractsCorrectRows) {
     auto& s = lb.get_mutable_storage();
     s.setRandom();
 
-    lb.performQR();
+    lb.eliminateLandmark();
 
     int kept = lb.get_kept_rows();
     int pad = lb.get_padding_index();
 
     Eigen::MatrixXd Q2Jp(kept, pad + 1);
     Eigen::VectorXd Q2r(kept);
-    lb.get_dense_Q2Jp_Q2r(Q2Jp, Q2r, 0);
+    lb.writeReducedSystem(Q2Jp, Q2r, 0);
 
     for (int r = 0; r < kept; ++r) {
         for (int c = 0; c < pad; ++c) {
@@ -244,7 +244,7 @@ TEST_F(LandmarkBlockTest, GetDenseWithOffsetPreservesPrefix) {
     auto& s = lb.get_mutable_storage();
     s.setRandom();
 
-    lb.performQR();
+    lb.eliminateLandmark();
 
     int kept = lb.get_kept_rows();
     int pad = lb.get_padding_index();
@@ -254,7 +254,7 @@ TEST_F(LandmarkBlockTest, GetDenseWithOffsetPreservesPrefix) {
     Eigen::VectorXd Q2r(offset + kept);
     Q2Jp.setConstant(-1.0);
     Q2r.setConstant(-1.0);
-    lb.get_dense_Q2Jp_Q2r(Q2Jp, Q2r, offset);
+    lb.writeReducedSystem(Q2Jp, Q2r, offset);
 
     for (int r = 0; r < offset; ++r) {
         for (int c = 0; c < pad + 1; ++c) {
@@ -271,15 +271,15 @@ TEST_F(LandmarkBlockTest, GetDenseWithOffsetPreservesPrefix) {
     }
 }
 
-// ── QR: consistency check via linear system ────────────────────────────
+// ── QR：通过线性系统检查一致性 ───────────────────────────────────────────
 
-// After QR, rows 1..n-1 give marginalized pose constraints:
+// QR 后，第 1 到 n-1 行给出边缘化后的位姿约束：
 //   Q2^T * Jp * Δpose = Q2^T * r
-// Row 0 preserves the landmark coupling:
+// 第 0 行保留路标耦合关系：
 //   Jl' * Δlm + Jp' * Δpose = r'
 //
-// Build a consistent system (r = Jp * dx_true + Jl * dl_true), apply QR,
-// then verify the true state satisfies the marginalized constraints.
+// 构造一致系统（r = Jp * dx_true + Jl * dl_true）并执行 QR，
+// 然后验证真值状态满足边缘化约束。
 
 TEST_F(LandmarkBlockTest, MarginalizedSystemConsistency) {
     LandmarkBlock lb(6, nullptr);
@@ -290,33 +290,33 @@ TEST_F(LandmarkBlockTest, MarginalizedSystemConsistency) {
     int lm = lb.get_landmark_index();
     int res = lb.get_residual_index();
 
-    // Construct a consistent system: r = Jp * dx_true + Jl * dl_true
+    // 构造一致系统：r = Jp * dx_true + Jl * dl_true
     Eigen::VectorXd dx_true = Eigen::VectorXd::Random(pad);
     double dl_true = 2.5;
     s.setRandom();
     s.col(res) = s.block(0, 0, lb.get_num_rows(), pad) * dx_true + s.col(lm) * dl_true;
 
-    lb.performQR();
+    lb.eliminateLandmark();
 
-    // The true state must satisfy the marginalized constraints (rows 1+)
+    // 真值状态必须满足边缘化约束（第 1 行及之后）。
     for (int r = 1; r < lb.get_num_rows(); ++r) {
         double pred = (s.block(r, 0, 1, pad) * dx_true).value();
         double obs = s(r, res);
         EXPECT_NEAR(pred, obs, 1e-12) << "True state violated marginalized constraint at row " << r;
     }
 
-    // Row 0 should also be consistent with the true state
+    // 第 0 行也应与真值状态一致。
     double row0_residual =
         (s.block(0, 0, 1, pad) * dx_true).value() + s(0, lm) * dl_true - s(0, res);
     EXPECT_NEAR(row0_residual, 0.0, 1e-12);
 
-    // Verify landmark column is zeroed below row 0
+    // 验证第 0 行以下的路标列已置零。
     for (int r = 1; r < lb.get_num_rows(); ++r) {
         EXPECT_NEAR(s(r, lm), 0.0, 1e-12);
     }
 }
 
-// ── Large random stress test ─────────────────────────────────────────────
+// ── 大规模随机压力测试 ────────────────────────────────────────────────────
 
 TEST_F(LandmarkBlockTest, QRStressTest) {
     LandmarkBlock lb(6, nullptr);
@@ -332,7 +332,7 @@ TEST_F(LandmarkBlockTest, QRStressTest) {
     }
 
     double norm_before = s.norm();
-    lb.performQR();
+    lb.eliminateLandmark();
 
     int lm = lb.get_landmark_index();
     for (int r = 1; r < lb.get_num_rows(); ++r) {

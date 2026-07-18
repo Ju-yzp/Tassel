@@ -1,14 +1,14 @@
 // =============================================================================
 // test_stereo_tracking.cpp
 //
-// Purpose:
+// 目的：
 //   手动检查双目 FeatureTracker 在 OAK 左右目实时图像上的匹配和跟踪效果。
 //
-// Test design:
+// 测试设计：
 //   启动 DepthAI 左右 mono pipeline, 用左右相机各自的 RadTan 标定参数初始化 tracker,
 //   连续执行 stereoTracking 并把左右结果拼接显示。
 //
-// Pass criteria:
+// 通过条件：
 //   这是依赖硬件和显示环境的 smoke test; 左右图像能同步显示, 特征匹配/跟踪结果
 //   稳定可见, 按 Esc 可退出。
 // =============================================================================
@@ -23,19 +23,19 @@
 #include "tassel_utils/timer.h"
 
 int main() {
-    // ── cam0 (left) intrinsics ─────────────────────────────────────────────
+    // ── cam0（左目）内参 ───────────────────────────────────────────────────
     cv::Mat K0 =
         (cv::Mat_<double>(3, 3) << 455.510864, 0.000000, 328.529851, 0.000000, 455.426715,
          225.596721, 0.0, 0.0, 1.0);
     cv::Mat D0 = (cv::Mat_<double>(1, 5) << 0.010831, -0.007841, 0.000166, 0.000512, 0.000000);
 
-    // ── cam1 (right) intrinsics ────────────────────────────────────────────
+    // ── cam1（右目）内参 ───────────────────────────────────────────────────
     cv::Mat K1 =
         (cv::Mat_<double>(3, 3) << 462.007162, 0.000000, 313.439176, 0.000000, 461.452922,
          229.403156, 0.0, 0.0, 1.0);
     cv::Mat D1 = (cv::Mat_<double>(1, 5) << 0.028404, -0.022619, -0.000793, -0.002258, 0.000000);
 
-    // ── Tracker settings ───────────────────────────────────────────────────
+    // ── 跟踪器配置 ──────────────────────────────────────────────────────────
     const int rows = 480;
     const int cols = 640;
     const int per_grid_rows = 40;
@@ -48,7 +48,7 @@ int main() {
     const double min_gradient = 20.0;
     const bool enable_statistics = false;
 
-    // ── OAK pipeline — left + right mono cameras ───────────────────────────
+    // ── OAK 管线：左右单目相机 ─────────────────────────────────────────────
     dai::Pipeline pipeline;
 
     auto mono_left = pipeline.create<dai::node::MonoCamera>();
@@ -69,7 +69,7 @@ int main() {
     auto queue_left = device.getOutputQueue("left", 8, false);
     auto queue_right = device.getOutputQueue("right", 8, false);
 
-    // ── Feature tracker with left (id=0) and right (id=1) cameras ──────────
+    // ── 使用左目（id=0）和右目（id=1）的特征跟踪器 ─────────────────────────
     tassel_core::FeatureTracker tracker(
         flow_back, max_square_move_dist, enable_statistics, 5, min_gradient);
 
@@ -85,7 +85,9 @@ int main() {
     while (true) {
         auto left_frame = queue_left->get<dai::ImgFrame>();
         auto right_frame = queue_right->get<dai::ImgFrame>();
-        if (!left_frame || !right_frame) continue;
+        if (!left_frame || !right_frame) {
+            continue;
+        }
 
         auto left_data = left_frame->getData();
         cv::Mat left_img(
@@ -110,7 +112,9 @@ int main() {
         cv::Mat stereo;
         cv::hconcat(disp_left, disp_right, stereo);
         cv::imshow("stereo", stereo);
-        if (cv::waitKey(1) == 27) break;
+        if (cv::waitKey(1) == 27) {
+            break;
+        }
     }
 
     cv::destroyAllWindows();

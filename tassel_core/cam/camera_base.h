@@ -39,7 +39,9 @@ public:
     virtual std::vector<Eigen::Vector2d> undistort(const std::vector<Eigen::Vector2d>& pts) const {
         std::vector<Eigen::Vector2d> out;
         out.reserve(pts.size());
-        for (const auto& p : pts) out.emplace_back(undistort(p));
+        for (const auto& p : pts) {
+            out.emplace_back(undistort(p));
+        }
         return out;
     }
 
@@ -47,7 +49,9 @@ public:
         const std::vector<Eigen::Vector2d>& uv_norm) const {
         std::vector<Eigen::Vector2d> out;
         out.reserve(uv_norm.size());
-        for (const auto& p : uv_norm) out.emplace_back(distort(p));
+        for (const auto& p : uv_norm) {
+            out.emplace_back(distort(p));
+        }
         return out;
     }
 
@@ -65,14 +69,19 @@ protected:
 private:
     static cv::Mat Eigen33ToCvMat(const Eigen::Ref<const Eigen::Matrix3d>& m) {
         cv::Mat out(3, 3, CV_64F);
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j) out.at<double>(i, j) = m(i, j);
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                out.at<double>(i, j) = m(i, j);
+            }
+        }
         return out;
     }
 
     static cv::Mat EigenVecToCvMat(const Eigen::Ref<const Eigen::VectorXd>& v) {
         cv::Mat out(1, static_cast<int>(v.size()), CV_64F);
-        for (int i = 0; i < v.size(); ++i) out.at<double>(0, i) = v(i);
+        for (int i = 0; i < v.size(); ++i) {
+            out.at<double>(0, i) = v(i);
+        }
         return out;
     }
 

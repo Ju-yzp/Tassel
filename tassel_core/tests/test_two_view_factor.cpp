@@ -1,15 +1,15 @@
 // =============================================================================
 // test_two_view_factor.cpp
 //
-// Purpose:
+// 目的：
 //   验证 TwoViewFactor 的 bearing 约束雅各比, 以及时间延迟 td 在多帧约束下的收敛。
 //
-// Test design:
+// 测试设计：
 //   使用 imu_test_utils 生成带外参的 IMU/camera 轨迹, 从同一个世界点生成两帧单位
 //   bearing 观测。单因子用中心差分检查雅各比; 多帧部分构造共享 td 的 Ceres 问题,
 //   观察 td 是否被 two-view residual 拉回真实值。
 //
-// Pass criteria:
+// 通过条件：
 //   解析雅各比与数值雅各比一致, 多帧优化后 td 接近数据生成时的真实延迟。
 // =============================================================================
 
@@ -34,7 +34,7 @@ namespace {
 static constexpr double kG = 9.81;
 static const Eigen::Vector3d kGravity(0, 0, -kG);
 
-// ----- single-frame setup helper ------------------------------------------------
+// ----- 单帧设置辅助函数 -----------------------------------------------------
 
 struct FrameData {
     Eigen::Vector3d P, V, w, a;
@@ -77,7 +77,7 @@ FrameData setupFrame(
 }
 
 // ==============================================================================
-// JacobianCheck — single factor
+// JacobianCheck —— 单因子
 // ==============================================================================
 
 class TwoViewJacobianTest : public ::testing::Test {
@@ -94,7 +94,7 @@ protected:
         traj_ =
             test::generateConstantMotionTimeline(2.0, 0.004, a_body, w_body, Ba_, Bg_, -kGravity);
 
-        // 3D point
+        // 三维点
         Eigen::Vector3d P_w(0.5, -0.1, 20.0);
         P_w_ = P_w;
 
@@ -172,7 +172,9 @@ TEST_F(TwoViewJacobianTest, AnalyticJacobianMatchesFiniteDifference) {
             double an = J_an[c];
             double denom = std::max({std::abs(an), std::abs(num), floor});
             double err = std::abs(an - num) / denom;
-            if (err > rel_tol) nbad++;
+            if (err > rel_tol) {
+                nbad++;
+            }
             std::cout << "  col" << c << ": an=" << an << " num=" << num << " err=" << err
                       << (err > rel_tol ? " ***" : "") << "\n";
         }
@@ -193,7 +195,9 @@ TEST_F(TwoViewJacobianTest, AnalyticJacobianMatchesFiniteDifference) {
         double an = J2[0];
         double denom = std::max({std::abs(an), std::abs(num), floor});
         double err = std::abs(an - num) / denom;
-        if (err > rel_tol) nbad++;
+        if (err > rel_tol) {
+            nbad++;
+        }
         std::cout << "\n--- td (1 col) ---\n";
         std::cout << "  an=" << an << " num=" << num << " err=" << err
                   << (err > rel_tol ? " ***" : "") << "\n";
@@ -204,7 +208,7 @@ TEST_F(TwoViewJacobianTest, AnalyticJacobianMatchesFiniteDifference) {
 }
 
 // ==============================================================================
-// MultiFrameTdConvergence — 10 frames, per-frame td jitter, single estimate
+// MultiFrameTdConvergence —— 10 帧、逐帧时间延迟扰动、单一估计值
 // ==============================================================================
 
 TEST(TwoViewFactorTest, MultiFrameTdConvergence) {
@@ -221,8 +225,9 @@ TEST(TwoViewFactorTest, MultiFrameTdConvergence) {
     double td_gt = 0.005;
 
     std::vector<FrameData> frm;
-    for (int k = 0; k < N; ++k)
+    for (int k = 0; k < N; ++k) {
         frm.push_back(setupFrame(traj, 0.24 + k * 0.0667, td_gt, Bg, Ba, ric, tic, P_w));
+    }
 
     ceres::Problem problem;
     double td_est = 0.0;

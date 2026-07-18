@@ -1,15 +1,15 @@
 // =============================================================================
-// test_visual_factor.cpp
+// test_reprojection_factor.cpp
 //
-// Purpose:
-//   验证 VisualFactor 的解析雅各比和时间延迟 td 的优化反馈。
+// 目的：
+//   验证 ReprojectionFactor 的解析雅各比和时间延迟 td 的优化反馈。
 //
-// Test design:
+// 测试设计：
 //   使用 imu_test_utils 生成 400Hz IMU 轨迹; 观测由 camera-time state 加真实 td 后的
 //   query state 精确投影生成, factor 端从 camera-time state、IMU 读数和 td 近似恢复
 //   query state。单因子检查雅各比, 多 landmark 优化检查 td 收敛。
 //
-// Pass criteria:
+// 通过条件：
 //   位姿、速度、偏置、逆深度和 td 的解析雅各比通过数值微分检查; Ceres 优化后 td
 //   明显靠近构造数据时使用的真实延迟。
 // =============================================================================
@@ -26,7 +26,7 @@
 #include <sophus/so3.hpp>
 
 #include "cam/camera_rad_tan.h"
-#include "factor/visual_factor.h"
+#include "factor/reprojection_factor.h"
 #include "imu_test_utils.h"
 #include "tassel_utils/se3_right_manifold.h"
 
@@ -34,10 +34,10 @@ namespace tassel_core {
 namespace {
 
 // =============================================================================
-// VisualFactorTest
+// ReprojectionFactorTest
 // =============================================================================
 
-class VisualFactorTest : public ::testing::Test {
+class ReprojectionFactorTest : public ::testing::Test {
 protected:
     void SetUp() override {
         ric_ = Eigen::Matrix3d::Identity();
@@ -73,7 +73,7 @@ protected:
         a_j_ = scj.acc;
         V_j_ = scj.V;
 
-        // Generate landmarks from query state (exact, no approximation)
+        // 从查询状态生成路标（精确计算，不使用近似）。
         std::vector<Eigen::Vector3d> P_cam_i_pts = {
             {0.3, -0.2, 1.5}, {-0.5, 0.3, 3.0}, {0.2, -0.4, 2.0},
             {1.2, -0.1, 8.0}, {-1.0, 0.5, 6.0}, {0.01, 0.01, 12.0},
@@ -113,14 +113,14 @@ protected:
         ba_[2] = Ba_.z();
     }
 
-    VisualFactor* makeFactor(int k) const {
+    ReprojectionFactor* makeFactor(int k) const {
         const auto& lm = lms_[k];
-        return new VisualFactor(
+        return new ReprojectionFactor(
             lm.uv_i, lm.pt_j, ric_, tic_, w_i_, w_j_, a_i_, a_j_, v_i_, v_j_, bg_, bg_, ba_, ba_,
             sqrt_info_, &camera_);
     }
 
-    // --- data ---
+    // --- 数据 ---
     test::ImuTimeline timeline_;
     Eigen::Matrix3d ric_;
     Eigen::Vector3d tic_;
@@ -145,7 +145,7 @@ protected:
 // 测试 1: 数值微分逐块验证雅各比
 // =============================================================================
 
-TEST_F(VisualFactorTest, JacobianCheck) {
+TEST_F(ReprojectionFactorTest, JacobianCheck) {
     const auto& lm = lms_[0];
     auto* factor = makeFactor(0);
     SE3RightManifold manifold;
@@ -215,16 +215,22 @@ TEST_F(VisualFactorTest, JacobianCheck) {
         double a0 = Jan[c], a1 = Jan[td + c];
         double s = std::max({std::abs(a0), std::abs(a1), std::abs(num[0]), std::abs(num[1]), 1e-8});
         double e0 = std::abs(a0 - num[0]) / s, e1 = std::abs(a1 - num[1]) / s;
-        if (e0 > tol || e1 > tol) nbad++;
+        if (e0 > tol || e1 > tol) {
+            nbad++;
+        }
         std::cout << "  " << label << "[col " << c << "] an=[" << a0 << "," << a1 << "] num=["
                   << num[0] << "," << num[1] << "] err=[" << e0 << "," << e1 << "]"
                   << ((e0 > tol || e1 > tol) ? " ***" : "") << "\n";
     };
 
     std::cout << "\n--- pose_i (2x6) ---\n";
-    for (int c = 0; c < 6; ++c) check("J_pose_i", J0_tangent.data(), c, num_pose(0, pose_i_, c), 6);
+    for (int c = 0; c < 6; ++c) {
+        check("J_pose_i", J0_tangent.data(), c, num_pose(0, pose_i_, c), 6);
+    }
     std::cout << "--- pose_j (2x6) ---\n";
-    for (int c = 0; c < 6; ++c) check("J_pose_j", J1_tangent.data(), c, num_pose(1, pose_j_, c), 6);
+    for (int c = 0; c < 6; ++c) {
+        check("J_pose_j", J1_tangent.data(), c, num_pose(1, pose_j_, c), 6);
+    }
     std::cout << "--- dt (2x1) ---\n";
     check("J_dt", J2, 0, num_scalar(2, dt_val), 1);
     std::cout << "--- inv_depth (2x1) ---\n";
@@ -236,13 +242,13 @@ TEST_F(VisualFactorTest, JacobianCheck) {
     delete factor;
 }
 
-TEST_F(VisualFactorTest, CeresGradientCheckerContract) {
+TEST_F(ReprojectionFactorTest, CeresGradientCheckerContract) {
     SE3RightManifold manifold;
     std::vector<const ceres::Manifold*> manifolds = {&manifold, &manifold, nullptr, nullptr};
     ceres::NumericDiffOptions options;
     options.relative_step_size = 1e-6;
     for (size_t k = 0; k < lms_.size(); ++k) {
-        std::unique_ptr<VisualFactor> factor(makeFactor(static_cast<int>(k)));
+        std::unique_ptr<ReprojectionFactor> factor(makeFactor(static_cast<int>(k)));
         ceres::GradientChecker checker(factor.get(), &manifolds, options);
         double inv_depth = lms_[k].inv_depth;
         double delay = td_;
@@ -254,9 +260,9 @@ TEST_F(VisualFactorTest, CeresGradientCheckerContract) {
     }
 }
 
-TEST_F(VisualFactorTest, HuberCorrectionMatchesCeres) {
+TEST_F(ReprojectionFactorTest, HuberCorrectionMatchesCeres) {
     for (double delay : {td_, 0.2}) {
-        std::unique_ptr<VisualFactor> factor(makeFactor(0));
+        std::unique_ptr<ReprojectionFactor> factor(makeFactor(0));
         ceres::HuberLoss loss(1.0);
         SE3RightManifold manifold;
         ceres::Problem::Options problem_options;
@@ -319,10 +325,10 @@ TEST_F(VisualFactorTest, HuberCorrectionMatchesCeres) {
 }
 
 // =============================================================================
-// 测试 2: 构建 problem → td 收敛
+// 测试 2：构建优化问题并验证 td 收敛
 // =============================================================================
 
-TEST_F(VisualFactorTest, TdConvergence) {
+TEST_F(ReprojectionFactorTest, TdConvergence) {
     ceres::Problem problem;
 
     SE3RightManifold* manifold = new SE3RightManifold();

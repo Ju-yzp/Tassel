@@ -18,15 +18,15 @@
 #include <std_msgs/msg/int32_multi_array.hpp>
 #include <tf2_ros/transform_broadcaster.hpp>
 
-// eigen
+// Eigen
 #include <Eigen/Dense>
 
-// cpp
+// 标准库
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-// opencv
+// OpenCV
 #include <opencv2/core.hpp>
 
 namespace tassel_tools {
@@ -90,30 +90,30 @@ public:
     void publishError(const std::string& topic, float error);
 
 private:
-    // image
+    // 图像
     std::unordered_map<std::string, rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr>
         image_publishers_;
 
-    // compressed image
+    // 压缩图像
     std::unordered_map<std::string, rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr>
         compressed_image_publishers_;
 
-    // odometry
+    // 里程计
     std::unordered_map<std::string, rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr>
         odometry_publishers_;
     std::unordered_map<std::string, nav_msgs::msg::Odometry> odometry_;
 
-    // path
+    // 轨迹
     std::unordered_map<std::string, rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr>
         path_publishers_;
     std::unordered_map<std::string, nav_msgs::msg::Path> paths_;
     std::unordered_map<std::string, size_t> path_max_poses_;
 
-    // pointcloud
+    // 点云
     std::unordered_map<std::string, rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr>
         pointcloud_publishers_;
 
-    // error
+    // 误差
     std::unordered_map<std::string, rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr>
         error_publishers_;
     std::unordered_map<std::string, rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr>

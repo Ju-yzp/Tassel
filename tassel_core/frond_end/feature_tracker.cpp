@@ -1,10 +1,10 @@
-// tassel
+// Tassel
 #include "feature_tracker.h"
 
-// logger
+// 日志
 #include <spdlog/spdlog.h>
 
-// opencv
+// OpenCV
 #include <opencv2/core/hal/interface.h>
 #include <cmath>
 #include <cstddef>
@@ -101,7 +101,6 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::monoTracking(
         setMask(camera_id);
         std::vector<cv::Point2f> new_pts;
         extractNewFeatures(camera_id, img, new_pts);
-        // spdlog::info("camera {}: tracked={} new={}", camera_id, cur_pts.size(), new_pts.size());
         for (size_t i = 0; i < new_pts.size(); ++i) {
             cur_pts.emplace_back(new_pts[i]);
             cur_ids.emplace_back(ctc.feature_count++);
@@ -147,7 +146,9 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::stereoTracking(
         return {};
     }
     auto feature_frame = monoTracking(left_camera_id, left_img);
-    if (feature_frame.empty()) return feature_frame;
+    if (feature_frame.empty()) {
+        return feature_frame;
+    }
     CameraTrackingContext& r_ctc = ctc_map_.at(right_camera_id);
     CameraTrackingContext& l_ctc = ctc_map_.at(left_camera_id);
     r_ctc.prev_img = l_ctc.prev_img;
@@ -232,7 +233,7 @@ void FeatureTracker::monoMatching(
         return;
     }
     if (prev_pts.empty() || prev_ids.empty()) {
-        spdlog::warn(
+        spdlog::info(
             "FeatureTracker::monoMatching camera {}: prev_pts({}) or prev_ids({}) is empty",
             camera_id, prev_pts.size(), prev_ids.size());
         return;
@@ -356,11 +357,15 @@ void FeatureTracker::extractNewFeatures(
         const uchar* mask_row = ctc.mask.ptr<uchar>(y);
         const float* grad_row = ctc.grad.ptr<float>(y);
         for (int x = x0; x < x1; ++x) {
-            if (mask_row[x] == 0) continue;
+            if (mask_row[x] == 0) {
+                continue;
+            }
             int cell_r = (y - y0) / cell_h;
             int cell_c = (x - x0) / cell_w;
             int idx = cell_r * grid_cols + cell_c;
-            if (grid_mask[idx]) continue;
+            if (grid_mask[idx]) {
+                continue;
+            }
             float s = grad_row[x];
             if (s > best_scores[idx]) {
                 best_scores[idx] = s;
@@ -369,7 +374,9 @@ void FeatureTracker::extractNewFeatures(
         }
     }
     for (size_t i = 0; i < ncells; ++i) {
-        if (best_pts[i].x != -1) new_pts.emplace_back(best_pts[i]);
+        if (best_pts[i].x != -1) {
+            new_pts.emplace_back(best_pts[i]);
+        }
     }
 }
 

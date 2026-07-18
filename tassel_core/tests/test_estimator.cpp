@@ -1,14 +1,14 @@
 // =============================================================================
 // test_estimator.cpp
 //
-// Purpose:
-//   端到端检查 OAK-D 双目图像、IMU、同步器、前端、估计器和 viewer 的工程连接。
+// 目的：
+//   端到端检查 OAK-D 双目图像、IMU、同步器、前端、估计器和 Viewer 的工程连接。
 //
-// Test design:
+// 测试设计：
 //   从配置文件读取相机与估计器参数, 启动 DepthAI stereo+IMU pipeline, 将双目观测
 //   与 IMU slice 送入同步器, 再驱动 Estimator 与可视化发布链路。
 //
-// Pass criteria:
+// 通过条件：
 //   这是依赖硬件的手动集成测试; 能持续接收传感器数据、完成同步、更新估计器并
 //   正常发布可视化信息即认为链路可用。
 // =============================================================================
@@ -137,7 +137,9 @@ int main(int argc, char** argv) {
             auto msg_group = std::static_pointer_cast<dai::MessageGroup>(data);
             auto left_frame = msg_group->get<dai::ImgFrame>("left");
             auto right_frame = msg_group->get<dai::ImgFrame>("right");
-            if (!left_frame || !right_frame) return;
+            if (!left_frame || !right_frame) {
+                return;
+            }
 
             auto stereo_msg = std::make_shared<tassel_utils::StereoObservation>();
             stereo_msg->timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -246,11 +248,11 @@ int main(int argc, char** argv) {
 
     rclcpp::shutdown();
 
-    std::cout << "\n[VO] done. " << state->cur_frame_count << " keyframes in window.\n";
-    if (state->cur_frame_count > 0) {
-        int idx = state->cur_frame_count - 1;
+    std::cout << "\n[VO] done. newest slot=" << state->newest_slot << "\n";
+    if (state->newest_slot > 0) {
+        int idx = state->newest_slot;
         std::cout << "Final pose:\n"
-                  << Sophus::SE3d(state->Rs[idx], state->Ps[idx]).matrix() << "\n";
+                  << Sophus::SE3d(state->frames[idx].R, state->frames[idx].P).matrix() << "\n";
     }
 
     return 0;

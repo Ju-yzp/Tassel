@@ -19,24 +19,26 @@ TEST(StateTest, RotationParameterRoundTripIncludingNearPi) {
 
     State state(1);
     for (const Eigen::Vector3d& phi : rotations) {
-        state.Rs[0] = Sophus::SO3d::exp(phi).matrix();
+        state.frames[0].R = Sophus::SO3d::exp(phi).matrix();
         state.stateToParam(0);
         const Eigen::Vector3d converted(
-            state.params_pose[0][3], state.params_pose[0][4], state.params_pose[0][5]);
+            state.frames[0].pose[3], state.frames[0].pose[4], state.frames[0].pose[5]);
         const Eigen::Matrix3d reconstructed = Sophus::SO3d::exp(converted).matrix();
-        EXPECT_TRUE(reconstructed.isApprox(state.Rs[0], 1e-10))
+        EXPECT_TRUE(reconstructed.isApprox(state.frames[0].R, 1e-10))
             << "phi=" << phi.transpose() << " converted=" << converted.transpose();
     }
 }
 
 TEST(StateTest, ResetClearsFrameIds) {
     State state(3);
-    state.frame_ids = {10, 20, 30};
+    for (int i = 0; i < 3; ++i) {
+        state.frames[i].timestamp_ns = 10 * (i + 1);
+    }
 
     state.reset();
 
-    for (const auto id : state.frame_ids) {
-        EXPECT_EQ(id, tassel_utils::kInvalidFrameId);
+    for (const auto& frame : state.frames) {
+        EXPECT_EQ(frame.timestamp_ns, tassel_utils::kInvalidFrameId);
     }
 }
 
@@ -45,40 +47,35 @@ TEST(StateTest, RejectsInvalidWindowSizeBeforeAllocation) {
     EXPECT_THROW(State(0), std::runtime_error);
 }
 
-TEST(StateTest, InvalidFrameIdNeverResolvesToEmptySlot) {
-    State state(3);
-    state.cur_frame_count = 2;
-    state.frame_ids = {100, 200, tassel_utils::kInvalidFrameId};
-    EXPECT_EQ(state.findFrameSlot(tassel_utils::kInvalidFrameId), -1);
-}
-
 TEST(StateTest, CopyFrameSlotCopiesCompletePhysicalState) {
     State state(2);
-    state.Rs[1] = Sophus::SO3d::exp(Eigen::Vector3d(0.1, -0.2, 0.3)).matrix();
-    state.Ps[1] = Eigen::Vector3d(1.0, 2.0, 3.0);
-    state.Vs[1] = Eigen::Vector3d(4.0, 5.0, 6.0);
-    state.Bas[1] = Eigen::Vector3d(0.1, 0.2, 0.3);
-    state.Bgs[1] = Eigen::Vector3d(0.01, 0.02, 0.03);
-    state.frame_delays[1] = 0.004;
-    state.frame_ids[1] = 123456789;
+    state.frames[1].R = Sophus::SO3d::exp(Eigen::Vector3d(0.1, -0.2, 0.3)).matrix();
+    state.frames[1].P = Eigen::Vector3d(1.0, 2.0, 3.0);
+    state.frames[1].V = Eigen::Vector3d(4.0, 5.0, 6.0);
+    state.frames[1].Ba = Eigen::Vector3d(0.1, 0.2, 0.3);
+    state.frames[1].Bg = Eigen::Vector3d(0.01, 0.02, 0.03);
+    state.frames[1].sync_delay = 0.004;
+    state.frames[1].timestamp_ns = 123456789;
+    state.frames[1].is_keyframe = true;
 
     state.copyFrameSlot(1, 0);
 
-    EXPECT_TRUE(state.Rs[0].isApprox(state.Rs[1]));
-    EXPECT_EQ(state.Ps[0], state.Ps[1]);
-    EXPECT_EQ(state.Vs[0], state.Vs[1]);
-    EXPECT_EQ(state.Bas[0], state.Bas[1]);
-    EXPECT_EQ(state.Bgs[0], state.Bgs[1]);
-    EXPECT_EQ(state.frame_delays[0], state.frame_delays[1]);
-    EXPECT_EQ(state.frame_ids[0], state.frame_ids[1]);
+    EXPECT_TRUE(state.frames[0].R.isApprox(state.frames[1].R));
+    EXPECT_EQ(state.frames[0].P, state.frames[1].P);
+    EXPECT_EQ(state.frames[0].V, state.frames[1].V);
+    EXPECT_EQ(state.frames[0].Ba, state.frames[1].Ba);
+    EXPECT_EQ(state.frames[0].Bg, state.frames[1].Bg);
+    EXPECT_EQ(state.frames[0].sync_delay, state.frames[1].sync_delay);
+    EXPECT_EQ(state.frames[0].timestamp_ns, state.frames[1].timestamp_ns);
+    EXPECT_TRUE(state.frames[0].is_keyframe);
 }
 
 TEST(StateTest, ActiveImuRangeSkipsRetainedHostPlaceholder) {
     State state(3);
-    EXPECT_EQ(state.firstActiveImuSlot(), 0);
+    EXPECT_EQ(state.firstImuFactorSlot(), 0);
 
     state.has_retained_host = true;
-    EXPECT_EQ(state.firstActiveImuSlot(), 1);
+    EXPECT_EQ(state.firstImuFactorSlot(), 1);
 }
 
 }  // namespace

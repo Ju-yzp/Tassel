@@ -1,14 +1,14 @@
 // =============================================================================
 // test_params_parser.cpp
 //
-// Purpose:
+// 目的：
 //   验证 ParamsParser 从 YAML 读取标量、Eigen 矩阵、cv::Mat 和嵌套字段的行为。
 //
-// Test design:
+// 测试设计：
 //   使用与测试文件同目录的 test_params.yaml 作为固定输入, 覆盖 flat sequence、
 //   nested matrix、不同目标类型转换以及缺失字段/非法尺寸等错误路径。
 //
-// Pass criteria:
+// 通过条件：
 //   合法字段解析为预期数值和矩阵尺寸, 非法或不匹配字段抛出预期异常。
 // =============================================================================
 
@@ -28,7 +28,7 @@ namespace fs = std::filesystem;
 class ParamsParserTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // test YAML lives next to this source file
+        // 测试 YAML 文件位于当前源文件同目录
         fs::path test_dir = fs::path(__FILE__).parent_path();
         yaml_path_ = (test_dir / "test_params.yaml").string();
         parser_ = std::make_unique<tassel_tools::ParamsParser>(yaml_path_);
@@ -38,7 +38,7 @@ protected:
     std::unique_ptr<tassel_tools::ParamsParser> parser_;
 };
 
-// ── scalar types ───────────────────────────────────────────────────────────
+// ── 标量类型 ───────────────────────────────────────────────────────────────
 
 TEST_F(ParamsParserTest, ReadInt) { EXPECT_EQ(parser_->as<int>("int_val"), 42); }
 
@@ -56,7 +56,7 @@ TEST_F(ParamsParserTest, ReadString) {
 
 TEST_F(ParamsParserTest, ReadSizeT) { EXPECT_EQ(parser_->as<size_t>("size_val"), 100); }
 
-// ── Eigen matrices ─────────────────────────────────────────────────────────
+// ── Eigen 矩阵 ─────────────────────────────────────────────────────────────
 
 TEST_F(ParamsParserTest, ReadEigenFlatVector) {
     Eigen::Vector3d v = parser_->as<Eigen::Vector3d>("flat_vec3");
@@ -66,7 +66,7 @@ TEST_F(ParamsParserTest, ReadEigenFlatVector) {
 }
 
 TEST_F(ParamsParserTest, ReadEigenFlatToMatrix) {
-    // flat sequence of 9 doubles mapped to 3x3 (ColMajor = Eigen default)
+    // 将 9 个 double 的扁平序列映射为 3x3 矩阵（ColMajor 为 Eigen 默认布局）
     Eigen::Matrix3d m = parser_->as<Eigen::Matrix3d>("flat_vec9");
     EXPECT_DOUBLE_EQ(m(0, 0), 1);
     EXPECT_DOUBLE_EQ(m(1, 0), 2);
@@ -120,14 +120,14 @@ TEST_F(ParamsParserTest, ReadCvMatFlat) {
     EXPECT_NEAR(D.at<double>(1), -0.007841, 1e-6);
 }
 
-// ── nested key access ──────────────────────────────────────────────────────
+// ── 嵌套键访问 ─────────────────────────────────────────────────────────────
 
 TEST_F(ParamsParserTest, ReadNestedKey) {
     int v = parser_->as<int>("outer", "inner", "value");
     EXPECT_EQ(v, 777);
 }
 
-// ── error cases ────────────────────────────────────────────────────────────
+// ── 错误场景 ───────────────────────────────────────────────────────────────
 
 TEST_F(ParamsParserTest, ThrowsOnMissingFile) {
     EXPECT_THROW(tassel_tools::ParamsParser("nonexistent_file.yaml"), std::runtime_error);
@@ -138,7 +138,7 @@ TEST_F(ParamsParserTest, ThrowsOnMissingKey) {
 }
 
 TEST_F(ParamsParserTest, ThrowsOnWrongType) {
-    // "string_val" is a string, reading as int should fail
+    // "string_val" 是字符串，按 int 读取应当失败
     EXPECT_THROW(parser_->as<int>("string_val"), std::runtime_error);
 }
 

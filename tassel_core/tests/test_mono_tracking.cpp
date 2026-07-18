@@ -1,14 +1,14 @@
 // =============================================================================
 // test_mono_tracking.cpp
 //
-// Purpose:
+// 目的：
 //   手动检查单目 FeatureTracker 在 OAK 左目实时图像上的跟踪效果。
 //
-// Test design:
+// 测试设计：
 //   启动 DepthAI 左目 mono pipeline, 使用固定 RadTan 内参初始化单相机 tracker,
 //   连续执行 monoTracking 并在 OpenCV 窗口中绘制跟踪结果。
 //
-// Pass criteria:
+// 通过条件：
 //   这是依赖硬件和显示环境的 smoke test; 能稳定显示图像、提取并跟踪特征点,
 //   按 Esc 可退出。
 // =============================================================================
@@ -23,13 +23,13 @@
 #include "tassel_utils/timer.h"
 
 int main() {
-    // Camera intrinsics — cam0 (left)
+    // 相机内参：cam0（左目）
     cv::Mat K =
         (cv::Mat_<double>(3, 3) << 455.510864, 0.000000, 328.529851, 0.000000, 455.426715,
          225.596721, 0.0, 0.0, 1.0);
     cv::Mat D = (cv::Mat_<double>(1, 5) << 0.010831, -0.007841, 0.000166, 0.000512, 0.000000);
 
-    // Tracker settings
+    // 跟踪器配置
     const int rows = 480;
     const int cols = 640;
     const int per_grid_rows = 40;
@@ -42,7 +42,7 @@ int main() {
     const double min_gradient = 20.0;
     const bool enable_statistics = false;
 
-    // OAK pipeline — built-in auto exposure
+    // OAK 管线：使用内置自动曝光
     dai::Pipeline pipeline;
     auto mono = pipeline.create<dai::node::MonoCamera>();
     auto xout = pipeline.create<dai::node::XLinkOut>();
@@ -54,7 +54,7 @@ int main() {
     dai::Device device(pipeline);
     auto queue = device.getOutputQueue("mono", 8, false);
 
-    // Feature tracker
+    // 特征跟踪器
     auto camera = std::make_unique<tassel_core::CameraRadTan>(K, D, cols, rows);
     tassel_core::FeatureTracker tracker(
         flow_back, max_square_move_dist, enable_statistics, 5, min_gradient);
@@ -64,7 +64,9 @@ int main() {
 
     while (true) {
         auto frame = queue->get<dai::ImgFrame>();
-        if (!frame) continue;
+        if (!frame) {
+            continue;
+        }
 
         auto data = frame->getData();
         cv::Mat img(frame->getHeight(), frame->getWidth(), CV_8UC1, data.data());
@@ -80,7 +82,9 @@ int main() {
         tracker.drawTrackingResult(0, disp);
 
         cv::imshow("tracking", disp);
-        if (cv::waitKey(1) == 27) break;
+        if (cv::waitKey(1) == 27) {
+            break;
+        }
     }
 
     cv::destroyAllWindows();

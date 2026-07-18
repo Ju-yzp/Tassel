@@ -1,15 +1,15 @@
 // =============================================================================
 // test_imu_factor.cpp
 //
-// Purpose:
+// 目的：
 //   验证 IMU factor 的解析雅各比, 并检查偏置状态在优化中是否朝真实值收敛。
 //
-// Test design:
+// 测试设计：
 //   使用 imu_test_utils 生成常加速度/常角速度轨迹, 再加入逐帧变化的真实偏置;
 //   预积分时故意使用错误 base bias。单因子部分用中心差分检查雅各比, 优化部分
 //   固定位姿和速度, 只让 bias 由残差反馈。
 //
-// Pass criteria:
+// 通过条件：
 //   解析雅各比与数值雅各比在相对容差内一致, 优化后的加速度计和陀螺仪偏置比
 //   初值更接近真实偏置。
 // =============================================================================
@@ -115,7 +115,7 @@ protected:
             frames_V_[f] = imu_timeline_.states[k].V;
         }
 
-        // 预积分 (线性化点 = base bias, 模拟未标定偏置)
+        // 预积分（线性化点为基础偏置，模拟未标定偏置）
         preints_.resize(num_frames_ - 1);
         for (int f = 0; f < num_frames_ - 1; ++f) {
             preints_[f] = std::make_shared<MidPointIntegrator>(Ba_base_, Bg_base_, noise_);
@@ -129,7 +129,7 @@ protected:
             }
         }
 
-        // 参数块: 位姿=真值, 偏置=base(错误), 速度=真值
+        // 参数块：位姿为真值，偏置为错误的基础值，速度为真值
         params_pose_.resize(num_frames_);
         params_sb_.resize(num_frames_);
         for (int f = 0; f < num_frames_; ++f) {
@@ -195,7 +195,7 @@ TEST_F(ImuFactorTest, JacobianCheck) {
     // 切空间维度: pose=6, sb=9
     int dims[] = {6, 9, 6, 9};
 
-    // 数值微分: manifold for pose, Euclidean for speed_bias
+    // 数值微分：位姿使用 manifold，speed_bias 使用欧氏空间
     auto num_col = [&](int blk, const double* x, int col) -> Eigen::Matrix<double, 15, 1> {
         int dim = dims[blk];
         double xp[9], xm[9];  // max size
@@ -218,16 +218,19 @@ TEST_F(ImuFactorTest, JacobianCheck) {
         const double *pp[4], *pm[4];
         pp[blk] = xp;
         pm[blk] = xm;
-        for (int b = 0; b < 4; ++b)
+        for (int b = 0; b < 4; ++b) {
             if (b != blk) {
                 pp[b] = params[b];
                 pm[b] = params[b];
             }
+        }
         factor->Evaluate(pp, rp, nullptr);
         factor->Evaluate(pm, rm, nullptr);
 
         Eigen::Matrix<double, 15, 1> out;
-        for (int i = 0; i < 15; ++i) out[i] = (rp[i] - rm[i]) / (2.0 * eps);
+        for (int i = 0; i < 15; ++i) {
+            out[i] = (rp[i] - rm[i]) / (2.0 * eps);
+        }
         return out;
     };
 
@@ -252,7 +255,9 @@ TEST_F(ImuFactorTest, JacobianCheck) {
                     worst_row = row;
                 }
             }
-            if (worst_err > tol) nbad++;
+            if (worst_err > tol) {
+                nbad++;
+            }
             if (worst_err > 0.01) {
                 std::cout << "  col " << c << " max_err=" << worst_err << " @row=" << worst_row
                           << " an="

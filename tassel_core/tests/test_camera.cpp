@@ -1,14 +1,14 @@
 // =============================================================================
 // test_camera.cpp
 //
-// Purpose:
+// 目的：
 //   验证相机模型的参数检查、畸变/去畸变一致性和解析雅各比。
 //
-// Test design:
+// 测试设计：
 //   使用固定 RadTan 与 Equidistant 内参/畸变参数构造相机; 用 OpenCV 结果作为
 //   去畸变参考, 用中心差分作为 distort 对归一化坐标和相机参数的雅各比参考。
 //
-// Pass criteria:
+// 通过条件：
 //   相机工厂能正确创建对象, 非法参数会被拒绝, 投影往返误差与解析雅各比误差
 //   均落在测试容差内。
 // =============================================================================
@@ -37,7 +37,7 @@ const int kWidth = 640;
 const int kHeight = 480;
 const std::vector<Eigen::Vector2d> kPixels = {{350, 200}, {150, 300}, {500, 400}, {320, 240}};
 
-// ── Numerical differentiation helpers for Jacobian verification ────────────
+// ── 用于雅各比验证的数值微分辅助函数 ─────────────────────────────────────
 
 Eigen::Matrix2d numerical_dzn(
     tassel_core::CameraBase* cam, const Eigen::Vector2d& uv_norm, double eps = 1e-6) {
@@ -145,7 +145,9 @@ void expectDznMatchesFiniteDiff(tassel_core::CameraBase* cam, bool skip_center =
 
     for (int k = 0; k < 20; ++k) {
         Eigen::Vector2d uv(rnd(rng), rnd(rng));
-        if (skip_center && uv.norm() < 0.01) continue;
+        if (skip_center && uv.norm() < 0.01) {
+            continue;
+        }
         Eigen::MatrixXd H_analytic;
         cam->get_jacobian_dzn(uv, H_analytic);
         expectMatrixNear(H_analytic, numerical_dzn(cam, uv, kEps), kTol, uv);
@@ -162,7 +164,9 @@ void expectDzetaMatchesFiniteDiff(
 
     for (int k = 0; k < 15; ++k) {
         Eigen::Vector2d uv(rnd(rng), rnd(rng));
-        if (skip_center && uv.norm() < 0.01) continue;
+        if (skip_center && uv.norm() < 0.01) {
+            continue;
+        }
         Eigen::MatrixXd H_analytic;
         cam->get_jacobian_dzeta(uv, H_analytic);
         expectMatrixNear(
@@ -195,7 +199,7 @@ TEST(CameraBase, GettersReturnCorrectValues) {
     EXPECT_EQ(cam.get_height(), kHeight);
 }
 
-// ── CameraRadTan ───────────────────────────────────────────────────────────
+// ── CameraRadTan ──────────────────────────────────────────────────────────
 
 class CameraRadTanTest : public ::testing::Test {
 protected:
@@ -222,7 +226,7 @@ TEST_F(CameraRadTanTest, JacobianDZeta) {
     expectDzetaMatchesFiniteDiff<tassel_core::CameraRadTan>(cam_.get(), radtan_K, radtan_D);
 }
 
-// ── CameraEqui ─────────────────────────────────────────────────────────────
+// ── CameraEqui ────────────────────────────────────────────────────────────
 
 class CameraEquiTest : public ::testing::Test {
 protected:
@@ -277,7 +281,7 @@ TEST(CameraEqui, FourCoefDistortionIsValid) {
     EXPECT_NO_THROW(tassel_core::CameraEqui(equi_K, equi_D, kWidth, kHeight));
 }
 
-// ── Polymorphism through base pointer ─────────────────────────────────────
+// ── 通过基类指针进行多态调用 ──────────────────────────────────────────────
 
 TEST(CameraPolymorphism, BothModelsWorkThroughBasePtr) {
     tassel_core::Camera radtan =
@@ -298,7 +302,7 @@ TEST(CameraPolymorphism, BothModelsWorkThroughBasePtr) {
     }
 }
 
-// ── Factory ────────────────────────────────────────────────────────────────
+// ── 工厂 ───────────────────────────────────────────────────────────────────
 
 TEST(CameraFactory, CreatesFromString) {
     auto cam1 = tassel_core::CameraFactory::create("radtan", radtan_K, radtan_D, kWidth, kHeight);

@@ -25,6 +25,7 @@ cam1:
         - [0.0, 808.546599, 365.454054]
         - [0.0, 0.0, 1.0]
 
+# 图像与特征跟踪
 rows: 720
 cols: 1280
 per_grid_rows: 60
@@ -39,9 +40,9 @@ max_square_move_dist: 0.5
 min_gradient: 20.0
 enable_statistics: true
 
+# 特征与关键帧管理
 reproj_err_thres: 1.4
 reproj_huber_thres: 1.0
-
 parallax_thres: 20.0
 tracked_times_thres: 3
 min_depth: 0.3
@@ -49,31 +50,33 @@ max_depth: 5.0
 min_translation: 0.06
 min_tracked_pts: 50
 keyframe_new_feature_ratio: 0.25
+keyframe_time_threshold: 1.5
 
+# 滑窗优化
 num_iterations: 16
 max_frame_count: 10
-integrator_type: midpoint
-
-initial_exposure_time_us: 6000
-
 visual_factor_weight: 400.0
+num_threads: 1
 
-num_init_iterations: 8
+# 时间延迟可观测性
+delay_obs_gyro_threshold: 0.2
+delay_obs_speed_threshold: 0.2
+delay_obs_min_frames: 3
 
+# IMU 模型与积分
+integrator_type: midpoint
 acc_n: 1.9291286492253038e-02
 acc_w: 8.0363303593887979e-04
 gyr_n: 2.6401761065710893e-03
 gyr_w: 7.0304129470456934e-05
 g_norm: 9.8035
-
 acc_bias: [0.720, -0.022, -0.199]
-
-num_threads: 1
-gravity_diff_threshold: 0.21
-dt_gyro_threshold: 0.2
-keyframe_time_threshold: 1.5
 imu_repropagate_ba_threshold: 0.02
 imu_repropagate_bg_threshold: 0.002
+
+# 视觉惯性初始化
+num_init_iterations: 8
+gravity_diff_threshold: 0.21
 sfm_min_seed_pts: 10
 sfm_min_e_inliers: 8
 sfm_e_ransac_threshold: 0.004
@@ -83,5 +86,9 @@ sfm_max_bad_pnp_ratio: 0.3
 sfm_ba_max_iterations: 10
 sfm_ba_num_threads: 5
 
+# 硬件采集
+initial_exposure_time_us: 6000
+
+# 可视化
 viewer:
     path_max_poses: 300

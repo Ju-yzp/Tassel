@@ -1,15 +1,15 @@
 // =============================================================================
 // test_prior_factor.cpp
 //
-// Purpose:
+// 目的：
 //   验证平方根边缘化输出和 MarginalizationPriorFactor 的残差/雅各比一致性。
 //
-// Test design:
-//   对 MargHelper::marginalizeSqrtToSqrt 使用 Eigen HouseholderQR 构造参考结果;
+// 测试设计：
+//   对 MargHelper::eliminateSquareRootSystem 使用 Eigen HouseholderQR 构造参考结果;
 //   对 prior factor 使用人工线性化数据, 分别检查残差计算、参数块布局和 manifold
 //   下的数值雅各比。
 //
-// Pass criteria:
+// 通过条件：
 //   消元后的 sqrt_H/sqrt_b 与 QR 参考一致, prior factor residual 与线性模型一致,
 //   解析雅各比通过数值微分检查。
 // =============================================================================
@@ -31,7 +31,7 @@ namespace {
 
 constexpr double kJacobianRelTol = 1e-6;
 
-// ── Helper: HouseholderQR reference implementation ────────────────────────
+// ── 辅助函数：HouseholderQR 参考实现 ──────────────────────────────────────
 
 void computeExpected(
     const Eigen::MatrixXd& Q2Jp_orig, const Eigen::VectorXd& Q2r_orig, Eigen::MatrixXd& expected_H,
@@ -56,7 +56,7 @@ void computeExpected(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// MargHelper::marginalizeSqrtToSqrt tests
+// MargHelper::eliminateSquareRootSystem 测试
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST(MarginalizeSqrtToSqrtTest, FullRank3x4) {
@@ -71,9 +71,9 @@ TEST(MarginalizeSqrtToSqrtTest, FullRank3x4) {
 
     Eigen::MatrixXd marg_sqrt_H;
     Eigen::VectorXd marg_sqrt_b;
-    MargHelper::marginalizeSqrtToSqrt(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+    MargHelper::eliminateSquareRootSystem(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
 
-    // Inputs are consumed
+    // 输入矩阵会被消耗
     EXPECT_EQ(Q2Jp.rows(), 0);
     EXPECT_EQ(Q2Jp.cols(), 0);
     EXPECT_EQ(Q2r.rows(), 0);
@@ -81,7 +81,7 @@ TEST(MarginalizeSqrtToSqrtTest, FullRank3x4) {
     EXPECT_EQ(marg_sqrt_H.rows(), marg_sqrt_b.rows());
     EXPECT_EQ(marg_sqrt_H.cols(), static_cast<Eigen::Index>(keep_size));
 
-    // Upper-triangular check
+    // 检查上三角结构
     for (Eigen::Index r = 0; r < marg_sqrt_H.rows(); ++r) {
         for (Eigen::Index c = 0; c < std::min(r, marg_sqrt_H.cols()); ++c) {
             EXPECT_NEAR(marg_sqrt_H(r, c), 0.0, 1e-14)
@@ -115,7 +115,7 @@ TEST(MarginalizeSqrtToSqrtTest, ShortWide2x3) {
 
     Eigen::MatrixXd marg_sqrt_H;
     Eigen::VectorXd marg_sqrt_b;
-    MargHelper::marginalizeSqrtToSqrt(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+    MargHelper::eliminateSquareRootSystem(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
 
     EXPECT_GT(marg_sqrt_H.rows(), 0);
     EXPECT_EQ(marg_sqrt_H.cols(), keep_size);
@@ -141,7 +141,7 @@ TEST(MarginalizeSqrtToSqrtTest, RankDeficient4x5) {
     const size_t keep_size = 4;
     Eigen::MatrixXd marg_sqrt_H;
     Eigen::VectorXd marg_sqrt_b;
-    MargHelper::marginalizeSqrtToSqrt(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+    MargHelper::eliminateSquareRootSystem(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
 
     EXPECT_EQ(marg_sqrt_H.cols(), keep_size);
     EXPECT_LE(marg_sqrt_H.rows(), 2);  // rank-limited
@@ -155,7 +155,7 @@ TEST(MarginalizeSqrtToSqrtTest, EmptyInput) {
 
     Eigen::MatrixXd marg_sqrt_H;
     Eigen::VectorXd marg_sqrt_b;
-    MargHelper::marginalizeSqrtToSqrt(1, 3, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+    MargHelper::eliminateSquareRootSystem(1, 3, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
 
     EXPECT_EQ(marg_sqrt_H.rows(), 0);
     EXPECT_EQ(marg_sqrt_b.rows(), 0);
@@ -169,7 +169,7 @@ TEST(MarginalizeSqrtToSqrtTest, NoConstraintRemainsAfterElimination) {
 
     Eigen::MatrixXd marg_sqrt_H;
     Eigen::VectorXd marg_sqrt_b;
-    MargHelper::marginalizeSqrtToSqrt(1, 1, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+    MargHelper::eliminateSquareRootSystem(1, 1, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
 
     EXPECT_EQ(marg_sqrt_H.rows(), 0);
     EXPECT_EQ(marg_sqrt_H.cols(), 1);
@@ -177,7 +177,7 @@ TEST(MarginalizeSqrtToSqrtTest, NoConstraintRemainsAfterElimination) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// MarginalizationPriorFactor cost function tests
+// MarginalizationPriorFactor 代价函数测试
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST(MarginalizationPriorTest, ResidualMatchesDirect) {
@@ -186,8 +186,11 @@ TEST(MarginalizationPriorTest, ResidualMatchesDirect) {
 
     // H: 6 × 12 (2 frames), b: 6 × 1
     Eigen::MatrixXd H(6, 12);
-    for (int r = 0; r < 6; ++r)
-        for (int c = 0; c < 12; ++c) H(r, c) = n(rng);
+    for (int r = 0; r < 6; ++r) {
+        for (int c = 0; c < 12; ++c) {
+            H(r, c) = n(rng);
+        }
+    }
     Eigen::VectorXd b = Eigen::VectorXd::Random(6);
 
     std::array<double, 6> lin0 = {0, 0, 0, 0, 0, 0};
@@ -199,14 +202,14 @@ TEST(MarginalizationPriorTest, ResidualMatchesDirect) {
     data.linearization_poses = {lin0, lin1};
     MarginalizationPriorFactor factor(data);
 
-    // Random optimized pose
+    // 随机优化位姿
     double pose0[6], pose1[6];
     for (int i = 0; i < 6; ++i) {
         pose0[i] = n(rng);
         pose1[i] = n(rng);
     }
 
-    // Expected residual
+    // 预期残差
     Eigen::VectorXd x_opt(12);
     x_opt << pose0[0], pose0[1], pose0[2], pose0[3], pose0[4], pose0[5], pose1[0], pose1[1],
         pose1[2], pose1[3], pose1[4], pose1[5];
@@ -225,8 +228,11 @@ TEST(MarginalizationPriorTest, JacobiansMatchManifoldFiniteDiff) {
     std::normal_distribution<double> n(0.0, 1.0);
 
     Eigen::MatrixXd H(8, 12);
-    for (int r = 0; r < 8; ++r)
-        for (int c = 0; c < 12; ++c) H(r, c) = n(rng);
+    for (int r = 0; r < 8; ++r) {
+        for (int c = 0; c < 12; ++c) {
+            H(r, c) = n(rng);
+        }
+    }
     Eigen::VectorXd b = Eigen::VectorXd::Random(8);
 
     std::array<double, 6> lin0 = {0.2, -0.1, 0.3, 0.4, -0.2, 0.1};
@@ -303,26 +309,35 @@ TEST(MarginalizationPriorTest, RebaseMatchesOldPriorAtCurrentState) {
     old_prior.b.resize(kRows);
     for (int r = 0; r < kRows; ++r) {
         old_prior.b[r] = 0.1 * n(rng);
-        for (int c = 0; c < kCols; ++c) old_prior.H(r, c) = n(rng);
+        for (int c = 0; c < kCols; ++c) {
+            old_prior.H(r, c) = n(rng);
+        }
     }
     old_prior.linearization_poses = {
         std::array<double, 6>{0.1, -0.2, 0.3, 0.35, -0.15, 0.2},
         std::array<double, 6>{-0.3, 0.15, 0.2, -0.2, 0.3, 0.1}};
     old_prior.linearization_speed_bias.resize(kFrames);
-    for (int i = 0; i < kFrames; ++i)
-        for (double& value : old_prior.linearization_speed_bias[i]) value = 0.1 * n(rng);
+    for (int i = 0; i < kFrames; ++i) {
+        for (double& value : old_prior.linearization_speed_bias[i]) {
+            value = 0.1 * n(rng);
+        }
+    }
     old_prior.linearization_delay_time = 0.004;
 
     auto current_poses = old_prior.linearization_poses;
     auto current_speed_bias = old_prior.linearization_speed_bias;
     for (int i = 0; i < kFrames; ++i) {
-        for (double& value : current_poses[i]) value += 0.15 * n(rng);
-        for (double& value : current_speed_bias[i]) value += 0.05 * n(rng);
+        for (double& value : current_poses[i]) {
+            value += 0.15 * n(rng);
+        }
+        for (double& value : current_speed_bias[i]) {
+            value += 0.05 * n(rng);
+        }
     }
     double current_delay = -0.003;
 
-    const MargLinData rebased =
-        MargHelper::rebasePrior(old_prior, current_poses, current_speed_bias, current_delay);
+    const MargLinData prior_in_current_tangent = MargHelper::transportPriorToCurrentTangent(
+        old_prior, current_poses, current_speed_bias, current_delay);
     MarginalizationPriorFactor old_factor(old_prior);
     std::vector<const double*> parameters;
     for (int i = 0; i < kFrames; ++i) {
@@ -333,7 +348,7 @@ TEST(MarginalizationPriorTest, RebaseMatchesOldPriorAtCurrentState) {
 
     Eigen::VectorXd residual(kRows);
     ASSERT_TRUE(old_factor.Evaluate(parameters.data(), residual.data(), nullptr));
-    EXPECT_TRUE(rebased.b.isApprox(residual, 1e-12));
+    EXPECT_TRUE(prior_in_current_tangent.b.isApprox(residual, 1e-12));
 
     const double eps = 1e-7;
     SE3RightManifold manifold;
@@ -378,8 +393,8 @@ TEST(MarginalizationPriorTest, RebaseMatchesOldPriorAtCurrentState) {
     current_delay += eps;
     numerical.col(kCols - 1) = (rp - rm) / (2.0 * eps);
 
-    EXPECT_TRUE(rebased.H.isApprox(numerical, 2e-7))
-        << "max error: " << (rebased.H - numerical).cwiseAbs().maxCoeff();
+    EXPECT_TRUE(prior_in_current_tangent.H.isApprox(numerical, 2e-7))
+        << "max error: " << (prior_in_current_tangent.H - numerical).cwiseAbs().maxCoeff();
 }
 
 TEST(SE3RightManifoldTest, PlusAndMinusJacobiansAreInverse) {
@@ -394,17 +409,19 @@ TEST(SE3RightManifoldTest, PlusAndMinusJacobiansAreInverse) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Ceres optimization with MarginalizationPriorFactor
+// 使用 MarginalizationPriorFactor 进行 Ceres 优化
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST(MarginalizationPriorTest, CeresConvergesWithPrior) {
     std::mt19937 rng(99);
     std::normal_distribution<double> n(0.0, 1.0);
 
-    // Ground truth: random x_gt. Prior residual: r = H*(x - x_lin) + b.
-    // For optimum at x = x_gt with x_lin = 0, we need b = -H * x_gt.
+    // 真值为随机 x_gt，先验残差为 r = H*(x - x_lin) + b。
+    // 当 x_lin = 0 且最优点为 x_gt 时，需要满足 b = -H * x_gt。
     Eigen::VectorXd x_gt(12);
-    for (int i = 0; i < 12; ++i) x_gt(i) = n(rng);
+    for (int i = 0; i < 12; ++i) {
+        x_gt(i) = n(rng);
+    }
 
     Eigen::MatrixXd H = Eigen::MatrixXd::Identity(12, 12);
     Eigen::VectorXd b = -H * x_gt;

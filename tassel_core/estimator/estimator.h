@@ -8,7 +8,7 @@
 #include <variant>
 #include <vector>
 
-#include "estimator/window_marginalization_plan.h"
+#include "estimator/marginalization_layout.h"
 #include "factor/integrator_base.h"
 #include "frond_end/feature_manager.h"
 #include "marg/marg_lin_data.h"
@@ -46,7 +46,7 @@ public:
         tassel_utils::FrameId frame_id,
         const std::unordered_map<int, FeaturePerFrame>& feature_frame,
         const std::vector<tassel_utils::IMUMeasurement>& imu_measurements = {},
-        double applied_delay = 0.0);
+        double sync_delay = 0.0);
 
     void setPoseCallback(std::function<void(double, const Sophus::SE3d&)> cb) {
         pose_callback_ = std::move(cb);
@@ -62,7 +62,9 @@ public:
     }
     void setCamera(const CameraBase* camera) {
         camera_ = camera;
-        if (state_) state_->camera = camera;
+        if (state_) {
+            state_->camera = camera;
+        }
     }
 
     void optimize(double timestamp = -1.0);
@@ -75,11 +77,14 @@ private:
     using PreintegratorStorage =
         std::variant<IntegratorVector<MidPointIntegrator>, IntegratorVector<EulerIntegrator>>;
 
-    void buildPrior(const WindowMarginalizationPlan& plan);
+    void updateMarginalizationPrior(const MarginalizationLayout& layout);
+
+    void predictFrameState(
+        int frame_slot, const std::vector<tassel_utils::IMUMeasurement>& imu_measurements);
 
     void slideInitializationWindow();
 
-    void slideWindow(const WindowMarginalizationPlan& plan);
+    void shiftWindowAfterMarginalization(const MarginalizationLayout& layout);
 
     bool tryInitialize();
 
@@ -103,7 +108,7 @@ private:
 
     Eigen::Matrix<double, 18, 18> noise_;
 
-    bool gravity_initialized_ = false;
+    bool initialized_ = false;
 
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
     std::function<void(double, const Sophus::SE3d&)> realtime_pose_callback_;
@@ -115,7 +120,7 @@ private:
     Eigen::Vector3d last_imu_acc_;
     Eigen::Vector3d last_imu_gyro_;
 
-    std::unique_ptr<MargLinData> marg_data_;
+    std::unique_ptr<MargLinData> marginalization_prior_;
 
     // 动态初始化使用,存储sfm位姿以及imu在体坐标系下的速度
     std::vector<Eigen::Matrix3d> Rs_;
