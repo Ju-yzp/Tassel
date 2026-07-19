@@ -86,9 +86,6 @@ sfm_max_bad_pnp_ratio: 0.3
 sfm_ba_max_iterations: 10
 sfm_ba_num_threads: 5
 
-# 硬件采集
-initial_exposure_time_us: 6000
-
 # 可视化
 viewer:
     path_max_poses: 300

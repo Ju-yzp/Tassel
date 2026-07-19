@@ -44,9 +44,9 @@
         }
       }
     },
-    "Image!tasselstereo": {
+    "Image!tasselmono": {
       "imageMode": {
-        "imageTopic": "/stereo/image",
+        "imageTopic": "/mono/image",
         "synchronize": false
       }
     },

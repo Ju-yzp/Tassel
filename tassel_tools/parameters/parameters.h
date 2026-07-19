@@ -24,7 +24,6 @@ struct Parameters {
         loadEstimator(parser);
         loadImu(parser);
         loadInitialization(parser);
-        loadHardware(parser);
         loadViewer(parser);
         validate();
     }
@@ -86,9 +85,6 @@ struct Parameters {
     double sfm_max_bad_pnp_ratio = 0.3;
     int sfm_ba_max_iterations = 30;
     int sfm_ba_num_threads = 5;
-
-    // 硬件采集：用于 OAK/DepthAI 集成测试。
-    int initial_exposure_time_us;
 
     // 可视化：用于 Viewer 发布器。
     size_t viewer_path_max_poses = 300;
@@ -189,10 +185,6 @@ private:
         sfm_max_bad_pnp_ratio = parser.as<double>("sfm_max_bad_pnp_ratio");
         sfm_ba_max_iterations = parser.as<int>("sfm_ba_max_iterations");
         sfm_ba_num_threads = parser.as<int>("sfm_ba_num_threads");
-    }
-
-    void loadHardware(ParamsParser& parser) {
-        initial_exposure_time_us = parser.as<int>("initial_exposure_time_us");
     }
 
     void loadViewer(ParamsParser& parser) {

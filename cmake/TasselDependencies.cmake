@@ -9,7 +9,7 @@ function(tassel_configure_dependencies)
   find_package(Eigen3 REQUIRED)
   # Use system OpenCV (same 4.5.4 as Ceres) to avoid TBB version conflict
   # between ~/.local custom OpenCV (libtbb.so.12) and system OpenCV
-  # (libtbb.so.2) pulled by depthai/ROS2.
+  # (libtbb.so.2) required by the ROS 2 dependency chain.
   find_package(OpenCV REQUIRED HINTS /usr/lib/x86_64-linux-gnu/cmake/opencv4
                NO_DEFAULT_PATH)
   find_package(spdlog REQUIRED)

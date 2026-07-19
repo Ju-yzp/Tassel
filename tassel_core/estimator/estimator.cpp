@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Wu JunPing
+// Licensed under the MIT License.
+// Design references: Open-VINS, Basalt, and VINS-Mono.
+
 #include "estimator.h"
 
 #include <Eigen/Core>

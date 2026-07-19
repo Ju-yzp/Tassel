@@ -10,6 +10,7 @@ bridge:
         - /ground_truth/path
         - /landmarks
         - /stereo/image
+        - /mono/image
         - /optimization/.*
 
 studio:

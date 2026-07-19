@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Wu JunPing
+// Licensed under the MIT License.
+// Design references: Open-VINS, Basalt, and VINS-Mono.
+
 // Eigen
 #include <Eigen/Core>
 #include <Eigen/SVD>

@@ -6,6 +6,7 @@
 
 // OpenCV
 #include <opencv2/core/hal/interface.h>
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <opencv2/imgproc.hpp>
@@ -303,7 +304,7 @@ void FeatureTracker::setMask(size_t camera_id) {
         cv::circle(mask, pt, mask_radius, cv::Scalar(0), -1);
         int y = pt.y - grid_edge_rows;
         int x = pt.x - grid_edge_cols;
-        if (y < rows - grid_edge_rows && x < cols - grid_edge_cols) {
+        if (y >= 0 && x >= 0 && y < rows - 2 * grid_edge_rows && x < cols - 2 * grid_edge_cols) {
             int id = x / ctc.per_grid_cols + (y / ctc.per_grid_rows) * ctc.grid_cols;
             if (id < static_cast<int>(ctc.grid_mask.size()) && id >= 0) {
                 ctc.grid_mask[id] = true;
@@ -373,10 +374,26 @@ void FeatureTracker::extractNewFeatures(
             }
         }
     }
+    std::vector<size_t> candidate_indices;
+    candidate_indices.reserve(ncells);
     for (size_t i = 0; i < ncells; ++i) {
-        if (best_pts[i].x != -1) {
-            new_pts.emplace_back(best_pts[i]);
+        if (best_pts[i].x >= 0) {
+            candidate_indices.push_back(i);
         }
+    }
+    std::sort(candidate_indices.begin(), candidate_indices.end(), [&](size_t lhs, size_t rhs) {
+        return best_scores[lhs] > best_scores[rhs];
+    });
+
+    for (size_t index : candidate_indices) {
+        const cv::Point2f& candidate = best_pts[index];
+        const int x = cvRound(candidate.x);
+        const int y = cvRound(candidate.y);
+        if (ctc.mask.at<uchar>(y, x) == 0) {
+            continue;
+        }
+        new_pts.push_back(candidate);
+        cv::circle(ctc.mask, candidate, ctc.mask_radius, cv::Scalar(0), -1);
     }
 }
 
