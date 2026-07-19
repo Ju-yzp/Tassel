@@ -77,6 +77,7 @@ struct Parameters {
 
     // 视觉惯性初始化和 SFM：用于 Estimator::tryInitialize。
     double gravity_diff_threshold = 0.17;
+    double init_scale_zero_threshold = 0.001;
     int sfm_min_seed_pts = 10;
     int sfm_min_e_inliers = 8;
     double sfm_e_ransac_threshold = 0.004;
@@ -109,6 +110,9 @@ private:
         }
         if (keyframe_new_feature_ratio < 0.0 || keyframe_new_feature_ratio > 1.0) {
             throw std::invalid_argument("keyframe_new_feature_ratio must be in [0, 1]");
+        }
+        if (init_scale_zero_threshold < 0.0) {
+            throw std::invalid_argument("init_scale_zero_threshold must be non-negative");
         }
     }
 
@@ -177,6 +181,7 @@ private:
 
     void loadInitialization(ParamsParser& parser) {
         gravity_diff_threshold = parser.as<double>("gravity_diff_threshold");
+        init_scale_zero_threshold = parser.as<double>("init_scale_zero_threshold");
         sfm_min_seed_pts = parser.as<int>("sfm_min_seed_pts");
         sfm_min_e_inliers = parser.as<int>("sfm_min_e_inliers");
         sfm_e_ransac_threshold = parser.as<double>("sfm_e_ransac_threshold");

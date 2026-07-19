@@ -77,6 +77,7 @@ imu_repropagate_bg_threshold: 0.006
 num_init_iterations: 8
 init_time_span: 5.0
 gravity_diff_threshold: 0.21
+init_scale_zero_threshold: 0.001
 sfm_min_seed_pts: 10
 sfm_min_e_inliers: 8
 sfm_e_ransac_threshold: 0.004

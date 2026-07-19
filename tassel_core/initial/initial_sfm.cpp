@@ -160,7 +160,14 @@ int InitialSFM::selectSeedFrame(int frame_num, const std::vector<SFMFeature>& sf
 
 std::vector<std::pair<int, int>> InitialSFM::findParallaxFrames(
     int seed_id, int frame_num, const std::vector<SFMFeature>& sfm_f) {
-    std::vector<std::pair<int, int>> other_candidates;
+    struct FrameCandidate {
+        int frame_id;
+        int common_count;
+        int frame_distance;
+        double median_parallax;
+    };
+
+    std::vector<FrameCandidate> connected_candidates;
     for (int i = 0; i < frame_num; ++i) {
         if (i == seed_id) {
             continue;
@@ -191,21 +198,51 @@ std::vector<std::pair<int, int>> InitialSFM::findParallaxFrames(
         }
         const size_t mid = parallaxes.size() / 2;
         std::nth_element(parallaxes.begin(), parallaxes.begin() + mid, parallaxes.end());
-        if (parallaxes[mid] <= e_ransac_threshold_) {
-            continue;
+        connected_candidates.push_back({i, common, std::abs(i - seed_id), parallaxes[mid]});
+    }
+
+    std::vector<FrameCandidate> parallax_candidates;
+    for (const auto& candidate : connected_candidates) {
+        if (candidate.median_parallax > e_ransac_threshold_) {
+            parallax_candidates.push_back(candidate);
         }
-        other_candidates.emplace_back(i, common);
     }
-    std::sort(other_candidates.begin(), other_candidates.end(), [](const auto& a, const auto& b) {
-        return a.second > b.second;
-    });
-    if (other_candidates.size() > 2) {
-        other_candidates.resize(2);
-    }
-    if (other_candidates.empty() || other_candidates[0].second < min_seed_pts_) {
+
+    if (parallax_candidates.empty()) {
+        if (connected_candidates.empty()) {
+            spdlog::info("SFM: no frame has enough visual connection to seed {}", seed_id);
+            return {};
+        }
+        const auto fallback = std::max_element(
+            connected_candidates.begin(), connected_candidates.end(),
+            [](const auto& lhs, const auto& rhs) {
+                if (lhs.frame_distance != rhs.frame_distance) {
+                    return lhs.frame_distance < rhs.frame_distance;
+                }
+                return lhs.common_count < rhs.common_count;
+            });
         spdlog::info(
-            "SFM: no suitable parallax frame (best common={})",
-            other_candidates.empty() ? 0 : other_candidates[0].second);
+            "SFM: low parallax, fallback frame {} distance={} common={} parallax={:.6f}",
+            fallback->frame_id, fallback->frame_distance, fallback->common_count,
+            fallback->median_parallax);
+        return {{fallback->frame_id, fallback->common_count}};
+    }
+
+    std::sort(
+        parallax_candidates.begin(), parallax_candidates.end(),
+        [](const auto& lhs, const auto& rhs) {
+            if (lhs.median_parallax != rhs.median_parallax) {
+                return lhs.median_parallax > rhs.median_parallax;
+            }
+            return lhs.common_count > rhs.common_count;
+        });
+
+    std::vector<std::pair<int, int>> other_candidates;
+    const size_t candidate_count = std::min<size_t>(2, parallax_candidates.size());
+    other_candidates.reserve(candidate_count);
+    for (size_t i = 0; i < candidate_count; ++i) {
+        other_candidates.emplace_back(
+            parallax_candidates[i].frame_id, parallax_candidates[i].common_count);
     }
     return other_candidates;
 }

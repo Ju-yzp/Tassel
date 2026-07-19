@@ -1,56 +1,21 @@
-# Tassel 开发要求
+# Tassel Development Requirements
 
-## 代码结构
+## Code Implementation
 
-- 保持现有模块边界：估计器、状态、特征管理、重投影因子、预积分和边缘化分别负责各自的数据与数学逻辑。
-- 新增功能优先复用已有接口；只有在能减少重复或明确表达数学边界时才新增抽象。
-- 删除、重命名文件或接口时，必须同步更新 CMake、头文件引用、测试和文档。
-- 不保留已经没有调用方的旧变量、旧函数和旧文件名。
+- Every class with functional behavior must have unit tests. Pure data structures do not require dedicated tests.
+- Code must remain concise and maintainable.
+- Function names must clearly communicate their intent.
+- Variable, structure, and class names must be short and intention-revealing.
+- Before writing a function, search the codebase and verify whether equivalent functionality already exists.
+- Reuse an existing function only when its full behavior is required. If only a small subset is needed, implement that subset directly instead of coupling the new code to unnecessary behavior.
+- Branch and loop bodies must use braces, even when the body contains only one statement.
+- When refactoring, choose the approach with the smallest practical impact on the existing architecture and module boundaries.
 
-## 命名
+## Theoretical Rigor
 
-- 名称应同时满足简洁和语义具体。避免 `td` 这类无法说明物理含义的缩写作为长期变量名；`dt` 仅可用于局部积分时间间隔，不能作为长期状态或接口字段名。
-- 允许保留已经形成项目约定的领域符号：`R/P/V/Ba/Bg` 表示姿态、位置、速度、加速度计偏置和陀螺仪偏置，`ric/tic` 表示相机-IMU 外参，`uv` 表示图像观测，`i/j/k` 表示局部索引。新增代码应优先使用更具体的名称。
-- 时间延迟相关变量遵循以下语义：
-  - `delay_time`：当前优化的全局相机-IMU 时间延迟。
-  - `sync_delay`：某一帧进入同步器时实际采用的延迟快照。
-  - `dt_i` / `dt_j`：当前优化延迟相对对应帧同步延迟的剩余补偿量。
-- 配置参数使用短而明确的模块前缀，例如 `delay_obs_gyro_threshold`、`delay_obs_speed_threshold`、`delay_obs_min_frames`。
-- 同一物理量在状态、观测、因子、边缘化和测试中使用一致名称，不使用同义字段并存。
+- Any change involving principles or mathematical formulas must be rigorously verified.
 
-## 数学与状态一致性
+## Engineering Practice
 
-- 状态预测、视觉重投影、特征宿主转移和边缘化线性化必须使用一致的时间延迟运动模型。
-- 对姿态、速度、位置增加高阶补偿时，必须同步检查残差和雅各比；不能只修改残差而保留明显不一致的解析雅各比。
-- IMU 采样值应明确记录采样时刻；图像时刻的角速度和加速度使用局部插值获得，样本不足时才允许有记录的退化策略。
-- 预积分、偏置重传播和时间延迟补偿的符号约定必须在代码注释或测试中固定，并通过数值雅各比或合成数据测试验证。
-- 边缘化先验的列顺序、保留状态和线性化点必须有明确注释；修改消元顺序时必须同步更新布局测试。
-
-## 控制流与日志
-
-- `if`、`for`、`while`、`else` 即使主体只有一条语句也必须使用花括号。
-- 核心库使用 `spdlog`；正常运行诊断使用 `info`，异常和不可恢复失败使用 `error`，避免在默认运行路径打印大量内部细节。
-- `std::cout` 和 `std::cerr` 仅用于测试程序、数据集驱动或明确的命令行工具输出。
-- 日志字段应使用稳定、可搜索的名称，避免只输出无法定位来源的裸数字。
-
-## 配置文件
-
-- 配置按作用分组，顺序保持一致：相机标定、图像与特征跟踪、特征与关键帧管理、滑窗优化、时间延迟可观测性、IMU 模型与积分、视觉惯性初始化、可视化。
-- `tassel.yaml` 和 `euroc.yaml` 的键集合应保持同步；数据集特定的阈值可以不同，但必须保留同名键。
-- 配置注释使用中文；调整布局不得无意改变参数值。
-- 新增参数必须同时加入参数结构、解析、合法性检查、默认配置和至少一个测试配置。
-
-## 验证
-
-每次涉及 C++ 或配置的修改至少执行：
-
-```bash
-cmake --build build -j2
-git diff --check
-```
-
-涉及因子、状态、特征管理或边缘化时，还应运行对应的单元测试；修改解析器或配置时运行参数测试。提交前必须确认旧名称没有残留：
-
-```bash
-rg -n "旧名称" . --glob '!build/**'
-```
+- Before changing a function that affects upstream or downstream code, verify its impact on both sides and report the impact to the user. The user decides whether to proceed.
+- After each small change, save it to the Git staging area.

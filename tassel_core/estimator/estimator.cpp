@@ -721,6 +721,13 @@ bool Estimator::tryInitialize() {
         spdlog::info("VI initialization: gravity refinement failed");
         return false;
     }
+    if (std::abs(s) <= params_.init_scale_zero_threshold) {
+        spdlog::info("VI initialization: degenerate scale {:.6f} treated as zero", s);
+        s = 0.0;
+    } else if (s < 0.0) {
+        spdlog::info("VI initialization: negative scale {:.6f}", s);
+        return false;
+    }
 
     Eigen::Matrix3d R0 =
         Eigen::Quaterniond::FromTwoVectors((g).normalized(), Eigen::Vector3d(0, 0, 1))
