@@ -24,20 +24,18 @@ struct Parameters {
         loadEstimator(parser);
         loadImu(parser);
         loadInitialization(parser);
-        loadHardware(parser);
         loadViewer(parser);
         validate();
     }
 
-    // Camera calibration: consumed by test_estimator camera construction, FeatureManager
-    // triangulation, visual factors, initialization, and world/IMU alignment.
+    // 相机标定：用于 test_estimator 相机构造、特征管理器三角化、视觉因子、初始化和世界/IMU 对齐。
     std::map<size_t, Eigen::Matrix4d> T_cam_imu_map;
     std::map<size_t, cv::Mat> cam_distort_map;
     std::map<size_t, cv::Mat> cam_intrinsic_map;
     Eigen::Matrix3d ric = Eigen::Matrix3d::Identity();
     Eigen::Vector3d tic = Eigen::Vector3d::Zero();
 
-    // Image and feature-tracker settings: consumed by FeatureTracker and camera creation.
+    // 图像和特征跟踪器配置：用于 FeatureTracker 和相机创建。
     int rows, cols;
     int per_grid_rows, per_grid_cols;
     int edge_x, edge_y;
@@ -48,7 +46,7 @@ struct Parameters {
     double min_gradient;
     bool enable_statistics;
 
-    // Landmark and keyframe management: consumed by FeatureManager.
+    // 路标和关键帧管理：用于 FeatureManager。
     double reproj_err_thres;
     double reproj_huber_thres;
     double parallax_thres;
@@ -59,23 +57,25 @@ struct Parameters {
     double max_depth;
     double keyframe_new_feature_ratio;
 
-    // Sliding-window optimization: consumed by Estimator::optimize/buildPrior/reset.
+    // 滑窗优化：用于 Estimator::optimize、先验更新和 reset。
     int num_iterations;
     size_t max_frame_count;
     double visual_factor_weight;
     int num_threads = 1;
-    double dt_gyro_threshold = 0.7;
+    double delay_obs_gyro_threshold = 0.7;
+    double delay_obs_speed_threshold = 0.2;
+    int delay_obs_min_frames = 3;
     double imu_repropagate_ba_threshold = 0.02;
     double imu_repropagate_bg_threshold = 0.002;
     tassel_utils::IntegratorType integrator_type = tassel_utils::IntegratorType::kMidPoint;
 
-    // IMU model and calibration: consumed by Estimator propagation, preintegration, and init.
+    // IMU 模型和标定：用于 Estimator 预测、预积分和初始化。
     double acc_n, acc_w;
     double gyr_n, gyr_w;
     double g_norm;
     Eigen::Vector3d acc_bias = Eigen::Vector3d::Zero();
 
-    // Visual-inertial initialization and SFM: consumed by Estimator::tryInitialize.
+    // 视觉惯性初始化和 SFM：用于 Estimator::tryInitialize。
     double gravity_diff_threshold = 0.17;
     int sfm_min_seed_pts = 10;
     int sfm_min_e_inliers = 8;
@@ -86,10 +86,7 @@ struct Parameters {
     int sfm_ba_max_iterations = 30;
     int sfm_ba_num_threads = 5;
 
-    // Hardware capture: consumed by OAK/DepthAI integration tests.
-    int initial_exposure_time_us;
-
-    // Visualization: consumed by Viewer publishers.
+    // 可视化：用于 Viewer 发布器。
     size_t viewer_path_max_poses = 300;
 
 private:
@@ -102,6 +99,10 @@ private:
         }
         if (num_iterations <= 0 || num_threads <= 0 || visual_factor_weight <= 0.0) {
             throw std::invalid_argument("Invalid optimization parameters");
+        }
+        if (delay_obs_gyro_threshold < 0.0 || delay_obs_speed_threshold < 0.0 ||
+            delay_obs_min_frames <= 0) {
+            throw std::invalid_argument("Invalid time-delay excitation parameters");
         }
         if (acc_n <= 0.0 || acc_w <= 0.0 || gyr_n <= 0.0 || gyr_w <= 0.0 || g_norm <= 0.0) {
             throw std::invalid_argument("IMU noise and gravity parameters must be positive");
@@ -157,7 +158,9 @@ private:
         max_frame_count = parser.as<size_t>("max_frame_count");
         visual_factor_weight = parser.as<double>("visual_factor_weight");
         num_threads = parser.as<int>("num_threads");
-        dt_gyro_threshold = parser.as<double>("dt_gyro_threshold");
+        delay_obs_gyro_threshold = parser.as<double>("delay_obs_gyro_threshold");
+        delay_obs_speed_threshold = parser.as<double>("delay_obs_speed_threshold");
+        delay_obs_min_frames = parser.as<int>("delay_obs_min_frames");
         imu_repropagate_ba_threshold = parser.as<double>("imu_repropagate_ba_threshold");
         imu_repropagate_bg_threshold = parser.as<double>("imu_repropagate_bg_threshold");
         integrator_type = parseIntegratorType(parser.as<std::string>("integrator_type"));
@@ -182,10 +185,6 @@ private:
         sfm_max_bad_pnp_ratio = parser.as<double>("sfm_max_bad_pnp_ratio");
         sfm_ba_max_iterations = parser.as<int>("sfm_ba_max_iterations");
         sfm_ba_num_threads = parser.as<int>("sfm_ba_num_threads");
-    }
-
-    void loadHardware(ParamsParser& parser) {
-        initial_exposure_time_us = parser.as<int>("initial_exposure_time_us");
     }
 
     void loadViewer(ParamsParser& parser) {

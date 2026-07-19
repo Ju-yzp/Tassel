@@ -25,8 +25,12 @@ public:
         Eigen::Vector3d phi_new = Sophus::SO3d(q_new).log();
         Eigen::Vector3d P_new = P + dP;
 
-        for (int i = 0; i < 3; ++i) x_plus_delta[i] = P_new(i);
-        for (int i = 0; i < 3; ++i) x_plus_delta[3 + i] = phi_new(i);
+        for (int i = 0; i < 3; ++i) {
+            x_plus_delta[i] = P_new(i);
+        }
+        for (int i = 0; i < 3; ++i) {
+            x_plus_delta[3 + i] = phi_new(i);
+        }
         return true;
     }
 
@@ -36,9 +40,14 @@ public:
         Eigen::Vector3d phi(x[3], x[4], x[5]);
         Eigen::Matrix3d Jr_inv = Sophus::SO3d::leftJacobianInverse(-phi);
 
-        for (int i = 0; i < 3; ++i) jacobian[i * 6 + i] = 1.0;
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j) jacobian[(3 + i) * 6 + (3 + j)] = Jr_inv(i, j);
+        for (int i = 0; i < 3; ++i) {
+            jacobian[i * 6 + i] = 1.0;
+        }
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                jacobian[(3 + i) * 6 + (3 + j)] = Jr_inv(i, j);
+            }
+        }
         return true;
     }
 
@@ -53,8 +62,12 @@ public:
         Eigen::Vector3d dphi = (R_x.inverse() * R_y).log();
         Eigen::Vector3d dP = P_y - P_x;
 
-        for (int i = 0; i < 3; ++i) y_minus_x[i] = dP(i);
-        for (int i = 0; i < 3; ++i) y_minus_x[3 + i] = dphi(i);
+        for (int i = 0; i < 3; ++i) {
+            y_minus_x[i] = dP(i);
+        }
+        for (int i = 0; i < 3; ++i) {
+            y_minus_x[3 + i] = dphi(i);
+        }
         return true;
     }
 
@@ -63,9 +76,14 @@ public:
         Eigen::Vector3d phi(x[3], x[4], x[5]);
         Eigen::Matrix3d Jr = Sophus::SO3d::leftJacobian(-phi);
 
-        for (int i = 0; i < 3; ++i) jacobian[i * 6 + i] = 1.0;
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j) jacobian[(3 + i) * 6 + (3 + j)] = Jr(i, j);
+        for (int i = 0; i < 3; ++i) {
+            jacobian[i * 6 + i] = 1.0;
+        }
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                jacobian[(3 + i) * 6 + (3 + j)] = Jr(i, j);
+            }
+        }
         return true;
     }
 

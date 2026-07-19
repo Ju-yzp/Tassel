@@ -118,7 +118,9 @@ inline CameraState integrateImu(
         const double next_imu = std::ceil((t + 1e-9) / timeline.imu_dt) * timeline.imu_dt;
         const double t_next = std::min(next_imu, t_cam);
         const double dt = t_next - t;
-        if (dt < 1e-9) break;
+        if (dt < 1e-9) {
+            break;
+        }
 
         const ImuSample prev = interpolateSample(timeline, t);
         const ImuSample next = interpolateSample(timeline, t_next);

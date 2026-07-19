@@ -11,7 +11,7 @@
 #include <sophus/so3.hpp>
 #include <vector>
 
-#include "factor/visual_factor.h"
+#include "tassel_utils/rotation.h"
 
 namespace tassel_core {
 
@@ -28,7 +28,9 @@ bool linearAlignment(
         return false;
     }
     for (double dt : dts) {
-        if (!std::isfinite(dt) || dt <= 0.0) return false;
+        if (!std::isfinite(dt) || dt <= 0.0) {
+            return false;
+        }
     }
     int n_state = n_frames * 3 + 4;
 
@@ -78,9 +80,13 @@ bool linearAlignment(
     b = b * 1000.0;
 
     Eigen::LDLT<Eigen::MatrixXd> ldlt(A);
-    if (ldlt.info() != Eigen::Success) return false;
+    if (ldlt.info() != Eigen::Success) {
+        return false;
+    }
     Eigen::VectorXd x = ldlt.solve(b);
-    if (ldlt.info() != Eigen::Success || !x.allFinite()) return false;
+    if (ldlt.info() != Eigen::Success || !x.allFinite()) {
+        return false;
+    }
 
     s = x(n_state - 1) / 100.0;
     final_g = x.segment<3>(n_state - 4);
@@ -119,7 +125,7 @@ bool refineGravitySpeeds(
     Eigen::Vector3d g0_dir = G.normalized();
 
     for (int iter = 0; iter < 4; ++iter) {
-        Eigen::Matrix<double, 2, 3> T = computeTangentBasis(g0_dir);
+        Eigen::Matrix<double, 2, 3> T = tassel_utils::tangentBasis(g0_dir);
         Eigen::Matrix<double, 3, 2> L = g_mag * T.transpose();
         Eigen::Vector3d g0 = g_mag * g0_dir;
 
@@ -129,7 +135,9 @@ bool refineGravitySpeeds(
         for (int i = 0; i < n_frames - 1; ++i) {
             int j = i + 1;
             double dt = dts[i];
-            if (!std::isfinite(dt) || dt <= 0.0) return false;
+            if (!std::isfinite(dt) || dt <= 0.0) {
+                return false;
+            }
             double dt2 = 0.5 * dt * dt;
 
             Eigen::Matrix3d R = ric * Rs[i].transpose() * ric.transpose();
@@ -185,15 +193,21 @@ bool refineGravitySpeeds(
         A = A * 1000.0;
         b = b * 1000.0;
         Eigen::LDLT<Eigen::MatrixXd> ldlt(A);
-        if (ldlt.info() != Eigen::Success) return false;
+        if (ldlt.info() != Eigen::Success) {
+            return false;
+        }
         Eigen::VectorXd x = ldlt.solve(b);
-        if (ldlt.info() != Eigen::Success || !x.allFinite()) return false;
+        if (ldlt.info() != Eigen::Success || !x.allFinite()) {
+            return false;
+        }
 
         Eigen::Vector2d w(x[col_dg], x[col_dg + 1]);
         Eigen::Vector3d dg = T.transpose() * w;
         g0_dir = (g0_dir + dg).normalized();
 
-        for (int i = 0; i < n_frames; ++i) Vs[i] = x.segment<3>(i * 3);
+        for (int i = 0; i < n_frames; ++i) {
+            Vs[i] = x.segment<3>(i * 3);
+        }
         s = x(col_s) / 100.0;
     }
 

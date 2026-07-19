@@ -38,14 +38,17 @@ public:
     std::vector<Eigen::Vector2d> undistort(const std::vector<Eigen::Vector2d>& pts) const override {
         std::vector<cv::Point2f> cv_pts;
         cv_pts.reserve(pts.size());
-        for (const auto& p : pts)
+        for (const auto& p : pts) {
             cv_pts.emplace_back(static_cast<float>(p.x()), static_cast<float>(p.y()));
+        }
         std::vector<cv::Point2f> cv_out;
         cv::Mat I = cv::Mat::eye(3, 3, CV_64F);
         cv::undistortPoints(cv_pts, cv_out, k_, dist_coeffs_, I, I);
         std::vector<Eigen::Vector2d> out;
         out.reserve(cv_out.size());
-        for (const auto& p : cv_out) out.emplace_back(p.x, p.y);
+        for (const auto& p : cv_out) {
+            out.emplace_back(p.x, p.y);
+        }
         return out;
     }
 
@@ -75,7 +78,9 @@ public:
     std::vector<Eigen::Vector2d> distort(const std::vector<Eigen::Vector2d>& pts) const override {
         std::vector<Eigen::Vector2d> out;
         out.reserve(pts.size());
-        for (const auto& p : pts) out.emplace_back(distort(p));
+        for (const auto& p : pts) {
+            out.emplace_back(distort(p));
+        }
         return out;
     }
 

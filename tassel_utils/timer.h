@@ -45,7 +45,7 @@ public:
                 break;
         }
         if (elapsed < 0.001) {
-            spdlog::warn(name_ + ": operation too short to measure in " + suffix);
+            spdlog::info(name_ + ": operation too short to measure in " + suffix);
         }
         std::ostringstream oss;
         oss << name_ << ": " << std::fixed << std::setprecision(3) << elapsed << " " << suffix;

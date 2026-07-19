@@ -66,10 +66,14 @@ public:
 
         // 信息矩阵
         Eigen::LLT<Eigen::Matrix<double, 15, 15>> covariance_llt(integrator->covariance);
-        if (covariance_llt.info() != Eigen::Success) return false;
+        if (covariance_llt.info() != Eigen::Success) {
+            return false;
+        }
         Eigen::Matrix<double, 15, 15> sqrt_info =
             covariance_llt.matrixL().solve(Eigen::Matrix<double, 15, 15>::Identity());
-        if (!sqrt_info.allFinite()) return false;
+        if (!sqrt_info.allFinite()) {
+            return false;
+        }
 
         Eigen::Matrix3d Jr_inv =
             Sophus::SO3d::leftJacobianInverse(res.block<3, 1>(3, 0)).transpose();

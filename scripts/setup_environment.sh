@@ -32,7 +32,7 @@ if [[ ! -f /opt/ros/humble/setup.bash ]]; then
 fi
 source /opt/ros/humble/setup.bash
 
-# 将常用的本地安装前缀加入 CMake 搜索路径，供 Sophus、DepthAI 等使用。
+# 将常用的本地安装前缀加入 CMake 搜索路径，供 Sophus 等依赖使用。
 _tassel_prefixes=("$HOME/.local" "/usr/local")
 if [[ -n "${SOPHUS_ROOT:-}" ]]; then
     _tassel_prefixes=("$SOPHUS_ROOT" "${_tassel_prefixes[@]}")

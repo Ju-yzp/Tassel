@@ -20,9 +20,10 @@ public:
         const MarginalizedFeatureObservation& observation, const State& state,
         const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
-    void performQR();
+    void eliminateLandmark();
 
-    void get_dense_Q2Jp_Q2r(Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r, int start_row) const;
+    void writeReducedSystem(
+        Eigen::MatrixXd& jacobian, Eigen::VectorXd& residual, int start_row) const;
 
     inline int get_num_rows() const { return num_rows_; }
 

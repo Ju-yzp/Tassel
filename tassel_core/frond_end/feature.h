@@ -12,13 +12,12 @@ struct State;
 
 struct FeaturePerFrame {
     FeaturePerFrame()
-        : frame_id(tassel_utils::kInvalidFrameId),
-          is_stereo(false),
+        : is_stereo(false),
           pt(cv::Point2f()),
           pt_r(cv::Point2f()),
           uv(Eigen::Vector3d::Zero()),
           uv_r(Eigen::Vector3d::Zero()),
-          applied_delay(0.0){};
+          sync_delay(0.0){};
     void setLeft(Eigen::Vector2d uv, cv::Point2f pt) {
         this->uv << uv(0), uv(1), 1.0;
         this->pt = pt;
@@ -29,11 +28,10 @@ struct FeaturePerFrame {
         this->pt_r = pt;
         is_stereo = true;
     }
-    tassel_utils::FrameId frame_id;
     bool is_stereo;
     cv::Point2f pt, pt_r;
     Eigen::Vector3d uv, uv_r;
-    double applied_delay;
+    double sync_delay;
 };
 
 inline constexpr double INVALID_DEPTH = -1.0;
@@ -41,23 +39,26 @@ inline constexpr double MIN_DISTANCE = 0.1;
 inline constexpr double MAX_DISTANCE = 3.0;
 
 struct Feature {
-    Feature(tassel_utils::FrameId host_frame_id, size_t max_capacity);
+    Feature(int start_slot, size_t max_capacity);
+
+    int observationSlot(size_t observation_index) const {
+        return start_slot + static_cast<int>(observation_index);
+    }
 
     void monoTriangulate(
         const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
         double min_translation, double min_depth, double max_depth);
 
     void removeFrame(
-        tassel_utils::FrameId frame_id, const State& state, const Eigen::Matrix3d& ric,
-        const Eigen::Vector3d& tic);
+        int frame_slot, const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
     bool transferHost(
-        tassel_utils::FrameId new_host_frame_id, const State& state, const Eigen::Matrix3d& ric,
+        int new_host_slot, const State& state, const Eigen::Matrix3d& ric,
         const Eigen::Vector3d& tic);
 
-    void removeFrameObservation(tassel_utils::FrameId frame_id);
+    void removeFrameObservation(int frame_slot);
 
-    tassel_utils::FrameId host_frame_id;
+    int start_slot;
     double estimated_depth;
     std::vector<FeaturePerFrame> observations;
     // 已进入过边缘化先验；宿主滑动并继承深度后允许继续边缘化。
@@ -66,7 +67,7 @@ struct Feature {
 
 struct MarginalizedFeatureObservation {
     Feature* feature = nullptr;
-    tassel_utils::FrameId target_frame_id = tassel_utils::kInvalidFrameId;
+    int target_slot = -1;
 };
 }  // namespace tassel_core
 #endif  // TASSEL_CORE_FEATURE_H_

@@ -22,10 +22,6 @@ target_include_directories(
 include(TasselTest)
 
 find_package(GTest REQUIRED)
-if(TASSEL_ENABLE_HARDWARE_TESTS)
-  find_package(depthai CONFIG REQUIRED)
-  find_package(SyncTrigger REQUIRED)
-endif()
 
 include(GoogleTest)
 
@@ -36,13 +32,5 @@ tassel_add_tests(
   LINK_LIBS
   tassel_core
   tassel_tools
-  HARDWARE_LIBS
-  $<$<BOOL:${TASSEL_ENABLE_HARDWARE_TESTS}>:depthai::core>
   INCLUDE_DIRS
   "${CMAKE_CURRENT_SOURCE_DIR}")
-
-# Temporarily keep the hardware estimator executable buildable without running
-# it in CTest.
-if(TEST test_estimator)
-  set_tests_properties(test_estimator PROPERTIES DISABLED TRUE)
-endif()

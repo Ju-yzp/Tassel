@@ -39,9 +39,6 @@ target_include_directories(
 include(TasselTest)
 
 find_package(GTest REQUIRED)
-if(TASSEL_ENABLE_HARDWARE_TESTS)
-  find_package(depthai CONFIG REQUIRED)
-endif()
 
 include(GoogleTest)
 
@@ -51,8 +48,6 @@ tassel_add_tests(
   "${CMAKE_CURRENT_SOURCE_DIR}/tests"
   LINK_LIBS
   tassel_tools
-  HARDWARE_LIBS
-  $<$<BOOL:${TASSEL_ENABLE_HARDWARE_TESTS}>:depthai::core>
   INCLUDE_DIRS
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_CURRENT_SOURCE_DIR}/include")

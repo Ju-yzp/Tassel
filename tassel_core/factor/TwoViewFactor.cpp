@@ -59,7 +59,9 @@ bool TwoViewFactor::Evaluate(
     Eigen::Vector3d Pi_C_in_G = Pi_I_in_G + Ri_I_in_G * tic;
     Eigen::Vector3d Pj_C_in_G = Pj_I_in_G + Rj_I_in_G * tic;
     Eigen::Vector3d delta_p_ij = Pj_C_in_G - Pi_C_in_G;
-    if (!delta_p_ij.allFinite() || delta_p_ij.norm() < 1e-12) return false;
+    if (!delta_p_ij.allFinite() || delta_p_ij.norm() < 1e-12) {
+        return false;
+    }
     Eigen::Vector3d direction = delta_p_ij.normalized();
     *residuals = uv_i.transpose() * Sophus::SO3d::hat(Ri_C_in_G.transpose() * direction) *
                  Ri_C_in_G.transpose() * Rj_C_in_G * uv_j;
@@ -150,7 +152,9 @@ bool TwoViewFactor::Evaluate(
         if (jacobians[1]) {
             Eigen::Map<Eigen::Matrix<double, 1, 6>>(jacobians[1]) *= sqrt_info;
         }
-        if (jacobians[2]) jacobians[2][0] *= sqrt_info;
+        if (jacobians[2]) {
+            jacobians[2][0] *= sqrt_info;
+        }
     }
     *residuals *= sqrt_info;
     return true;

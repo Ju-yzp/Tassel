@@ -1,5 +1,5 @@
 #include "landmark_block.h"
-#include "factor/visual_factor.h"
+#include "factor/reprojection_factor.h"
 #include "state/state.h"
 #include "tassel_utils/macros.h"
 
@@ -46,18 +46,14 @@ void LandmarkBlock::linearize(
     const Feature& feature = *marginalized_observation.feature;
     const std::vector<FeaturePerFrame>& observations = feature.observations;
     TASSEL_ASSERT(!observations.empty());
-    const auto target_observation =
-        std::find_if(observations.begin(), observations.end(), [&](const auto& observation) {
-            return observation.frame_id == marginalized_observation.target_frame_id;
-        });
-    TASSEL_ASSERT(target_observation != observations.end());
-    TASSEL_ASSERT(target_observation->frame_id != feature.host_frame_id);
+    const int target_observation_index = marginalized_observation.target_slot - feature.start_slot;
+    TASSEL_ASSERT(target_observation_index > 0);
+    TASSEL_ASSERT(target_observation_index < static_cast<int>(observations.size()));
+    const auto target_observation = observations.begin() + target_observation_index;
 
     const Eigen::Vector3d uv_i = observations[0].uv;
-    const int host_slot = state.findFrameSlot(feature.host_frame_id);
-    const int target_slot = state.findFrameSlot(target_observation->frame_id);
-    TASSEL_ASSERT(host_slot >= 0);
-    TASSEL_ASSERT(target_slot >= 0);
+    const int host_slot = feature.start_slot;
+    const int target_slot = marginalized_observation.target_slot;
     double depth = feature.estimated_depth;
     Eigen::Matrix<double, 2, 6, Eigen::RowMajor> jacobian_pose_i, jacobian_pose_j;
     Eigen::Matrix<double, 2, 1> jacobian_dt;
@@ -67,29 +63,29 @@ void LandmarkBlock::linearize(
     Eigen::Matrix2d sqrt_info = state.visual_sqrt_info;
     double inv_depth = 1.0 / depth;
     Eigen::Vector2d pt_j(target_observation->pt.x, target_observation->pt.y);
-    VisualFactor visual_factor(
-        uv_i, pt_j, ric, tic, state.gyro_vec[host_slot], state.gyro_vec[target_slot],
-        state.acc_vec[host_slot], state.acc_vec[target_slot],
-        state.params_speed_bias[host_slot].data(), state.params_speed_bias[target_slot].data(),
-        state.params_speed_bias[host_slot].data() + 6,
-        state.params_speed_bias[target_slot].data() + 6,
-        state.params_speed_bias[host_slot].data() + 3,
-        state.params_speed_bias[target_slot].data() + 3, sqrt_info, state.camera,
-        observations[0].applied_delay, target_observation->applied_delay);
+    ReprojectionFactor reprojection_factor(
+        uv_i, pt_j, ric, tic, state.frames[host_slot].gyro, state.frames[target_slot].gyro,
+        state.frames[host_slot].acc, state.frames[target_slot].acc,
+        state.frames[host_slot].speed_bias.data(), state.frames[target_slot].speed_bias.data(),
+        state.frames[host_slot].speed_bias.data() + 6,
+        state.frames[target_slot].speed_bias.data() + 6,
+        state.frames[host_slot].speed_bias.data() + 3,
+        state.frames[target_slot].speed_bias.data() + 3, sqrt_info, state.camera,
+        observations[0].sync_delay, target_observation->sync_delay);
 
     std::vector<double*> jacobians = {
         jacobian_pose_i.data(), jacobian_pose_j.data(), jacobian_dt.data(),
         jacobian_landmark.data()};
     std::vector<double const*> parameters = {
-        state.params_pose[host_slot].data(), state.params_pose[target_slot].data(),
+        state.frames[host_slot].pose.data(), state.frames[target_slot].pose.data(),
         &state.param_delay_time, &inv_depth};
-    visual_factor.Evaluate(parameters.data(), residual.data(), jacobians.data());
+    reprojection_factor.Evaluate(parameters.data(), residual.data(), jacobians.data());
     jacobian_pose_i.block<2, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Eigen::Vector3d(
-        state.params_pose[host_slot][3], state.params_pose[host_slot][4],
-        state.params_pose[host_slot][5]));
+        state.frames[host_slot].pose[3], state.frames[host_slot].pose[4],
+        state.frames[host_slot].pose[5]));
     jacobian_pose_j.block<2, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Eigen::Vector3d(
-        state.params_pose[target_slot][3], state.params_pose[target_slot][4],
-        state.params_pose[target_slot][5]));
+        state.frames[target_slot].pose[3], state.frames[target_slot].pose[4],
+        state.frames[target_slot].pose[5]));
 
     double scale = 1.0;
     if (loss_) {
@@ -105,17 +101,23 @@ void LandmarkBlock::linearize(
     storage_.block<2, 1>(0, res_idx_) = scale * residual;
 }
 
-void LandmarkBlock::performQR() {
+void LandmarkBlock::eliminateLandmark() {
     int n = num_rows_;
     eliminated_landmark_rank_ = 0;
     qr_performed_ = true;
-    if (n <= 0) return;
+    if (n <= 0) {
+        return;
+    }
 
     Eigen::VectorXd v = storage_.col(lm_idx_).head(n);
     double norm = v.norm();
-    if (norm < 1e-12) return;
+    if (norm < 1e-12) {
+        return;
+    }
     eliminated_landmark_rank_ = 1;
-    if (n == 1) return;
+    if (n == 1) {
+        return;
+    }
 
     double alpha = (v(0) > 0) ? -norm : norm;
     v(0) -= alpha;
@@ -127,17 +129,17 @@ void LandmarkBlock::performQR() {
     }
 }
 
-void LandmarkBlock::get_dense_Q2Jp_Q2r(
-    Eigen::MatrixXd& Q2Jp, Eigen::VectorXd& Q2r, int start_row) const {
+void LandmarkBlock::writeReducedSystem(
+    Eigen::MatrixXd& jacobian, Eigen::VectorXd& residual, int start_row) const {
     const int kept_rows = get_kept_rows();
     if (kept_rows <= 0) {
         return;
     }
-    Q2r.segment(start_row, kept_rows) =
+    residual.segment(start_row, kept_rows) =
         storage_.col(res_idx_).segment(eliminated_landmark_rank_, kept_rows);
-    Q2Jp.block(start_row, 0, kept_rows, padding_idx_) =
+    jacobian.block(start_row, 0, kept_rows, padding_idx_) =
         storage_.block(eliminated_landmark_rank_, 0, kept_rows, padding_idx_);
-    Q2Jp.col(Q2Jp.cols() - 1).segment(start_row, kept_rows) =
+    jacobian.col(jacobian.cols() - 1).segment(start_row, kept_rows) =
         storage_.col(delay_idx_).segment(eliminated_landmark_rank_, kept_rows);
 }
 

@@ -1,13 +1,13 @@
 // =============================================================================
 // test_euroc.cpp
 //
-// Purpose:
-//   Offline integration entry for EuRoC MAV simple Machine Hall stereo sequences.
+// 目的：
+//   EuRoC MAV Machine Hall 简单双目序列的离线集成入口。
 //
-// Usage:
+// 用法：
 //   test_euroc [config.yaml] [sequence_dir] [max_frames=0(all)] [replay_hz]
 //
-// Example:
+// 示例：
 //   unzip dataset/machine_hall/MH_01_easy/MH_01_easy.zip -d dataset/machine_hall/MH_01_easy
 //   ./build/tassel_core/test_euroc config/euroc.yaml dataset/machine_hall/MH_01_easy 0 20
 // =============================================================================
@@ -56,10 +56,16 @@ struct ImageEntry {
     std::string filename;
 };
 
-struct StereoFrame {
+struct MonoFrame {
     tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
     fs::path left_path;
-    fs::path right_path;
+};
+
+struct MonoObservation {
+    tassel_utils::FrameId timestamp = tassel_utils::kInvalidFrameId;
+    cv::Mat left_img;
+
+    double get_timestamp() const { return tassel_utils::frameIdToSeconds(timestamp); }
 };
 
 struct GroundTruthPose {
@@ -72,18 +78,20 @@ struct LatestDisplayImage {
 };
 
 struct SyncedPacket {
-    std::shared_ptr<tassel_utils::StereoObservation> stereo;
+    std::shared_ptr<MonoObservation> mono;
     std::vector<tassel_utils::IMUMeasurement> imu_slice;
-    double applied_delay = 0.0;
+    double sync_delay = 0.0;
 };
 
 class BlockingDatasetSync {
 public:
-    void pushStereo(std::shared_ptr<tassel_utils::StereoObservation> stereo) {
-        if (!stereo) return;
+    void pushMono(std::shared_ptr<MonoObservation> mono) {
+        if (!mono) {
+            return;
+        }
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            stereo_queue_.push_back(std::move(stereo));
+            mono_queue_.push_back(std::move(mono));
         }
         cv_.notify_one();
     }
@@ -96,10 +104,10 @@ public:
         cv_.notify_one();
     }
 
-    void closeStereo() {
+    void closeMono() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            stereo_done_ = true;
+            mono_done_ = true;
         }
         cv_.notify_all();
     }
@@ -112,28 +120,30 @@ public:
         cv_.notify_all();
     }
 
-    bool waitPop(SyncedPacket& packet, double applied_delay) {
+    bool waitPop(SyncedPacket& packet, double sync_delay) {
         std::unique_lock<std::mutex> lock(mutex_);
         cv_.wait(lock, [&]() {
-            if (stereo_queue_.empty()) return stereo_done_;
-            const double sync_ts = stereo_queue_.front()->get_timestamp() + applied_delay;
+            if (mono_queue_.empty()) {
+                return mono_done_;
+            }
+            const double sync_ts = mono_queue_.front()->get_timestamp() + sync_delay;
             return imu_done_ || (!imu_queue_.empty() && imu_queue_.back().timestamp >= sync_ts);
         });
 
-        if (stereo_queue_.empty()) {
+        if (mono_queue_.empty()) {
             return false;
         }
-        const double sync_ts = stereo_queue_.front()->get_timestamp() + applied_delay;
+        const double sync_ts = mono_queue_.front()->get_timestamp() + sync_delay;
         if (imu_queue_.empty() || imu_queue_.back().timestamp < sync_ts) {
-            std::cerr << "[EuRoC] missing IMU coverage for stereo t="
-                      << stereo_queue_.front()->get_timestamp() << " sync t=" << sync_ts
-                      << " applied_delay=" << applied_delay << "\n";
+            std::cerr << "[EuRoC] missing IMU coverage for image t="
+                      << mono_queue_.front()->get_timestamp() << " sync t=" << sync_ts
+                      << " sync_delay=" << sync_delay << "\n";
             return false;
         }
 
-        packet.stereo = std::move(stereo_queue_.front());
-        stereo_queue_.pop_front();
-        packet.applied_delay = applied_delay;
+        packet.mono = std::move(mono_queue_.front());
+        mono_queue_.pop_front();
+        packet.sync_delay = sync_delay;
 
         packet.imu_slice.clear();
         if (has_boundary_) {
@@ -142,7 +152,9 @@ public:
 
         const double prev_ts = has_boundary_ ? boundary_imu_.timestamp : -1.0;
         for (const auto& imu : imu_queue_) {
-            if (imu.timestamp >= sync_ts) break;
+            if (imu.timestamp >= sync_ts) {
+                break;
+            }
             if (prev_ts < 0.0 || imu.timestamp > prev_ts) {
                 packet.imu_slice.push_back(imu);
             }
@@ -208,9 +220,9 @@ private:
 
     std::mutex mutex_;
     std::condition_variable cv_;
-    std::deque<std::shared_ptr<tassel_utils::StereoObservation>> stereo_queue_;
+    std::deque<std::shared_ptr<MonoObservation>> mono_queue_;
     std::deque<tassel_utils::IMUMeasurement> imu_queue_;
-    bool stereo_done_ = false;
+    bool mono_done_ = false;
     bool imu_done_ = false;
     bool has_boundary_ = false;
     tassel_utils::IMUMeasurement boundary_imu_;
@@ -292,9 +304,13 @@ std::vector<GroundTruthPose> loadGroundTruthCsv(const fs::path& csv_path) {
     std::vector<GroundTruthPose> poses;
     std::string line;
     while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') continue;
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
         const auto fields = splitCsvLine(line);
-        if (fields.size() < 8) continue;
+        if (fields.size() < 8) {
+            continue;
+        }
 
         Eigen::Vector3d position(std::stod(fields[1]), std::stod(fields[2]), std::stod(fields[3]));
         Eigen::Quaterniond orientation(
@@ -314,8 +330,12 @@ std::optional<Sophus::SE3d> interpolateGroundTruth(
     const auto upper = std::lower_bound(
         poses.begin(), poses.end(), timestamp,
         [](const GroundTruthPose& pose, double value) { return pose.timestamp < value; });
-    if (upper == poses.begin()) return upper->pose;
-    if (upper == poses.end()) return poses.back().pose;
+    if (upper == poses.begin()) {
+        return upper->pose;
+    }
+    if (upper == poses.end()) {
+        return poses.back().pose;
+    }
 
     const auto lower = std::prev(upper);
     const double duration = upper->timestamp - lower->timestamp;
@@ -340,26 +360,14 @@ fs::path resolveSequenceDir(const fs::path& sequence_dir) {
     return sequence_dir;
 }
 
-std::vector<StereoFrame> makeStereoFrames(const fs::path& sequence_dir) {
+std::vector<MonoFrame> makeMonoFrames(const fs::path& sequence_dir) {
     const fs::path cam0_dir = sequence_dir / "mav0" / "cam0";
-    const fs::path cam1_dir = sequence_dir / "mav0" / "cam1";
     auto left_entries = loadImageCsv(cam0_dir / "data.csv");
-    auto right_entries = loadImageCsv(cam1_dir / "data.csv");
 
-    std::unordered_map<std::string, std::string> right_by_timestamp;
-    for (const auto& entry : right_entries) {
-        right_by_timestamp[entry.timestamp_ns] = entry.filename;
-    }
-
-    std::vector<StereoFrame> frames;
-    frames.reserve(std::min(left_entries.size(), right_entries.size()));
+    std::vector<MonoFrame> frames;
+    frames.reserve(left_entries.size());
     for (const auto& left : left_entries) {
-        auto it = right_by_timestamp.find(left.timestamp_ns);
-        if (it == right_by_timestamp.end()) {
-            continue;
-        }
-        frames.push_back(
-            {left.frame_id, cam0_dir / "data" / left.filename, cam1_dir / "data" / it->second});
+        frames.push_back({left.frame_id, cam0_dir / "data" / left.filename});
     }
     return frames;
 }
@@ -380,10 +388,12 @@ std::vector<tassel_core::Camera> initializeCameras(const tassel_tools::Parameter
     return result;
 }
 
-void publishStereoImage(
+void publishMonoImage(
     const std::shared_ptr<tassel_tools::Viewer>& viewer, const LatestDisplayImage& image) {
-    if (image.image.empty()) return;
-    viewer->publishCompressedImage("stereo/image", "camera", image.image, "jpeg");
+    if (image.image.empty()) {
+        return;
+    }
+    viewer->publishCompressedImage("mono/image", "camera", image.image, "jpeg");
 }
 
 }  // namespace
@@ -409,19 +419,19 @@ int main(int argc, char** argv) {
     }
 
     tassel_tools::Parameters params(config_path.string());
-    auto frames = makeStereoFrames(resolved_sequence_dir);
+    auto frames = makeMonoFrames(resolved_sequence_dir);
     auto imu_measurements = loadImuCsv(resolved_sequence_dir / "mav0" / "imu0" / "data.csv");
     auto ground_truth = loadGroundTruthCsv(
         resolved_sequence_dir / "mav0" / "state_groundtruth_estimate0" / "data.csv");
 
     if (frames.empty() || imu_measurements.empty()) {
-        std::cerr << "[EuRoC] empty stereo or IMU stream under " << resolved_sequence_dir << "\n";
+        std::cerr << "[EuRoC] empty image or IMU stream under " << resolved_sequence_dir << "\n";
         return 1;
     }
 
     auto cameras = initializeCameras(params);
-    if (cameras.size() < 2) {
-        std::cerr << "[EuRoC] need two cameras in config: " << config_path << "\n";
+    if (cameras.empty()) {
+        std::cerr << "[EuRoC] need one camera in config: " << config_path << "\n";
         return 1;
     }
 
@@ -429,7 +439,7 @@ int main(int argc, char** argv) {
     auto viewer = std::make_shared<tassel_tools::Viewer>("world");
     rclcpp::QoS image_qos(rclcpp::KeepLast(1));
     image_qos.best_effort().durability_volatile();
-    viewer->createCompressedImagePublisher("stereo/image", image_qos);
+    viewer->createCompressedImagePublisher("mono/image", image_qos);
     viewer->createOdometryPublisher("imu", "odom/camera");
     viewer->createPathPublisher("vo/path", rclcpp::QoS(10), params.viewer_path_max_poses);
     viewer->createPathPublisher("ground_truth/path", rclcpp::QoS(10), params.viewer_path_max_poses);
@@ -487,7 +497,7 @@ int main(int argc, char** argv) {
                 "ground_truth/path", aligned_truth.translation(), aligned_truth.unit_quaternion(),
                 ts);
         }
-        const Eigen::Vector3d& velocity = state->Vs[state->cur_frame_count];
+        const Eigen::Vector3d& velocity = state->frames[state->newest_slot].V;
         std::cout << "[pose] t=" << ts << " p=" << pose.translation().transpose()
                   << " |V|=" << velocity.norm() << "\n";
     });
@@ -516,7 +526,6 @@ int main(int argc, char** argv) {
         (max_frames == 0) ? frames.size() : std::min(max_frames, frames.size());
     BlockingDatasetSync sync;
 
-    std::atomic_bool stereo_done{false};
     std::atomic_bool imu_done{false};
     std::atomic_bool stop_reader{false};
     std::atomic_bool stop_image_publisher{false};
@@ -524,53 +533,51 @@ int main(int argc, char** argv) {
     std::atomic_size_t produced_imu{0};
     std::mutex latest_image_mutex;
     LatestDisplayImage latest_image;
-    std::mutex loaded_stereo_mutex;
-    std::condition_variable loaded_stereo_cv;
-    std::deque<std::shared_ptr<tassel_utils::StereoObservation>> loaded_stereo_queue;
-    bool stereo_load_done = false;
-    constexpr size_t kMaxLoadedStereoFrames = 30;
-    const size_t preload_target = std::min(frame_limit, kMaxLoadedStereoFrames);
+    std::mutex loaded_mono_mutex;
+    std::condition_variable loaded_mono_cv;
+    std::deque<std::shared_ptr<MonoObservation>> loaded_mono_queue;
+    bool mono_load_done = false;
+    constexpr size_t kMaxLoadedMonoFrames = 30;
+    const size_t preload_target = std::min(frame_limit, kMaxLoadedMonoFrames);
 
-    std::thread stereo_loader_thread([&]() {
+    std::thread mono_loader_thread([&]() {
         for (size_t i = 0; i < frame_limit && rclcpp::ok() && !stop_reader.load(); ++i) {
             const auto& frame = frames[i];
             cv::Mat left_img = cv::imread(frame.left_path.string(), cv::IMREAD_GRAYSCALE);
-            cv::Mat right_img = cv::imread(frame.right_path.string(), cv::IMREAD_GRAYSCALE);
-            if (left_img.empty() || right_img.empty()) {
-                std::cerr << "[EuRoC] failed to read stereo image at t="
+            if (left_img.empty()) {
+                std::cerr << "[EuRoC] failed to read mono image at t="
                           << tassel_utils::frameIdToSeconds(frame.frame_id) << "\n";
                 break;
             }
 
-            auto stereo_msg = std::make_shared<tassel_utils::StereoObservation>();
-            stereo_msg->timestamp = frame.frame_id;
-            stereo_msg->left_img = std::move(left_img);
-            stereo_msg->right_img = std::move(right_img);
+            auto mono_msg = std::make_shared<MonoObservation>();
+            mono_msg->timestamp = frame.frame_id;
+            mono_msg->left_img = std::move(left_img);
 
             {
-                std::unique_lock<std::mutex> lock(loaded_stereo_mutex);
-                loaded_stereo_cv.wait(lock, [&]() {
-                    return stop_reader.load() ||
-                           loaded_stereo_queue.size() < kMaxLoadedStereoFrames;
+                std::unique_lock<std::mutex> lock(loaded_mono_mutex);
+                loaded_mono_cv.wait(lock, [&]() {
+                    return stop_reader.load() || loaded_mono_queue.size() < kMaxLoadedMonoFrames;
                 });
-                if (stop_reader.load()) break;
-                loaded_stereo_queue.push_back(std::move(stereo_msg));
+                if (stop_reader.load()) {
+                    break;
+                }
+                loaded_mono_queue.push_back(std::move(mono_msg));
             }
-            loaded_stereo_cv.notify_all();
+            loaded_mono_cv.notify_all();
         }
 
         {
-            std::lock_guard<std::mutex> lock(loaded_stereo_mutex);
-            stereo_load_done = true;
+            std::lock_guard<std::mutex> lock(loaded_mono_mutex);
+            mono_load_done = true;
         }
-        loaded_stereo_cv.notify_all();
+        loaded_mono_cv.notify_all();
     });
 
     {
-        std::unique_lock<std::mutex> lock(loaded_stereo_mutex);
-        loaded_stereo_cv.wait(lock, [&]() {
-            return loaded_stereo_queue.size() >= preload_target || stereo_load_done ||
-                   !rclcpp::ok();
+        std::unique_lock<std::mutex> lock(loaded_mono_mutex);
+        loaded_mono_cv.wait(lock, [&]() {
+            return loaded_mono_queue.size() >= preload_target || mono_load_done || !rclcpp::ok();
         });
     }
 
@@ -602,7 +609,7 @@ int main(int argc, char** argv) {
                 std::lock_guard<std::mutex> lock(latest_image_mutex);
                 image.image = latest_image.image.clone();
             }
-            publishStereoImage(viewer, image);
+            publishMonoImage(viewer, image);
 
             next_tick += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
             std::this_thread::sleep_until(next_tick);
@@ -611,12 +618,18 @@ int main(int argc, char** argv) {
 
     std::thread imu_reader_thread([&]() {
         for (const auto& imu : imu_measurements) {
-            if (!rclcpp::ok() || stop_reader.load()) break;
-            if (imu.timestamp > playback_end_ts) break;
+            if (!rclcpp::ok() || stop_reader.load()) {
+                break;
+            }
+            if (imu.timestamp > playback_end_ts) {
+                break;
+            }
             if (imu.timestamp > playback_start_ts) {
                 sleep_until_sensor_time(imu.timestamp);
             }
-            if (!rclcpp::ok() || stop_reader.load()) break;
+            if (!rclcpp::ok() || stop_reader.load()) {
+                break;
+            }
             sync.pushImu(imu);
             ++produced_imu;
         }
@@ -624,95 +637,109 @@ int main(int argc, char** argv) {
         sync.closeImu();
     });
 
-    std::thread stereo_reader_thread([&]() {
+    std::thread mono_reader_thread([&]() {
         while (rclcpp::ok() && !stop_reader.load()) {
-            std::shared_ptr<tassel_utils::StereoObservation> stereo_msg;
+            std::shared_ptr<MonoObservation> mono_msg;
             {
-                std::unique_lock<std::mutex> lock(loaded_stereo_mutex);
-                loaded_stereo_cv.wait(lock, [&]() {
-                    return stop_reader.load() || !loaded_stereo_queue.empty() || stereo_load_done;
+                std::unique_lock<std::mutex> lock(loaded_mono_mutex);
+                loaded_mono_cv.wait(lock, [&]() {
+                    return stop_reader.load() || !loaded_mono_queue.empty() || mono_load_done;
                 });
-                if (stop_reader.load()) break;
-                if (loaded_stereo_queue.empty()) {
-                    if (stereo_load_done) break;
+                if (stop_reader.load()) {
+                    break;
+                }
+                if (loaded_mono_queue.empty()) {
+                    if (mono_load_done) {
+                        break;
+                    }
                     continue;
                 }
-                stereo_msg = std::move(loaded_stereo_queue.front());
-                loaded_stereo_queue.pop_front();
+                mono_msg = std::move(loaded_mono_queue.front());
+                loaded_mono_queue.pop_front();
             }
-            loaded_stereo_cv.notify_all();
+            loaded_mono_cv.notify_all();
 
-            sleep_until_sensor_time(stereo_msg->get_timestamp());
-            if (!rclcpp::ok() || stop_reader.load()) break;
-            sync.pushStereo(stereo_msg);
+            sleep_until_sensor_time(mono_msg->get_timestamp());
+            if (!rclcpp::ok() || stop_reader.load()) {
+                break;
+            }
+            sync.pushMono(mono_msg);
             ++produced;
         }
 
-        stereo_done = true;
-        sync.closeStereo();
+        sync.closeMono();
     });
 
     size_t processed = 0;
     while (rclcpp::ok()) {
         SyncedPacket packet;
-        if (!sync.waitPop(packet, state->delay_time)) break;
-        if (!packet.stereo) continue;
+        if (!sync.waitPop(packet, state->delay_time)) {
+            break;
+        }
+        if (!packet.mono) {
+            continue;
+        }
 
         std::unordered_map<int, FeaturePerFrame> feature_frame;
         {
-            tassel_utils::Timer t("euroc_stereo_tracking");
-            feature_frame =
-                tracker.stereoTracking(0, packet.stereo->left_img, 1, packet.stereo->right_img);
+            tassel_utils::Timer t("euroc_mono_tracking");
+            feature_frame = tracker.monoTracking(0, packet.mono->left_img);
         }
         for (auto& [id, feature] : feature_frame) {
             (void)id;
-            feature.applied_delay = packet.applied_delay;
+            feature.sync_delay = packet.sync_delay;
         }
 
-        cv::Mat left_tracking = packet.stereo->left_img.clone();
-        cv::Mat right_tracking = packet.stereo->right_img.clone();
+        cv::Mat left_tracking = packet.mono->left_img.clone();
         tracker.drawTrackingResult(0, left_tracking);
-        tracker.drawTrackingResult(1, right_tracking);
-        cv::Mat tracking_disp;
-        cv::hconcat(left_tracking, right_tracking, tracking_disp);
         {
             std::lock_guard<std::mutex> lock(latest_image_mutex);
-            latest_image.image = std::move(tracking_disp);
+            latest_image.image = std::move(left_tracking);
         }
 
         estimator.processMeasurement(
-            packet.stereo->timestamp, feature_frame, packet.imu_slice, packet.applied_delay);
+            packet.mono->timestamp, feature_frame, packet.imu_slice, packet.sync_delay);
 
         ++processed;
 
         if (processed % 20 == 0) {
             std::cout << "[EuRoC] processed " << processed << "/" << frame_limit << " (read "
                       << produced.load() << ", imu read " << produced_imu.load() << ")"
-                      << " stereo frames, features=" << feature_frame.size()
+                      << " mono frames, features=" << feature_frame.size()
                       << ", imu=" << packet.imu_slice.size() << "\n";
         }
     }
 
     stop_reader = true;
-    loaded_stereo_cv.notify_all();
+    loaded_mono_cv.notify_all();
     stop_image_publisher = true;
-    if (stereo_loader_thread.joinable()) stereo_loader_thread.join();
-    if (stereo_reader_thread.joinable()) stereo_reader_thread.join();
-    if (imu_reader_thread.joinable()) imu_reader_thread.join();
-    if (image_publish_thread.joinable()) image_publish_thread.join();
+    if (mono_loader_thread.joinable()) {
+        mono_loader_thread.join();
+    }
+    if (mono_reader_thread.joinable()) {
+        mono_reader_thread.join();
+    }
+    if (imu_reader_thread.joinable()) {
+        imu_reader_thread.join();
+    }
+    if (image_publish_thread.joinable()) {
+        image_publish_thread.join();
+    }
 
     stop_executor = true;
     executor.cancel();
-    if (spin_thread.joinable()) spin_thread.join();
+    if (spin_thread.joinable()) {
+        spin_thread.join();
+    }
 
     rclcpp::shutdown();
 
-    std::cout << "\n[EuRoC] done. processed=" << processed
-              << ", keyframes in window=" << state->cur_frame_count << "\n";
-    if (state->cur_frame_count > 0) {
-        int idx = state->cur_frame_count - 1;
+    std::cout << "\n[EuRoC] done. processed=" << processed << ", newest slot=" << state->newest_slot
+              << "\n";
+    if (state->newest_slot > 0) {
+        int idx = state->newest_slot;
         std::cout << "Final pose:\n"
-                  << Sophus::SE3d(state->Rs[idx], state->Ps[idx]).matrix() << "\n";
+                  << Sophus::SE3d(state->frames[idx].R, state->frames[idx].P).matrix() << "\n";
     }
 
     return 0;

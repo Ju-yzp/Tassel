@@ -8,7 +8,7 @@
 
 namespace tassel_utils {
 
-// 两视图 DLT 线性三角化, 返回齐次坐标 (X, Y, Z, W)
+// 两视图 DLT 线性三角化，返回齐次坐标 (X, Y, Z, W)。
 inline Eigen::Vector4d triangulateTwoView(
     const Eigen::Matrix<double, 3, 4>& P0, const Eigen::Vector2d& uv0,
     const Eigen::Matrix<double, 3, 4>& P1, const Eigen::Vector2d& uv1, double* cond = nullptr) {
@@ -30,7 +30,9 @@ inline Eigen::Vector4d triangulateMultiView(
     const std::vector<Eigen::Matrix<double, 3, 4>>& poses, const std::vector<Eigen::Vector2d>& uvs,
     double* cond = nullptr) {
     if (poses.size() != uvs.size() || uvs.size() < 2) {
-        if (cond) *cond = std::numeric_limits<double>::infinity();
+        if (cond) {
+            *cond = std::numeric_limits<double>::infinity();
+        }
         return Eigen::Vector4d::Constant(std::numeric_limits<double>::quiet_NaN());
     }
     int n = static_cast<int>(uvs.size());

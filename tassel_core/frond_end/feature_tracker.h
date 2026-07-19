@@ -1,14 +1,14 @@
 #ifndef TASSEL_CORE_FEATURE_TRACKER_H_
 #define TASSEL_CORE_FEATURE_TRACKER_H_
 
-// opencv
+// OpenCV
 #include <cstddef>
 #include <opencv2/core.hpp>
 
-// cpp
+// 标准库
 #include <unordered_map>
 
-// tassel
+// Tassel
 #include "cam/camera_factory.h"
 #include "feature.h"
 
@@ -35,7 +35,7 @@ public:
 
 private:
     struct CameraTrackingContext {
-        // feature infos
+        // 特征信息
         std::vector<cv::Point2f> prev_pts;
         std::vector<cv::Point2f> cur_pts;
         std::vector<size_t> prev_ids;
@@ -46,19 +46,19 @@ private:
         size_t feature_count;
         int min_feature_num;
 
-        // grid stuff
+        // 网格管理
         int per_grid_rows, per_grid_cols;
         int grid_rows, grid_cols;
         int grid_edge_rows, grid_edge_cols;
         std::vector<bool> grid_mask;
 
-        // camera model
+        // 相机模型
         Camera camera;
 
-        // gradient cache (overwritten each frame)
+        // 梯度缓存，每帧覆盖
         cv::Mat grad;
 
-        // tracking history
+        // 跟踪历史
         std::vector<int> tracked_times;
     };
 

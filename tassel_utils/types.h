@@ -11,8 +11,6 @@
 #include <opencv2/core.hpp>
 #include <vector>
 
-#include "tassel_utils/constants.h"
-
 namespace tassel_utils {
 
 inline Eigen::Vector3d G{0.0, 0.0, 9.8};
@@ -49,7 +47,7 @@ enum class IntegratorType {
     kEuler,
 };
 
-// Callback types for estimator output
+// 估计器输出回调类型
 using PoseCallback = std::function<void(const Eigen::Matrix3d&, const Eigen::Vector3d&)>;
 using PointCloudCallback = std::function<void(const std::vector<Eigen::Vector3d>&)>;
 using ResidualCallback = std::function<void(double, double)>;
