@@ -1,10 +1,7 @@
 find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(visualization_msgs REQUIRED)
-find_package(cv_bridge REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -15,17 +12,12 @@ target_link_libraries(
   PUBLIC tassel_core
          tassel_deps
          rclcpp::rclcpp
-         cv_bridge::cv_bridge
-         std_msgs::std_msgs__rosidl_generator_cpp
-         std_msgs::std_msgs__rosidl_typesupport_cpp
          sensor_msgs::sensor_msgs__rosidl_generator_cpp
          sensor_msgs::sensor_msgs__rosidl_typesupport_cpp
          nav_msgs::nav_msgs__rosidl_generator_cpp
          nav_msgs::nav_msgs__rosidl_typesupport_cpp
          geometry_msgs::geometry_msgs__rosidl_generator_cpp
          geometry_msgs::geometry_msgs__rosidl_typesupport_cpp
-         visualization_msgs::visualization_msgs__rosidl_generator_cpp
-         visualization_msgs::visualization_msgs__rosidl_typesupport_cpp
          tf2::tf2
          tf2_ros::tf2_ros
          tf2_geometry_msgs::tf2_geometry_msgs)

@@ -2,7 +2,6 @@
 #define TASSEL_TOOLS_VIEWER_H_
 
 // rclcpp
-#include <cv_bridge/cv_bridge.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
@@ -11,11 +10,6 @@
 #include <rclcpp/publisher.hpp>
 #include <rclcpp/qos.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
-#include <sensor_msgs/msg/image.hpp>
-#include <sensor_msgs/msg/point_cloud2.hpp>
-#include <std_msgs/msg/float32.hpp>
-#include <std_msgs/msg/float64.hpp>
-#include <std_msgs/msg/int32_multi_array.hpp>
 #include <tf2_ros/transform_broadcaster.hpp>
 
 // Eigen
@@ -33,13 +27,6 @@ namespace tassel_tools {
 class Viewer : public rclcpp::Node {
 public:
     explicit Viewer(const std::string& frame_id = "world");
-
-    void createImagePublisher(
-        const std::string& topic_name, const rclcpp::QoS qos = rclcpp::QoS(10));
-
-    void publishImage(
-        const std::string& topic_name, const std::string& frame_id, const cv::Mat& image,
-        double timestamp = -1.0);
 
     void createCompressedImagePublisher(
         const std::string& topic_name, const rclcpp::QoS qos = rclcpp::QoS(10));
@@ -66,34 +53,14 @@ public:
         const std::string& topic, const Eigen::Vector3d& position,
         const Eigen::Quaterniond& orientation, double timestamp = -1.0);
 
-    void createPointCloudPublisher(
-        const std::string& topic_name, const rclcpp::QoS& qos = rclcpp::QoS(10));
-
-    void publishPointCloud(
-        const std::string& topic, const std::vector<Eigen::Vector3d>& points,
-        double timestamp = -1.0);
-
-    void createScalarPublisher(
-        const std::string& topic_name, const rclcpp::QoS& qos = rclcpp::QoS(10));
-    void publishScalar(const std::string& topic, double value);
-
-    void createIntArrayPublisher(
-        const std::string& topic_name, const rclcpp::QoS& qos = rclcpp::QoS(10));
-    void publishIntArray(const std::string& topic, const std::vector<int>& values);
+    void publishPathSnapshot(
+        const std::string& topic, const std::vector<Eigen::Vector3d>& positions,
+        const std::vector<Eigen::Quaterniond>& orientations, double timestamp = -1.0);
 
     void publishVisualFactorWindow(
         const std::string& topic, const std::vector<int>& counts, double timestamp = -1.0);
 
-    void createErrorPublisher(
-        const std::string& topic_name, const rclcpp::QoS& qos = rclcpp::QoS(10));
-
-    void publishError(const std::string& topic, float error);
-
 private:
-    // 图像
-    std::unordered_map<std::string, rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr>
-        image_publishers_;
-
     // 压缩图像
     std::unordered_map<std::string, rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr>
         compressed_image_publishers_;
@@ -108,18 +75,6 @@ private:
         path_publishers_;
     std::unordered_map<std::string, nav_msgs::msg::Path> paths_;
     std::unordered_map<std::string, size_t> path_max_poses_;
-
-    // 点云
-    std::unordered_map<std::string, rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr>
-        pointcloud_publishers_;
-
-    // 误差
-    std::unordered_map<std::string, rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr>
-        error_publishers_;
-    std::unordered_map<std::string, rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr>
-        scalar_publishers_;
-    std::unordered_map<std::string, rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr>
-        int_array_publishers_;
 
     std::string frame_id_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;

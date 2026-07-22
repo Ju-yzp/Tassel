@@ -125,6 +125,8 @@ void Estimator::reset() {
     Ps_.resize(state_->max_frame_count, Eigen::Vector3d::Zero());
     Vs_.resize(state_->max_frame_count, Eigen::Vector3d::Zero());
     marginalization_prior_.reset();
+    last_measurement_was_keyframe_ = false;
+    frame_images_.clear();
     tassel_utils::G = Eigen::Vector3d(0, 0, params_.g_norm);
     state_->reset();
     feature_manager_->reset();
@@ -143,17 +145,16 @@ void Estimator::processMeasurement(
         last_imu_gyro_ = imu_measurements.back().gyro;
     }
 
-    const bool initialization_keyframe =
-        feature_manager_->checkParallax(frame_count, feature_frame);
+    feature_manager_->addFeatureFrame(frame_count, feature_frame);
     const auto& input_stats = feature_manager_->lastInputStats();
-    const bool weak_keyframe_connection =
+    const bool is_keyframe =
         !feature_manager_->hasLatestKeyframe() ||
         input_stats.current_keyframe_connection_ratio <= (1.0 - params_.keyframe_new_feature_ratio);
-    const bool is_keyframe = initialization_keyframe || weak_keyframe_connection;
+    last_measurement_was_keyframe_ = is_keyframe;
     if (is_keyframe) {
         feature_manager_->acceptKeyframe(feature_frame);
     }
-    feature_manager_->logInputStats(initialized_ ? is_keyframe : initialization_keyframe);
+    feature_manager_->logInputStats(is_keyframe);
 
     predictFrameState(frame_count, imu_measurements);
 
@@ -202,6 +203,9 @@ void Estimator::processMeasurement(
     if (realtime_pose_callback_) {
         realtime_pose_callback_(ts, optimized_pose);
     }
+    if (loop_closure_) {
+        loop_closure_->submitPose({frame_id, optimized_pose});
+    }
     feature_manager_->removeOutliers(*state_, params_.ric, params_.tic);
     RetainedHostAction host_action = RetainedHostAction::kKeep;
     if (!state_->has_retained_host) {
@@ -210,6 +214,28 @@ void Estimator::processMeasurement(
         host_action = RetainedHostAction::kReplace;
     }
     const MarginalizationLayout marginalization_layout(host_action);
+    if (marginalization_layout.replacesRetainedHost() && loop_closure_) {
+        const auto host_landmarks = feature_manager_->exportHostLandmarks(0, *state_);
+        std::vector<tassel_loop::LandmarkInput> landmarks;
+        landmarks.reserve(host_landmarks.size());
+        for (const HostLandmark& landmark : host_landmarks) {
+            landmarks.push_back(
+                {landmark.feature_id, landmark.host_pixel, landmark.host_uv, landmark.host_depth});
+        }
+        loop_closure_->submitLandmarks({state_->frames[0].timestamp_ns, std::move(landmarks)});
+    }
+    if (host_action != RetainedHostAction::kKeep && loop_closure_) {
+        const FrameState& retained_host =
+            state_->frames[marginalization_layout.nextRetainedHostSourceSlot()];
+        const auto image = frame_images_.find(retained_host.timestamp_ns);
+        if (image != frame_images_.end()) {
+            loop_closure_->submitKeyframe(
+                {retained_host.timestamp_ns, image->second,
+                 Sophus::SE3d(retained_host.R, retained_host.P)});
+            frame_images_.erase(
+                frame_images_.begin(), frame_images_.upper_bound(retained_host.timestamp_ns));
+        }
+    }
     updateMarginalizationPrior(marginalization_layout);
     if (marginalization_layout.replacesRetainedHost()) {
         feature_manager_->replaceRetainedHost(0, 1, *state_, params_.ric, params_.tic);
@@ -217,11 +243,6 @@ void Estimator::processMeasurement(
         feature_manager_->removeFrameObservations(1, *state_, params_.ric, params_.tic);
     }
     shiftWindowAfterMarginalization(marginalization_layout);
-
-    if (cloud_callback_ && initialized_) {
-        auto pts = feature_manager_->getPointCloud(*state_, params_.ric, params_.tic);
-        cloud_callback_(ts, pts);
-    }
 }
 
 void Estimator::predictFrameState(

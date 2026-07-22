@@ -15,6 +15,7 @@ tassel_configure_dependencies()
 enable_testing()
 
 add_subdirectory(tassel_utils)
+add_subdirectory(tassel_loop)
 add_subdirectory(tassel_core)
 add_subdirectory(tassel_tools)
 

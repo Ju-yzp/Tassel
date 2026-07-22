@@ -8,10 +8,11 @@ bridge:
         - /odom/camera
         - /vo/path
         - /ground_truth/path
-        - /landmarks
-        - /stereo/image
         - /mono/image
-        - /optimization/.*
+        - /optimization/visual_window
+        - /loop/optimized_path
+        - /loop/graph_path
+        - /loop/matches
 
 studio:
     executable: /usr/bin/foxglove-studio
@@ -19,7 +20,5 @@ studio:
     layout_name: Tassel VIO
 
 viewer:
-    point_size: 1.75
     path_color: '#ef4444'
     path_line_width: 0.015
-    cost_window_seconds: 15

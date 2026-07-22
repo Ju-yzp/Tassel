@@ -66,7 +66,6 @@ Tassel
 - yaml-cpp
 - Fast CDR
 - ROS 2
-- cv_bridge
 - TF2
 
 仓库提供了环境配置脚本：

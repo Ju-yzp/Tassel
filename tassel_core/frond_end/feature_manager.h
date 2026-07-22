@@ -24,14 +24,20 @@ struct FeatureInputStats {
     double keyframe_feature_retention_ratio = 0.0;
 };
 
+struct HostLandmark {
+    int feature_id = -1;
+    cv::Point2f host_pixel;
+    Eigen::Vector3d host_uv = Eigen::Vector3d::Zero();
+    double host_depth = 0.0;
+};
+
 class FeatureManager {
 public:
     FeatureManager(
-        double reproj_err_thres, double parallax_thres, int tracked_times_thres,
-        int min_tracked_pts, double min_translation, double min_depth = MIN_DISTANCE,
-        double max_depth = MAX_DISTANCE);
+        double reproj_err_thres, int tracked_times_thres, double min_translation,
+        double min_depth = MIN_DISTANCE, double max_depth = MAX_DISTANCE);
 
-    bool checkParallax(
+    void addFeatureFrame(
         int frame_slot, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
 
     inline void resetLandmarkDepths() {
@@ -70,8 +76,7 @@ public:
     std::vector<MarginalizedFeatureObservation> collectMarginalizedObservations(
         int host_slot, int target_slot);
 
-    std::vector<Eigen::Vector3d> getPointCloud(
-        const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) const;
+    std::vector<HostLandmark> exportHostLandmarks(int host_slot, const State& state) const;
 
     std::vector<SFMFeature> collectSFMFeatures(const State& state) const;
 
@@ -80,11 +85,7 @@ public:
 private:
     double reproj_err_thres_;
 
-    double parallax_thres_;
-
     int tracked_times_thres_;
-
-    int min_tracked_pts_;
 
     double min_translation_;
 

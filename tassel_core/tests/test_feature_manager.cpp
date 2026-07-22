@@ -16,7 +16,7 @@ FeaturePerFrame observation(double x = 0.0, double delay = 0.0) {
     return result;
 }
 
-FeatureManager manager() { return FeatureManager(3.0, 10.0, 2, 1, 0.0, 0.1, 100.0); }
+FeatureManager manager() { return FeatureManager(3.0, 2, 0.0, 0.1, 100.0); }
 
 TEST(FeatureManagerTest, MarginalizationUsesContinuousTargetSlot) {
     auto fm = manager();
@@ -84,12 +84,12 @@ TEST(FeatureManagerTest, MeasuresConnectionToLatestKeyframeSnapshot) {
     auto fm = manager();
     std::unordered_map<int, FeaturePerFrame> keyframe = {
         {1, observation(0.0)}, {2, observation(1.0)}};
-    fm.checkParallax(0, keyframe);
+    fm.addFeatureFrame(0, keyframe);
     fm.acceptKeyframe(keyframe);
 
     std::unordered_map<int, FeaturePerFrame> current = {
         {1, observation(2.0)}, {3, observation(3.0)}};
-    fm.checkParallax(1, current);
+    fm.addFeatureFrame(1, current);
     EXPECT_EQ(fm.lastInputStats().connected_to_keyframe_count, 1u);
     EXPECT_DOUBLE_EQ(fm.lastInputStats().current_keyframe_connection_ratio, 0.5);
 }
@@ -97,10 +97,10 @@ TEST(FeatureManagerTest, MeasuresConnectionToLatestKeyframeSnapshot) {
 TEST(FeatureManagerTest, RejectsReappearingFeatureAfterObservationGap) {
     auto fm = manager();
     std::unordered_map<int, FeaturePerFrame> first = {{1, observation()}};
-    fm.checkParallax(0, first);
+    fm.addFeatureFrame(0, first);
 
     std::unordered_map<int, FeaturePerFrame> reappearing = {{1, observation(1.0)}};
-    EXPECT_THROW(fm.checkParallax(2, reappearing), std::logic_error);
+    EXPECT_THROW(fm.addFeatureFrame(2, reappearing), std::logic_error);
 }
 
 TEST(FeatureManagerTest, ReplacingHostKeepsConnectedLandmarkAtSlotZero) {
@@ -123,7 +123,7 @@ TEST(FeatureManagerTest, ReplacingHostKeepsConnectedLandmarkAtSlotZero) {
 TEST(FeatureManagerTest, ResetClearsKeyframeSnapshotAndFeatures) {
     auto fm = manager();
     std::unordered_map<int, FeaturePerFrame> frame = {{1, observation()}};
-    fm.checkParallax(0, frame);
+    fm.addFeatureFrame(0, frame);
     fm.acceptKeyframe(frame);
     fm.reset();
     EXPECT_FALSE(fm.hasLatestKeyframe());
@@ -164,6 +164,55 @@ TEST(FeatureManagerTest, RemovesLandmarkUsingDirectPixelReprojectionError) {
     EXPECT_TRUE(fm.features().contains(1));
     EXPECT_FALSE(fm.features().contains(2));
     EXPECT_FALSE(fm.features().contains(3));
+}
+
+TEST(FeatureManagerTest, ExportsValidLandmarksForRequestedHostAsIndependentValues) {
+    auto fm = manager();
+    State state(3);
+    state.newest_slot = 2;
+    state.frames[1].R = Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    state.frames[1].P = Eigen::Vector3d(4.0, 5.0, 6.0);
+    Feature valid(1, 2);
+    valid.estimated_depth = 2.0;
+    valid.observations = {observation(0.25)};
+    valid.observations.front().pt = cv::Point2f(120.0f, 80.0f);
+    fm.features().emplace(7, std::move(valid));
+
+    Feature other_host(0, 2);
+    other_host.estimated_depth = 2.0;
+    other_host.observations = {observation(0.5)};
+    fm.features().emplace(8, std::move(other_host));
+
+    Feature invalid_depth(1, 2);
+    invalid_depth.estimated_depth = std::numeric_limits<double>::quiet_NaN();
+    invalid_depth.observations = {observation(0.75)};
+    fm.features().emplace(9, std::move(invalid_depth));
+
+    std::vector<HostLandmark> landmarks = fm.exportHostLandmarks(1, state);
+    ASSERT_EQ(landmarks.size(), 1u);
+    EXPECT_EQ(landmarks.front().feature_id, 7);
+    EXPECT_EQ(landmarks.front().host_pixel, cv::Point2f(120.0f, 80.0f));
+    EXPECT_TRUE(landmarks.front().host_uv.isApprox(Eigen::Vector3d(0.25, 0.0, 1.0)));
+    EXPECT_DOUBLE_EQ(landmarks.front().host_depth, 2.0);
+
+    fm.features().clear();
+    EXPECT_EQ(landmarks.front().feature_id, 7);
+    EXPECT_TRUE(landmarks.front().host_uv.isApprox(Eigen::Vector3d(0.25, 0.0, 1.0)));
+    EXPECT_DOUBLE_EQ(landmarks.front().host_depth, 2.0);
+}
+
+TEST(FeatureManagerTest, ExcludesDepthOutsideConfiguredRange) {
+    auto fm = manager();
+    State state(1);
+    state.newest_slot = 0;
+    for (const auto& [id, depth] :
+         std::vector<std::pair<int, double>>{{1, -1.0}, {2, 0.05}, {3, 101.0}}) {
+        Feature feature(0, 1);
+        feature.estimated_depth = depth;
+        feature.observations = {observation()};
+        fm.features().emplace(id, std::move(feature));
+    }
+    EXPECT_TRUE(fm.exportHostLandmarks(0, state).empty());
 }
 
 }  // namespace

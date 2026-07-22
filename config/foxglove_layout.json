@@ -27,20 +27,25 @@
       },
       "topics": {
         "/odom/camera": { "visible": true },
-                    "/vo/path": {
-                      "visible": true,
-                      "lineWidth": 0.015,
+        "/vo/path": {
+          "visible": true,
+          "lineWidth": 0.015,
           "color": "#ef4444"
+        },
+        "/loop/optimized_path": {
+          "visible": true,
+          "lineWidth": 0.02,
+          "color": "#06b6d4"
+        },
+        "/loop/graph_path": {
+          "visible": true,
+          "lineWidth": 0.025,
+          "color": "#f59e0b"
         },
         "/ground_truth/path": {
           "visible": true,
           "lineWidth": 0.015,
           "color": "#22c55e"
-        },
-        "/landmarks": {
-          "visible": true,
-          "pointSize": 1.75,
-          "color": "#e8edf2"
         }
       }
     },
@@ -50,39 +55,11 @@
         "synchronize": false
       }
     },
-    "Plot!tasselcostreduction": {
-      "xAxisVal": "timestamp",
-      "xAxisDisplayMethod": "relative",
-      "timeWindowMode": "sliding",
-      "followingViewWidth": 15,
-      "playbackBarPosition": "right",
-      "isSynced": false,
-      "paths": [
-        {
-          "value": "/optimization/total_reduction.data",
-          "label": "total",
-          "color": "#f59e0b",
-          "lineSize": 2
-        },
-        {
-          "value": "/optimization/visual_reduction.data",
-          "label": "visual",
-          "color": "#22c55e",
-          "lineSize": 2
-        },
-        {
-          "value": "/optimization/imu_reduction.data",
-          "label": "imu",
-          "color": "#3b82f6",
-          "lineSize": 2
-        },
-        {
-          "value": "/optimization/prior_reduction.data",
-          "label": "prior",
-          "color": "#ec4899",
-          "lineSize": 2
-        }
-      ]
+    "Image!tasselloopmatches": {
+      "imageMode": {
+        "imageTopic": "/loop/matches",
+        "synchronize": false
+      }
     },
     "Image!tasselvisualwindow": {
       "imageMode": {
@@ -102,17 +79,17 @@
   "layout": {
     "first": {
       "first": "3D!tasselmain",
-      "second": "Image!tasselstereo",
-      "direction": "column",
-      "splitPercentage": 65
-    },
-    "second": {
-      "first": "Plot!tasselcostreduction",
       "second": "Image!tasselvisualwindow",
       "direction": "column",
       "splitPercentage": 82
     },
+    "second": {
+      "first": "Image!tasselmono",
+      "second": "Image!tasselloopmatches",
+      "direction": "column",
+      "splitPercentage": 50
+    },
     "direction": "row",
-    "splitPercentage": 60
+    "splitPercentage": 68
   }
 }

@@ -65,18 +65,15 @@ bool computeReprojectionError(
 }  // namespace
 
 FeatureManager::FeatureManager(
-    double reproj_err_thres, double parallax_thres, int tracked_times_thres, int min_tracked_pts,
-    double min_translation, double min_depth, double max_depth)
+    double reproj_err_thres, int tracked_times_thres, double min_translation, double min_depth,
+    double max_depth)
     : reproj_err_thres_(reproj_err_thres),
-      parallax_thres_(parallax_thres),
       tracked_times_thres_(tracked_times_thres),
-      min_tracked_pts_(min_tracked_pts),
       min_translation_(min_translation),
       min_depth_(min_depth),
       max_depth_(max_depth) {
-    if (reproj_err_thres_ <= 0.0 || parallax_thres_ < 0.0 || tracked_times_thres_ < 2 ||
-        min_tracked_pts_ < 1 || min_translation_ < 0.0 || min_depth_ <= 0.0 ||
-        max_depth_ <= min_depth_) {
+    if (reproj_err_thres_ <= 0.0 || tracked_times_thres_ < 2 || min_translation_ < 0.0 ||
+        min_depth_ <= 0.0 || max_depth_ <= min_depth_) {
         throw std::invalid_argument("Invalid FeatureManager configuration");
     }
     features_.reserve(1000);
@@ -98,7 +95,7 @@ void FeatureManager::logInputStats(bool is_keyframe) const {
         is_keyframe);
 }
 
-bool FeatureManager::checkParallax(
+void FeatureManager::addFeatureFrame(
     int frame_slot, const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
     double keyframe_parallax_sum = 0.0;
     size_t keyframe_parallax_count = 0;
@@ -147,10 +144,6 @@ bool FeatureManager::checkParallax(
             static_cast<double>(last_input_stats_.connected_to_keyframe_count) /
             static_cast<double>(latest_keyframe_features_.size());
     }
-
-    return !hasLatestKeyframe() ||
-           keyframe_parallax_count < static_cast<size_t>(min_tracked_pts_) ||
-           last_input_stats_.average_parallax > parallax_thres_;
 }
 
 void FeatureManager::acceptKeyframe(const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
@@ -336,25 +329,30 @@ std::vector<MarginalizedFeatureObservation> FeatureManager::collectMarginalizedO
     return result;
 }
 
-std::vector<Eigen::Vector3d> FeatureManager::getPointCloud(
-    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) const {
-    auto cs = state.get_compensated_state();
-    std::vector<Eigen::Vector3d> points;
-    for (const auto& item : features_) {
-        const auto& feature = item.second;
-        if (feature.estimated_depth <= 0) {
-            continue;
-        }
-        const int host_slot = feature.start_slot;
-        if (host_slot < 0 || host_slot > cs.newest_slot) {
-            continue;
-        }
-        Eigen::Vector3d pt_in_C = feature.observations[0].uv * feature.estimated_depth;
-        Eigen::Vector3d pt_in_I = ric * pt_in_C + tic;
-        Eigen::Vector3d pt_in_W = cs.frames[host_slot].R * pt_in_I + cs.frames[host_slot].P;
-        points.push_back(pt_in_W);
+std::vector<HostLandmark> FeatureManager::exportHostLandmarks(
+    int host_slot, const State& state) const {
+    std::vector<HostLandmark> landmarks;
+    if (host_slot < 0 || host_slot > state.newest_slot) {
+        return landmarks;
     }
-    return points;
+
+    for (const auto& [feature_id, feature] : features_) {
+        if (feature.start_slot != host_slot || feature.observations.empty() ||
+            !std::isfinite(feature.estimated_depth) || feature.estimated_depth < min_depth_ ||
+            feature.estimated_depth > max_depth_) {
+            continue;
+        }
+
+        const FeaturePerFrame& host_observation = feature.observations.front();
+        if (!host_observation.uv.allFinite() || !std::isfinite(host_observation.pt.x) ||
+            !std::isfinite(host_observation.pt.y)) {
+            continue;
+        }
+
+        landmarks.push_back(
+            {feature_id, host_observation.pt, host_observation.uv, feature.estimated_depth});
+    }
+    return landmarks;
 }
 
 std::vector<Feature*> FeatureManager::collectLandmarks() {

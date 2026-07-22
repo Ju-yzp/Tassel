@@ -40,15 +40,9 @@ def apply_viewer_config(config: dict, layout: dict) -> None:
     config_by_id = layout["configById"]
     scene = config_by_id["3D!tasselmain"]
     path = scene["topics"]["/vo/path"]
-    cloud = scene["topics"]["/landmarks"]
-    plot = config_by_id["Plot!tasselcostreduction"]
 
     path["color"] = str(viewer.get("path_color", path.get("color", "#ef4444")))
     path["lineWidth"] = float(viewer.get("path_line_width", path.get("lineWidth", 0.005)))
-    cloud["pointSize"] = float(viewer.get("point_size", cloud.get("pointSize", 1.75)))
-    plot["followingViewWidth"] = float(
-        viewer.get("cost_window_seconds", plot.get("followingViewWidth", 15))
-    )
 
 
 def layouts_directory() -> Path:
