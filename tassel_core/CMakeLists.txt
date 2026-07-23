@@ -11,7 +11,7 @@ file(
   ${CMAKE_CURRENT_SOURCE_DIR}/initial/*.cpp)
 add_library(tassel_core SHARED ${TASSEL_CORE_SRCS})
 
-target_link_libraries(tassel_core PUBLIC tassel_deps tassel_utils)
+target_link_libraries(tassel_core PUBLIC tassel_deps tassel_loop tassel_utils)
 
 target_include_directories(
   tassel_core
@@ -31,6 +31,7 @@ tassel_add_tests(
   "${CMAKE_CURRENT_SOURCE_DIR}/tests"
   LINK_LIBS
   tassel_core
+  tassel_loop
   tassel_tools
   INCLUDE_DIRS
   "${CMAKE_CURRENT_SOURCE_DIR}")

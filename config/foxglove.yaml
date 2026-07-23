@@ -5,13 +5,14 @@ bridge:
     topic_whitelist:
         - /tf
         - /tf_static
-        - /odom/camera
-        - /vo/path
+        - /vio/odometry
+        - /vio/path
         - /ground_truth/path
-        - /landmarks
-        - /stereo/image
         - /mono/image
-        - /optimization/.*
+        - /optimization/visual_window
+        - /slam/path
+        - /slam/keyframe_path
+        - /loop/matches
 
 studio:
     executable: /usr/bin/foxglove-studio
@@ -19,7 +20,5 @@ studio:
     layout_name: Tassel VIO
 
 viewer:
-    point_size: 1.75
     path_color: '#ef4444'
     path_line_width: 0.015
-    cost_window_seconds: 15

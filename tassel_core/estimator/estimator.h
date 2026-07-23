@@ -3,14 +3,17 @@
 
 #include <Eigen/Core>
 #include <functional>
+#include <map>
 #include <memory>
+#include <opencv2/core.hpp>
 #include <unordered_map>
 #include <variant>
 #include <vector>
 
-#include "estimator/marginalization_layout.h"
 #include "factor/integrator_base.h"
 #include "frond_end/feature_manager.h"
+#include "loop_closure.h"
+#include "marg/marg_helper.h"
 #include "marg/marg_lin_data.h"
 #include "parameters/parameters.h"
 #include "state/state.h"
@@ -23,18 +26,6 @@
 namespace tassel_core {
 
 class CameraBase;
-
-struct OptimizationStats {
-    double total_cost_before = 0.0;
-    double total_cost_after = 0.0;
-    double visual_cost_before = 0.0;
-    double visual_cost_after = 0.0;
-    double prior_cost_before = 0.0;
-    double prior_cost_after = 0.0;
-    double imu_cost_before = 0.0;
-    double imu_cost_after = 0.0;
-    std::vector<int> visual_factors_per_frame;
-};
 
 class Estimator {
 public:
@@ -54,11 +45,16 @@ public:
     void setRealtimePoseCallback(std::function<void(double, const Sophus::SE3d&)> cb) {
         realtime_pose_callback_ = std::move(cb);
     }
-    void setCloudCallback(std::function<void(double, const std::vector<Eigen::Vector3d>&)> cb) {
-        cloud_callback_ = std::move(cb);
+    void setVisualFactorCallback(std::function<void(double, const std::vector<int>&)> cb) {
+        visual_factor_callback_ = std::move(cb);
     }
-    void setOptimizationCallback(std::function<void(double, const OptimizationStats&)> cb) {
-        optimization_callback_ = std::move(cb);
+    void setLoopClosure(std::shared_ptr<tassel_loop::LoopClosure> loop_closure) {
+        loop_closure_ = std::move(loop_closure);
+    }
+    void submitFrameImage(tassel_utils::FrameId frame_id, const cv::Mat& image) {
+        if (loop_closure_) {
+            frame_images_[frame_id] = image.clone();
+        }
     }
     void setCamera(const CameraBase* camera) {
         camera_ = camera;
@@ -66,6 +62,8 @@ public:
             state_->camera = camera;
         }
     }
+
+    bool lastMeasurementWasKeyframe() const { return last_measurement_was_keyframe_; }
 
     void optimize(double timestamp = -1.0);
 
@@ -77,14 +75,14 @@ private:
     using PreintegratorStorage =
         std::variant<IntegratorVector<MidPointIntegrator>, IntegratorVector<EulerIntegrator>>;
 
-    void updateMarginalizationPrior(const MarginalizationLayout& layout);
+    void updateMarginalizationPrior(RetainedHostAction action);
 
     void predictFrameState(
-        int frame_slot, const std::vector<tassel_utils::IMUMeasurement>& imu_measurements);
+        int frame_index, const std::vector<tassel_utils::IMUMeasurement>& imu_measurements);
 
     void slideInitializationWindow();
 
-    void shiftWindowAfterMarginalization(const MarginalizationLayout& layout);
+    void shiftWindowAfterMarginalization(RetainedHostAction action);
 
     bool tryInitialize();
 
@@ -109,11 +107,14 @@ private:
     Eigen::Matrix<double, 18, 18> noise_;
 
     bool initialized_ = false;
+    bool last_measurement_was_keyframe_ = false;
 
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
     std::function<void(double, const Sophus::SE3d&)> realtime_pose_callback_;
-    std::function<void(double, const std::vector<Eigen::Vector3d>&)> cloud_callback_;
-    std::function<void(double, const OptimizationStats&)> optimization_callback_;
+    std::function<void(double, const std::vector<int>&)> visual_factor_callback_;
+    std::shared_ptr<tassel_loop::LoopClosure> loop_closure_;
+    std::map<tassel_utils::FrameId, cv::Mat> frame_images_;
+    std::map<tassel_utils::FrameId, tassel_loop::KeyframeId> loop_keyframes_;
 
     PreintegratorStorage preintegrators_;
     double last_ts_ = -1;

@@ -38,16 +38,6 @@ public:
         return true;
     }
 
-    void setFrameInterval(tassel_utils::FrameId start, tassel_utils::FrameId end) {
-        start_frame_id = start;
-        end_frame_id = end;
-    }
-
-    void clearFrameInterval() {
-        start_frame_id = tassel_utils::kInvalidFrameId;
-        end_frame_id = tassel_utils::kInvalidFrameId;
-    }
-
     void reset(
         const Eigen::Vector3d ba_lin, const Eigen::Vector3d bg_lin,
         const Eigen::Matrix<double, 18, 18> init_noise) {
@@ -87,9 +77,6 @@ public:
     inline Eigen::Matrix3d get_dv_dba() const { return jacobian.template block<3, 3>(6, 9); }
 
     std::vector<tassel_utils::IMUMeasurement> buffer;
-
-    tassel_utils::FrameId start_frame_id = tassel_utils::kInvalidFrameId;
-    tassel_utils::FrameId end_frame_id = tassel_utils::kInvalidFrameId;
 
     double sum_dt;
 

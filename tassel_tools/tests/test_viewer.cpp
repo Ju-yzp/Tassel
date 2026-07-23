@@ -2,10 +2,10 @@
 // test_viewer.cpp
 //
 // 目的：
-//   手动检查 Viewer 的里程计、轨迹、图像、点云和误差发布接口。
+//   手动检查 Viewer 的里程计、轨迹和压缩图像发布接口。
 //
 // 测试设计：
-//   构造一个椭圆轨道运动模型, 持续发布相机位姿、路径、合成图像、点云和误差曲线,
+//   构造一个椭圆轨道运动模型, 持续发布相机位姿、路径和合成图像,
 //   用 ROS2/RViz 等外部工具观察 topic 是否正确更新。
 //
 // 通过条件：
@@ -62,11 +62,9 @@ int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
     auto viewer = std::make_shared<tassel_tools::Viewer>("world");
 
-    viewer->createOdometryPublisher("camera", "odom/camera");
+    viewer->createOdometryPublisher("camera", "vio/odometry");
     viewer->createPathPublisher("path/camera");
-    viewer->createImagePublisher("image/camera");
-    viewer->createPointCloudPublisher("landmarks");
-    viewer->createErrorPublisher("error");
+    viewer->createCompressedImagePublisher("image/camera");
 
     const double a = 5.0;
     const double b = 3.0;
@@ -110,11 +108,9 @@ int main(int argc, char** argv) {
                 " px",
             cv::Point(20, 80), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(200, 200, 200), 2);
 
-        viewer->publishOdometry("odom/camera", pos, ori, vel, ang_vel);
+        viewer->publishOdometry("vio/odometry", pos, ori, vel, ang_vel);
         viewer->publishPath("path/camera", pos, ori);
-        viewer->publishImage("image/camera", "camera", canvas);
-        viewer->publishPointCloud("landmarks", {pos});
-        viewer->publishError("error", static_cast<float>(dist));
+        viewer->publishCompressedImage("image/camera", "camera", canvas);
 
         rclcpp::spin_some(viewer);
         rate.sleep();

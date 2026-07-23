@@ -85,7 +85,7 @@ TEST_F(LandmarkBlockTest, QRZerosLandmarkColumn) {
     s.col(lb.get_landmark_index()).setRandom();
     s(0, lb.get_landmark_index()) = 1.0;
 
-    lb.eliminateLandmark();
+    lb.marginalizeLandmark();
 
     int lm = lb.get_landmark_index();
     for (int r = 1; r < lb.get_num_rows(); ++r) {
@@ -102,7 +102,7 @@ TEST_F(LandmarkBlockTest, QRFrobeniusNormPreserved) {
     s.setRandom();
 
     double norm_before = s.norm();
-    lb.eliminateLandmark();
+    lb.marginalizeLandmark();
     double norm_after = s.norm();
 
     EXPECT_NEAR(norm_before, norm_after, 1e-10);
@@ -116,7 +116,7 @@ TEST_F(LandmarkBlockTest, QRZeroLandmarkColumnSkipsAllZeros) {
     s.setRandom();
     s.col(lb.get_landmark_index()).setZero();
 
-    lb.eliminateLandmark();
+    lb.marginalizeLandmark();
 
     for (int r = 0; r < lb.get_num_rows(); ++r) {
         EXPECT_NEAR(s(r, lb.get_landmark_index()), 0.0, kQrTol);
@@ -132,7 +132,7 @@ TEST_F(LandmarkBlockTest, ZeroLandmarkJacobianKeepsEveryPoseConstraint) {
     storage.col(lb.get_landmark_index()).setZero();
     const auto original = storage;
 
-    lb.eliminateLandmark();
+    lb.marginalizeLandmark();
     Eigen::MatrixXd J(lb.get_kept_rows(), lb.get_padding_index() + 1);
     Eigen::VectorXd r(lb.get_kept_rows());
     lb.writeReducedSystem(J, r, 0);
@@ -152,7 +152,7 @@ TEST_F(LandmarkBlockTest, QRSingleObservation) {
     auto& s = lb.get_mutable_storage();
     s.setRandom();
 
-    lb.eliminateLandmark();
+    lb.marginalizeLandmark();
 
     EXPECT_NEAR(s(1, lb.get_landmark_index()), 0.0, kQrTol);
 }
@@ -177,7 +177,7 @@ TEST_F(LandmarkBlockTest, QRGivensRotationExact) {
     s(1, res) = 6;
 
     double norm_before = s.norm();
-    lb.eliminateLandmark();
+    lb.marginalizeLandmark();
 
     // 第 0 行以下的路标列被置零
     EXPECT_NEAR(s(1, lm), 0.0, kQrTol);
@@ -202,7 +202,7 @@ TEST_F(LandmarkBlockTest, QRThreeRowCase) {
     s(2, lm) = 4;
     s(3, lm) = 7;
 
-    lb.eliminateLandmark();
+    lb.marginalizeLandmark();
 
     for (int r = 1; r < lb.get_num_rows(); ++r) {
         EXPECT_NEAR(s(r, lm), 0.0, kQrTol);
@@ -219,7 +219,7 @@ TEST_F(LandmarkBlockTest, GetDenseExtractsCorrectRows) {
     auto& s = lb.get_mutable_storage();
     s.setRandom();
 
-    lb.eliminateLandmark();
+    lb.marginalizeLandmark();
 
     int kept = lb.get_kept_rows();
     int pad = lb.get_padding_index();
@@ -244,7 +244,7 @@ TEST_F(LandmarkBlockTest, GetDenseWithOffsetPreservesPrefix) {
     auto& s = lb.get_mutable_storage();
     s.setRandom();
 
-    lb.eliminateLandmark();
+    lb.marginalizeLandmark();
 
     int kept = lb.get_kept_rows();
     int pad = lb.get_padding_index();
@@ -296,7 +296,7 @@ TEST_F(LandmarkBlockTest, MarginalizedSystemConsistency) {
     s.setRandom();
     s.col(res) = s.block(0, 0, lb.get_num_rows(), pad) * dx_true + s.col(lm) * dl_true;
 
-    lb.eliminateLandmark();
+    lb.marginalizeLandmark();
 
     // 真值状态必须满足边缘化约束（第 1 行及之后）。
     for (int r = 1; r < lb.get_num_rows(); ++r) {
@@ -332,7 +332,7 @@ TEST_F(LandmarkBlockTest, QRStressTest) {
     }
 
     double norm_before = s.norm();
-    lb.eliminateLandmark();
+    lb.marginalizeLandmark();
 
     int lm = lb.get_landmark_index();
     for (int r = 1; r < lb.get_num_rows(); ++r) {

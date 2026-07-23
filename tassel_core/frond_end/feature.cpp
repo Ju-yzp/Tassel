@@ -2,6 +2,7 @@
 
 #include <Eigen/SVD>
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 #include "reprojection.h"
@@ -9,8 +10,8 @@
 #include "tassel_utils/triangulation.h"
 
 namespace tassel_core {
-Feature::Feature(int start_slot_, size_t max_capacity)
-    : start_slot(start_slot_), estimated_depth(INVALID_DEPTH) {
+Feature::Feature(int host_frame_index, size_t max_capacity)
+    : host_frame_index(host_frame_index), estimated_depth(INVALID_DEPTH) {
     observations.reserve(max_capacity);
 }
 
@@ -21,12 +22,12 @@ void Feature::monoTriangulate(
         return;
     }
 
-    const int host_slot = start_slot;
-    if (host_slot < 0 || host_slot > state.newest_slot) {
+    const int host_index = host_frame_index;
+    if (host_index < 0 || host_index > state.latest_frame_index) {
         return;
     }
-    Eigen::Matrix3d reference_r = state.frames[host_slot].R * ric;
-    Eigen::Vector3d reference_t = state.frames[host_slot].R * tic + state.frames[host_slot].P;
+    Eigen::Matrix3d reference_r = state.frames[host_index].R * ric;
+    Eigen::Vector3d reference_t = state.frames[host_index].R * tic + state.frames[host_index].P;
     Eigen::Vector3d reference_ray = observations[0].uv.normalized();
 
     std::vector<Eigen::Matrix<double, 3, 4>> poses;
@@ -40,12 +41,13 @@ void Feature::monoTriangulate(
 
     for (size_t obs_idx = 1; obs_idx < observations.size(); ++obs_idx) {
         const auto& observation = observations[obs_idx];
-        const int cur_slot = observationSlot(obs_idx);
-        if (cur_slot > state.newest_slot) {
-            continue;
+        const int current_frame_index = observationFrameIndex(obs_idx);
+        if (current_frame_index > state.latest_frame_index) {
+            throw std::logic_error("Feature observation index is outside the active window");
         }
-        Eigen::Matrix3d cur_r = state.frames[cur_slot].R * ric;
-        Eigen::Vector3d cur_t = state.frames[cur_slot].R * tic + state.frames[cur_slot].P;
+        Eigen::Matrix3d cur_r = state.frames[current_frame_index].R * ric;
+        Eigen::Vector3d cur_t =
+            state.frames[current_frame_index].R * tic + state.frames[current_frame_index].P;
         Eigen::Matrix3d dr = cur_r.transpose() * reference_r;
         Eigen::Vector3d dt = cur_r.transpose() * (reference_t - cur_t);
         Eigen::Vector3d t_ref_cur = reference_r.transpose() * (cur_t - reference_t);
@@ -81,56 +83,58 @@ void Feature::monoTriangulate(
 }
 
 void Feature::removeFrame(
-    int frame_slot, const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
-    const int observation_index = frame_slot - start_slot;
+    int frame_index, const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
+    const int observation_index = frame_index - host_frame_index;
     if (observation_index < 0 || observation_index >= static_cast<int>(observations.size())) {
         return;
     }
     auto removed_it = observations.begin() + observation_index;
 
-    if (start_slot == frame_slot && observations.size() > 1) {
-        const int new_host_slot = frame_slot + 1;
-        if (transferHost(new_host_slot, state, ric, tic)) {
+    if (host_frame_index == frame_index && observations.size() > 1) {
+        const int new_host_index = frame_index + 1;
+        if (transferHost(new_host_index, state, ric, tic)) {
             observations.erase(observations.begin() + 1);
         } else {
             observations.erase(removed_it);
-            start_slot = new_host_slot;
+            host_frame_index = new_host_index;
             estimated_depth = INVALID_DEPTH;
         }
         return;
     }
-    removeFrameObservation(frame_slot);
+    removeFrameObservation(frame_index);
 }
 
 bool Feature::transferHost(
-    int new_host_slot, const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
-    const int old_slot = start_slot;
-    const int new_observation_index = new_host_slot - start_slot;
-    if (old_slot < 0 || new_host_slot > state.newest_slot || new_observation_index <= 0 ||
+    int new_host_index, const State& state, const Eigen::Matrix3d& ric,
+    const Eigen::Vector3d& tic) {
+    const int old_frame_index = host_frame_index;
+    const int new_observation_index = new_host_index - host_frame_index;
+    if (old_frame_index < 0 || new_host_index > state.latest_frame_index ||
+        new_observation_index <= 0 ||
         new_observation_index >= static_cast<int>(observations.size()) ||
         estimated_depth == INVALID_DEPTH) {
         return false;
     }
-    const int new_slot = new_host_slot;
+    const int new_frame_index = new_host_index;
     auto old_host_it = observations.begin();
     auto new_host_it = observations.begin() + new_observation_index;
 
     Eigen::Vector3d pj_in_C;
     if (!reprojectToTargetCamera(
-            state.frames[old_slot], state.frames[new_slot], old_host_it->uv, estimated_depth,
-            old_host_it->sync_delay, new_host_it->sync_delay, state.delay_time, ric, tic,
-            pj_in_C)) {
+            state.frames[old_frame_index], state.frames[new_frame_index], old_host_it->uv,
+            estimated_depth, old_host_it->sync_delay, new_host_it->sync_delay, state.delay_time,
+            ric, tic, pj_in_C)) {
         return false;
     }
 
     estimated_depth = pj_in_C.z();
-    start_slot = new_host_slot;
+    host_frame_index = new_host_index;
     std::iter_swap(observations.begin(), new_host_it);
     return true;
 }
 
-void Feature::removeFrameObservation(int frame_slot) {
-    const int observation_index = frame_slot - start_slot;
+void Feature::removeFrameObservation(int frame_index) {
+    const int observation_index = frame_index - host_frame_index;
     if (observation_index >= 0 && observation_index < static_cast<int>(observations.size())) {
         observations.erase(observations.begin() + observation_index);
     }

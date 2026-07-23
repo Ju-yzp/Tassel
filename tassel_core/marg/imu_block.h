@@ -50,10 +50,12 @@ public:
         jacobians.push_back(jacobian_speed_bias_j.data());
 
         TASSEL_ASSERT(imu_factor_->Evaluate(parameters.data(), residual.data(), jacobians.data()));
+        // IMUFactor 对旋转向量求导；边缘化系统使用当前姿态处的右扰动切空间。
         jacobian_pose_i.block<15, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Q_i);
         jacobian_pose_j.block<15, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Q_j);
 
         b_ = residual;
+        // 固定列布局为 [pose_i(6), speed_bias_i(9), pose_j(6), speed_bias_j(9)]。
         Jp_.template block<15, 6>(0, 0) = jacobian_pose_i;
         Jp_.template block<15, 9>(0, 6) = jacobian_speed_bias_i;
         Jp_.template block<15, 6>(0, 15) = jacobian_pose_j;

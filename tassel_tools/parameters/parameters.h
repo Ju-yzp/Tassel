@@ -21,6 +21,7 @@ struct Parameters {
         loadCameras(parser);
         loadTracker(parser);
         loadFeatureManager(parser);
+        loadLoop(parser);
         loadEstimator(parser);
         loadImu(parser);
         loadInitialization(parser);
@@ -30,6 +31,7 @@ struct Parameters {
 
     // 相机标定：用于 test_estimator 相机构造、特征管理器三角化、视觉因子、初始化和世界/IMU 对齐。
     std::map<size_t, Eigen::Matrix4d> T_cam_imu_map;
+    std::map<size_t, std::string> camera_model_map;
     std::map<size_t, cv::Mat> cam_distort_map;
     std::map<size_t, cv::Mat> cam_intrinsic_map;
     Eigen::Matrix3d ric = Eigen::Matrix3d::Identity();
@@ -49,13 +51,33 @@ struct Parameters {
     // 路标和关键帧管理：用于 FeatureManager。
     double reproj_err_thres;
     double reproj_huber_thres;
-    double parallax_thres;
-    int min_tracked_pts;
     int tracked_times_thres;
     double min_translation;
     double min_depth;
     double max_depth;
     double keyframe_new_feature_ratio;
+
+    // 回环检测与位姿图：用于DBoW检索、贝叶斯门控、PnP验证和GTSAM回环因子。
+    int loop_fast_threshold;
+    int loop_max_keypoints;
+    int loop_recent_exclusion;
+    int loop_top_k;
+    int loop_likelihood_pool_size;
+    double loop_min_score;
+    double loop_min_probability;
+    double loop_min_likelihood_ratio;
+    double loop_pnp_fallback_min_score;
+    double loop_brief_ratio;
+    double loop_brief_max_distance;
+    int loop_pnp_max_candidates;
+    int loop_pnp_min_inliers;
+    double loop_pnp_min_inlier_ratio;
+    double loop_pnp_inlier_threshold;
+    int loop_pnp_max_iterations;
+    double loop_pnp_confidence;
+    int loop_pnp_variance_quantile_divisor;
+    double loop_pnp_max_translation_variance;
+    double loop_optimize_max_error;
 
     // 滑窗优化：用于 Estimator::optimize、先验更新和 reset。
     int num_iterations;
@@ -67,7 +89,7 @@ struct Parameters {
     int delay_obs_min_frames = 3;
     double imu_repropagate_ba_threshold = 0.02;
     double imu_repropagate_bg_threshold = 0.002;
-    tassel_utils::IntegratorType integrator_type = tassel_utils::IntegratorType::kMidPoint;
+    tassel_utils::IntegratorType integrator_type = tassel_utils::IntegratorType::MidPoint;
 
     // IMU 模型和标定：用于 Estimator 预测、预积分和初始化。
     double acc_n, acc_w;
@@ -77,14 +99,15 @@ struct Parameters {
 
     // 视觉惯性初始化和 SFM：用于 Estimator::tryInitialize。
     double gravity_diff_threshold = 0.17;
+    double init_scale_zero_threshold = 0.001;
     int sfm_min_seed_pts = 10;
     int sfm_min_e_inliers = 8;
     double sfm_e_ransac_threshold = 0.004;
     int sfm_min_pnp_pts = 10;
     double sfm_pnp_reproj_threshold = 0.03;
     double sfm_max_bad_pnp_ratio = 0.3;
-    int sfm_ba_max_iterations = 30;
-    int sfm_ba_num_threads = 5;
+    int sfm_epipolar_max_iterations = 30;
+    int sfm_epipolar_num_threads = 5;
 
     // 可视化：用于 Viewer 发布器。
     size_t viewer_path_max_poses = 300;
@@ -110,10 +133,34 @@ private:
         if (keyframe_new_feature_ratio < 0.0 || keyframe_new_feature_ratio > 1.0) {
             throw std::invalid_argument("keyframe_new_feature_ratio must be in [0, 1]");
         }
+        if (loop_fast_threshold <= 0 || loop_max_keypoints <= 0 || loop_recent_exclusion < 0 ||
+            loop_top_k <= 0 || loop_likelihood_pool_size < loop_top_k || loop_min_score < 0.0 ||
+            loop_min_probability < 0.0 || loop_min_probability > 1.0 ||
+            loop_min_likelihood_ratio < 1.0 || loop_brief_ratio <= 0.0 ||
+            loop_pnp_fallback_min_score < 0.0 || loop_brief_ratio >= 1.0 ||
+            loop_brief_max_distance <= 0.0 || loop_pnp_max_candidates <= 0 ||
+            loop_pnp_min_inliers < 6 || loop_pnp_min_inlier_ratio <= 0.0 ||
+            loop_pnp_min_inlier_ratio > 1.0 || loop_pnp_inlier_threshold <= 0.0 ||
+            loop_pnp_max_iterations <= 0 || loop_pnp_confidence <= 0.0 ||
+            loop_pnp_confidence >= 1.0 || loop_pnp_variance_quantile_divisor <= 1 ||
+            loop_pnp_max_translation_variance < 0.0 || loop_optimize_max_error < 0.0) {
+            throw std::invalid_argument("Invalid loop closure parameters");
+        }
+        for (const auto& [camera_id, model] : camera_model_map) {
+            (void)camera_id;
+            if (model != "radtan" && model != "equi") {
+                throw std::invalid_argument("Unsupported camera_model: " + model);
+            }
+        }
+        if (init_scale_zero_threshold < 0.0) {
+            throw std::invalid_argument("init_scale_zero_threshold must be non-negative");
+        }
     }
 
     static void loadCamera(ParamsParser& parser, size_t id, Parameters& params) {
         const std::string cam_key = "cam" + std::to_string(id);
+        params.camera_model_map[id] =
+            normalizeToken(parser.as<std::string>(cam_key, "camera_model"));
         params.cam_intrinsic_map[id] = parser.as<cv::Mat>(cam_key, "intrinsics");
         params.cam_distort_map[id] = parser.as<cv::Mat>(cam_key, "distortion_coeffs");
         params.T_cam_imu_map[id] = parser.as<Eigen::Matrix4d>(cam_key, "T_cam_imu").inverse();
@@ -144,13 +191,34 @@ private:
     void loadFeatureManager(ParamsParser& parser) {
         reproj_err_thres = parser.as<double>("reproj_err_thres");
         reproj_huber_thres = parser.as<double>("reproj_huber_thres");
-        parallax_thres = parser.as<double>("parallax_thres");
-        min_tracked_pts = parser.as<int>("min_tracked_pts");
         tracked_times_thres = parser.as<int>("tracked_times_thres");
         min_translation = parser.as<double>("min_translation");
         min_depth = parser.as<double>("min_depth");
         max_depth = parser.as<double>("max_depth");
         keyframe_new_feature_ratio = parser.as<double>("keyframe_new_feature_ratio");
+    }
+
+    void loadLoop(ParamsParser& parser) {
+        loop_fast_threshold = parser.as<int>("loop_fast_threshold");
+        loop_max_keypoints = parser.as<int>("loop_max_keypoints");
+        loop_recent_exclusion = parser.as<int>("loop_recent_exclusion");
+        loop_top_k = parser.as<int>("loop_top_k");
+        loop_likelihood_pool_size = parser.as<int>("loop_likelihood_pool_size");
+        loop_min_score = parser.as<double>("loop_min_score");
+        loop_min_probability = parser.as<double>("loop_min_probability");
+        loop_min_likelihood_ratio = parser.as<double>("loop_min_likelihood_ratio");
+        loop_pnp_fallback_min_score = parser.as<double>("loop_pnp_fallback_min_score");
+        loop_brief_ratio = parser.as<double>("loop_brief_ratio");
+        loop_brief_max_distance = parser.as<double>("loop_brief_max_distance");
+        loop_pnp_max_candidates = parser.as<int>("loop_pnp_max_candidates");
+        loop_pnp_min_inliers = parser.as<int>("loop_pnp_min_inliers");
+        loop_pnp_min_inlier_ratio = parser.as<double>("loop_pnp_min_inlier_ratio");
+        loop_pnp_inlier_threshold = parser.as<double>("loop_pnp_inlier_threshold");
+        loop_pnp_max_iterations = parser.as<int>("loop_pnp_max_iterations");
+        loop_pnp_confidence = parser.as<double>("loop_pnp_confidence");
+        loop_pnp_variance_quantile_divisor = parser.as<int>("loop_pnp_variance_quantile_divisor");
+        loop_pnp_max_translation_variance = parser.as<double>("loop_pnp_max_translation_variance");
+        loop_optimize_max_error = parser.as<double>("loop_optimize_max_error");
     }
 
     void loadEstimator(ParamsParser& parser) {
@@ -177,14 +245,15 @@ private:
 
     void loadInitialization(ParamsParser& parser) {
         gravity_diff_threshold = parser.as<double>("gravity_diff_threshold");
+        init_scale_zero_threshold = parser.as<double>("init_scale_zero_threshold");
         sfm_min_seed_pts = parser.as<int>("sfm_min_seed_pts");
         sfm_min_e_inliers = parser.as<int>("sfm_min_e_inliers");
         sfm_e_ransac_threshold = parser.as<double>("sfm_e_ransac_threshold");
         sfm_min_pnp_pts = parser.as<int>("sfm_min_pnp_pts");
         sfm_pnp_reproj_threshold = parser.as<double>("sfm_pnp_reproj_threshold");
         sfm_max_bad_pnp_ratio = parser.as<double>("sfm_max_bad_pnp_ratio");
-        sfm_ba_max_iterations = parser.as<int>("sfm_ba_max_iterations");
-        sfm_ba_num_threads = parser.as<int>("sfm_ba_num_threads");
+        sfm_epipolar_max_iterations = parser.as<int>("sfm_epipolar_max_iterations");
+        sfm_epipolar_num_threads = parser.as<int>("sfm_epipolar_num_threads");
     }
 
     void loadViewer(ParamsParser& parser) {
@@ -211,10 +280,10 @@ private:
         const std::string& integrator_name_raw) {
         const std::string integrator_name = normalizeToken(integrator_name_raw);
         if (integrator_name == "midpoint") {
-            return tassel_utils::IntegratorType::kMidPoint;
+            return tassel_utils::IntegratorType::MidPoint;
         }
         if (integrator_name == "euler") {
-            return tassel_utils::IntegratorType::kEuler;
+            return tassel_utils::IntegratorType::Euler;
         }
         throw std::runtime_error(
             "Invalid integrator_type: \"" + integrator_name_raw +

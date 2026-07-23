@@ -260,6 +260,23 @@ TEST_F(ReprojectionFactorTest, CeresGradientCheckerContract) {
     }
 }
 
+TEST_F(ReprojectionFactorTest, HigherOrderJacobianMatchesAtLargeDelay) {
+    SE3RightManifold manifold;
+    std::vector<const ceres::Manifold*> manifolds = {&manifold, &manifold, nullptr, nullptr};
+    ceres::NumericDiffOptions options;
+    options.relative_step_size = 1e-6;
+    std::unique_ptr<ReprojectionFactor> factor(makeFactor(0));
+    ceres::GradientChecker checker(factor.get(), &manifolds, options);
+    double inv_depth = lms_[0].inv_depth;
+    double delay = 0.2;
+    const double* parameters[] = {pose_i_, pose_j_, &delay, &inv_depth};
+    ceres::GradientChecker::ProbeResults results;
+
+    EXPECT_TRUE(checker.Probe(parameters, 1e-6, &results))
+        << "max_relative_error=" << results.maximum_relative_error << "\n"
+        << results.error_log;
+}
+
 TEST_F(ReprojectionFactorTest, HuberCorrectionMatchesCeres) {
     for (double delay : {td_, 0.2}) {
         std::unique_ptr<ReprojectionFactor> factor(makeFactor(0));

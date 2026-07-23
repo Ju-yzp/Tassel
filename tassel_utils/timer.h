@@ -9,11 +9,11 @@
 
 namespace tassel_utils {
 
-enum class TimeUnit { kMillisecond, kMicrosecond, kNanosecond };
+enum class TimeUnit { Millisecond, Microsecond, Nanosecond };
 
 class Timer {
 public:
-    explicit Timer(std::string name, TimeUnit unit = TimeUnit::kMillisecond)
+    explicit Timer(std::string name, TimeUnit unit = TimeUnit::Millisecond)
         : name_(std::move(name)), unit_(unit) {}
 
     Timer() = delete;
@@ -30,15 +30,15 @@ public:
         double elapsed;
         const char* suffix;
         switch (unit_) {
-            case TimeUnit::kMicrosecond:
+            case TimeUnit::Microsecond:
                 elapsed = elapsed_ns * 1e-3;
                 suffix = "us";
                 break;
-            case TimeUnit::kNanosecond:
+            case TimeUnit::Nanosecond:
                 elapsed = elapsed_ns;
                 suffix = "ns";
                 break;
-            case TimeUnit::kMillisecond:
+            case TimeUnit::Millisecond:
             default:
                 elapsed = elapsed_ns * 1e-6;
                 suffix = "ms";

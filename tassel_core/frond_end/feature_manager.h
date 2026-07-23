@@ -4,6 +4,7 @@
 // 标准库
 #include <Eigen/Core>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Tassel
@@ -14,64 +15,47 @@ namespace tassel_core {
 struct State;
 struct SFMFeature;
 
-struct FeatureInputStats {
-    size_t input_count = 0;
-    size_t matched_count = 0;
-    size_t created_count = 0;
-    size_t connected_to_keyframe_count = 0;
-    double average_parallax = 0.0;
-    double current_keyframe_connection_ratio = 0.0;
-    double keyframe_feature_retention_ratio = 0.0;
+struct HostLandmark {
+    int feature_id = -1;
+    cv::Point2f host_pixel;
+    Eigen::Vector3d host_uv = Eigen::Vector3d::Zero();
+    double host_depth = 0.0;
 };
 
 class FeatureManager {
 public:
     FeatureManager(
-        double reproj_err_thres, double parallax_thres, int tracked_times_thres,
-        int min_tracked_pts, double min_translation, double min_depth = MIN_DISTANCE,
+        double reproj_err_thres, int tracked_times_thres, double min_translation,
+        double keyframe_new_feature_ratio, double min_depth = MIN_DISTANCE,
         double max_depth = MAX_DISTANCE);
 
-    bool checkParallax(
-        int frame_slot, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
-
-    inline void resetLandmarkDepths() {
-        for (auto& item : features_) {
-            item.second.estimated_depth = INVALID_DEPTH;
-        }
-    }
+    bool addFeatureFrame(
+        int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
 
     void triangulate(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
-    void removeOldestFrameObservations(
-        const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
-
     void removeFrameObservations(
-        int frame_slot, const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
-
-    void replaceRetainedHost(
-        int old_host_slot, int new_host_slot, const State& state, const Eigen::Matrix3d& ric,
+        int frame_index, const State& state, const Eigen::Matrix3d& ric,
         const Eigen::Vector3d& tic);
 
-    void removeNewestFrameObservations(int frame_slot);
+    void replaceRetainedHost(
+        int old_host_index, int new_host_index, const State& state, const Eigen::Matrix3d& ric,
+        const Eigen::Vector3d& tic);
+
+    void removeNewestFrameObservations(int frame_index);
 
     void removeOutliers(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
-    const FeatureInputStats& lastInputStats() const { return last_input_stats_; }
-
-    void logInputStats(bool is_keyframe) const;
-
-    bool hasLatestKeyframe() const { return !latest_keyframe_features_.empty(); }
-    void acceptKeyframe(const std::unordered_map<int, FeaturePerFrame>& feature_frame);
+    bool hasLatestKeyframe() const { return !latest_keyframe_feature_ids_.empty(); }
 
     void reset();
 
     std::vector<Feature*> collectLandmarks();
 
     std::vector<MarginalizedFeatureObservation> collectMarginalizedObservations(
-        int host_slot, int target_slot);
+        int host_frame_index, int target_frame_index);
 
-    std::vector<Eigen::Vector3d> getPointCloud(
-        const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) const;
+    std::vector<HostLandmark> exportHostLandmarks(int host_frame_index, const State& state) const;
 
     std::vector<SFMFeature> collectSFMFeatures(const State& state) const;
 
@@ -80,19 +64,15 @@ public:
 private:
     double reproj_err_thres_;
 
-    double parallax_thres_;
-
     int tracked_times_thres_;
-
-    int min_tracked_pts_;
 
     double min_translation_;
 
+    double keyframe_new_feature_ratio_;
+
     double min_depth_, max_depth_;
 
-    FeatureInputStats last_input_stats_;
-
-    std::unordered_map<int, cv::Point2f> latest_keyframe_features_;
+    std::unordered_set<int> latest_keyframe_feature_ids_;
 
     std::unordered_map<int, Feature> features_;
 };

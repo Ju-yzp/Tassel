@@ -357,20 +357,6 @@ TEST_F(ImuFactorTest, BiasRecovery) {
     EXPECT_LT(avg_dBg, 0.01) << "Bg should move toward truth";
 }
 
-TEST(IntegratorBaseTest, FrameIntervalSurvivesResetAndRepropagation) {
-    const Eigen::Matrix<double, 18, 18> noise = Eigen::Matrix<double, 18, 18>::Identity();
-    MidPointIntegrator integrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise);
-    integrator.setFrameInterval(100, 200);
-
-    integrator.reset(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise);
-    EXPECT_EQ(integrator.start_frame_id, 100);
-    EXPECT_EQ(integrator.end_frame_id, 200);
-
-    integrator.clearFrameInterval();
-    EXPECT_EQ(integrator.start_frame_id, tassel_utils::kInvalidFrameId);
-    EXPECT_EQ(integrator.end_frame_id, tassel_utils::kInvalidFrameId);
-}
-
 TEST(IntegratorBaseTest, RejectsDuplicateAndNonFiniteMeasurements) {
     const Eigen::Matrix<double, 18, 18> noise = Eigen::Matrix<double, 18, 18>::Identity();
     MidPointIntegrator integrator(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise);

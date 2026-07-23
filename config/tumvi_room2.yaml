@@ -1,0 +1,112 @@
+---
+cam0:
+    camera_model: equi
+    T_cam_imu:
+        - [-0.9995378259923383, 0.02917807204183088, -0.008530798463872679, 0.047094247958417004]
+        - [0.007526588843243184, -0.03435493139706542, -0.9993813532126198, -0.04788273017221637]
+        - [-0.029453096117288798, -0.9989836729399656, 0.034119442089241274, -0.0697294754693238]
+        - [0.0, 0.0, 0.0, 1.0]
+    distortion_coeffs: [0.010171079892421483, -0.010816440029919381, 0.005942781769412756, -0.001662284667857643]
+    intrinsics:
+        - [380.81042871360756, 0.0, 510.29465304840727]
+        - [0.0, 380.81194179427075, 514.3304630538506]
+        - [0.0, 0.0, 1.0]
+
+cam1:
+    camera_model: equi
+    T_cam_imu:
+        - [-0.9995240747493029, 0.02986739485347808, -0.007717688852024281, -0.05374086123613335]
+        - [0.008095979457928231, 0.01256553460985914, -0.9998882749870535, -0.04648588412432889]
+        - [-0.02976708103202316, -0.9994748851595197, -0.0128013601698453, -0.07333210787623645]
+        - [0.0, 0.0, 0.0, 1.0]
+    distortion_coeffs: [0.01371679169245271, -0.015567360615942622, 0.00905043103315326, -0.002347858896562788]
+    intrinsics:
+        - [379.2869884263036, 0.0, 505.5666703237407]
+        - [0.0, 379.26583742214524, 510.2840961765407]
+        - [0.0, 0.0, 1.0]
+
+# 图像与特征跟踪
+rows: 1024
+cols: 1024
+per_grid_rows: 64
+per_grid_cols: 64
+edge_x: 40
+edge_y: 40
+mask_radius: 25.0
+min_feature_num: 180
+
+flow_back: true
+max_square_move_dist: 1.0
+min_gradient: 15.0
+enable_statistics: true
+
+# 特征与关键帧管理
+reproj_err_thres: 3.0
+reproj_huber_thres: 1.0
+tracked_times_thres: 3
+min_depth: 0.1
+max_depth: 10.0
+min_translation: 0.06
+keyframe_new_feature_ratio: 0.25
+
+# 回环检测与位姿图
+loop_fast_threshold: 20
+loop_max_keypoints: 800
+loop_recent_exclusion: 30
+loop_top_k: 3
+loop_likelihood_pool_size: 20
+loop_min_score: 0.05
+loop_min_probability: 0.03
+loop_min_likelihood_ratio: 1.01
+loop_pnp_fallback_min_score: 0.20
+loop_brief_ratio: 0.8
+loop_brief_max_distance: 80.0
+loop_pnp_max_candidates: 3
+loop_pnp_min_inliers: 20
+loop_pnp_min_inlier_ratio: 0.35
+loop_pnp_inlier_threshold: 0.006
+loop_pnp_max_iterations: 1000
+loop_pnp_confidence: 0.999
+loop_pnp_variance_quantile_divisor: 4
+loop_pnp_max_translation_variance: 0.0
+loop_optimize_max_error: 3.0
+
+# 滑窗优化
+num_iterations: 6
+max_frame_count: 7
+visual_factor_weight: 70.0
+num_threads: 1
+
+# 时间延迟可观测性
+delay_obs_gyro_threshold: 0.3
+delay_obs_speed_threshold: 5.0
+delay_obs_min_frames: 3
+
+# IMU 模型与积分
+integrator_type: midpoint
+acc_n: 0.0028
+acc_w: 0.00086
+gyr_n: 0.00016
+gyr_w: 0.000022
+g_norm: 9.81
+acc_bias: [0.0, 0.0, 0.0]
+imu_repropagate_ba_threshold: 0.02
+imu_repropagate_bg_threshold: 0.006
+
+# 视觉惯性初始化
+num_init_iterations: 8
+init_time_span: 5.0
+gravity_diff_threshold: 0.21
+init_scale_zero_threshold: 0.001
+sfm_min_seed_pts: 10
+sfm_min_e_inliers: 8
+sfm_e_ransac_threshold: 0.004
+sfm_min_pnp_pts: 10
+sfm_pnp_reproj_threshold: 0.03
+sfm_max_bad_pnp_ratio: 0.3
+sfm_epipolar_max_iterations: 10
+sfm_epipolar_num_threads: 5
+
+# 可视化
+viewer:
+    path_max_poses: 600

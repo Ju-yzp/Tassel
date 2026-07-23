@@ -43,14 +43,34 @@ enable_statistics: true
 # 特征与关键帧管理
 reproj_err_thres: 1.4
 reproj_huber_thres: 1.0
-parallax_thres: 20.0
 tracked_times_thres: 3
 min_depth: 0.3
 max_depth: 5.0
 min_translation: 0.06
-min_tracked_pts: 50
 keyframe_new_feature_ratio: 0.25
 keyframe_time_threshold: 1.5
+
+# 回环检测与位姿图
+loop_fast_threshold: 20
+loop_max_keypoints: 800
+loop_recent_exclusion: 30
+loop_top_k: 3
+loop_likelihood_pool_size: 20
+loop_min_score: 0.05
+loop_min_probability: 0.03
+loop_min_likelihood_ratio: 1.01
+loop_pnp_fallback_min_score: 0.20
+loop_brief_ratio: 0.8
+loop_brief_max_distance: 80.0
+loop_pnp_max_candidates: 3
+loop_pnp_min_inliers: 20
+loop_pnp_min_inlier_ratio: 0.35
+loop_pnp_inlier_threshold: 0.006
+loop_pnp_max_iterations: 1000
+loop_pnp_confidence: 0.999
+loop_pnp_variance_quantile_divisor: 4
+loop_pnp_max_translation_variance: 0.0
+loop_optimize_max_error: 3.0
 
 # 滑窗优化
 num_iterations: 16
@@ -77,14 +97,15 @@ imu_repropagate_bg_threshold: 0.002
 # 视觉惯性初始化
 num_init_iterations: 8
 gravity_diff_threshold: 0.21
+init_scale_zero_threshold: 0.001
 sfm_min_seed_pts: 10
 sfm_min_e_inliers: 8
 sfm_e_ransac_threshold: 0.004
 sfm_min_pnp_pts: 10
 sfm_pnp_reproj_threshold: 0.03
 sfm_max_bad_pnp_ratio: 0.3
-sfm_ba_max_iterations: 10
-sfm_ba_num_threads: 5
+sfm_epipolar_max_iterations: 10
+sfm_epipolar_num_threads: 5
 
 # 可视化
 viewer:
