@@ -5,7 +5,6 @@
 #include <vector>
 
 #include <opencv2/core.hpp>
-#include "tassel_utils/types.h"
 
 namespace tassel_core {
 struct State;
@@ -39,10 +38,10 @@ inline constexpr double MIN_DISTANCE = 0.1;
 inline constexpr double MAX_DISTANCE = 3.0;
 
 struct Feature {
-    Feature(int start_slot, size_t max_capacity);
+    Feature(int host_frame_index, size_t max_capacity);
 
-    int observationSlot(size_t observation_index) const {
-        return start_slot + static_cast<int>(observation_index);
+    int observationFrameIndex(size_t observation_index) const {
+        return host_frame_index + static_cast<int>(observation_index);
     }
 
     void monoTriangulate(
@@ -50,15 +49,16 @@ struct Feature {
         double min_translation, double min_depth, double max_depth);
 
     void removeFrame(
-        int frame_slot, const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
-
-    bool transferHost(
-        int new_host_slot, const State& state, const Eigen::Matrix3d& ric,
+        int frame_index, const State& state, const Eigen::Matrix3d& ric,
         const Eigen::Vector3d& tic);
 
-    void removeFrameObservation(int frame_slot);
+    bool transferHost(
+        int new_host_index, const State& state, const Eigen::Matrix3d& ric,
+        const Eigen::Vector3d& tic);
 
-    int start_slot;
+    void removeFrameObservation(int frame_index);
+
+    int host_frame_index;
     double estimated_depth;
     std::vector<FeaturePerFrame> observations;
     // 已进入过边缘化先验；宿主滑动并继承深度后允许继续边缘化。
@@ -67,7 +67,7 @@ struct Feature {
 
 struct MarginalizedFeatureObservation {
     Feature* feature = nullptr;
-    int target_slot = -1;
+    int target_frame_index = -1;
 };
 }  // namespace tassel_core
 #endif  // TASSEL_CORE_FEATURE_H_

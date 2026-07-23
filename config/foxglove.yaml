@@ -5,13 +5,13 @@ bridge:
     topic_whitelist:
         - /tf
         - /tf_static
-        - /odom/camera
-        - /vo/path
+        - /vio/odometry
+        - /vio/path
         - /ground_truth/path
         - /mono/image
         - /optimization/visual_window
-        - /loop/optimized_path
-        - /loop/graph_path
+        - /slam/path
+        - /slam/keyframe_path
         - /loop/matches
 
 studio:

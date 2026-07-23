@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use Tassel in academic work, please cite this software."
+title: "Tassel: A Research-Oriented Monocular Visual-Inertial SLAM System"
+type: software
+authors:
+  - family-names: "Wu"
+    given-names: "JunPing"
+    email: "wjpzy20230551@qq.com"
+repository-code: "https://github.com/Ju-yzp/Tassel"
+url: "https://github.com/Ju-yzp/Tassel"
+license: MIT
+version: 1.0.0
+date-released: 2026-07-23

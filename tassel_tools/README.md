@@ -59,20 +59,20 @@ ws://127.0.0.1:8765
 
 图中箭头对应的可视化区域：
 
-- `3D trajectory`：`/vo/path`、`/loop/optimized_path`、`/loop/graph_path`、
-  `/ground_truth/path` 和 `/odom/camera`。
+- `3D trajectory`：`/vio/path`、`/slam/path`、`/slam/keyframe_path`、
+  `/ground_truth/path` 和 `/vio/odometry`。
 - `mono image / feature tracking`：`/mono/image`。
 - `visual factors`：`/optimization/visual_window` 中各窗口槽的视觉因子数量。
 - `loop matches`：`/loop/matches` 最终通过 PnP 的 BRIEF 匹配图。
 
 - `/mono/image`：左目单目特征跟踪图。
-- `/odom/camera`：优化后的 IMU/机体里程计。
-- `/vo/path`：视觉惯性优化轨迹。
+- `/vio/odometry`：局部连续且不包含回环修正的视觉惯性里程计。
+- `/vio/path`：局部视觉惯性轨迹。
 - `/ground_truth/path`：数据集真值轨迹（如果存在）。
 - `/optimization/visual_window`：彩色分段显示各窗口槽的视觉因子数量。
 - `/loop/matches`：当前关键帧与最终通过 PnP 的候选 BRIEF 匹配图。
-- `/loop/graph_path`：GTSAM 优化后的全局关键帧轨迹。
-- `/loop/optimized_path`：按全局关键帧修正重建的稠密轨迹。
+- `/slam/keyframe_path`：GTSAM 优化后的全局关键帧轨迹。
+- `/slam/path`：按全局关键帧修正重建的全局稠密轨迹。
 
 ## 回环候选演示
 

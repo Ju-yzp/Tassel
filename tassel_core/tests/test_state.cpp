@@ -47,7 +47,7 @@ TEST(StateTest, RejectsInvalidWindowSizeBeforeAllocation) {
     EXPECT_THROW(State(0), std::runtime_error);
 }
 
-TEST(StateTest, CopyFrameSlotCopiesCompletePhysicalState) {
+TEST(StateTest, CopyFrameStateCopiesCompletePhysicalState) {
     State state(2);
     state.frames[1].R = Sophus::SO3d::exp(Eigen::Vector3d(0.1, -0.2, 0.3)).matrix();
     state.frames[1].P = Eigen::Vector3d(1.0, 2.0, 3.0);
@@ -56,9 +56,9 @@ TEST(StateTest, CopyFrameSlotCopiesCompletePhysicalState) {
     state.frames[1].Bg = Eigen::Vector3d(0.01, 0.02, 0.03);
     state.frames[1].sync_delay = 0.004;
     state.frames[1].timestamp_ns = 123456789;
-    state.frames[1].is_keyframe = true;
+    state.frames[1].type = FrameType::KeyFrame;
 
-    state.copyFrameSlot(1, 0);
+    state.copyFrameState(1, 0);
 
     EXPECT_TRUE(state.frames[0].R.isApprox(state.frames[1].R));
     EXPECT_EQ(state.frames[0].P, state.frames[1].P);
@@ -67,15 +67,7 @@ TEST(StateTest, CopyFrameSlotCopiesCompletePhysicalState) {
     EXPECT_EQ(state.frames[0].Bg, state.frames[1].Bg);
     EXPECT_EQ(state.frames[0].sync_delay, state.frames[1].sync_delay);
     EXPECT_EQ(state.frames[0].timestamp_ns, state.frames[1].timestamp_ns);
-    EXPECT_TRUE(state.frames[0].is_keyframe);
-}
-
-TEST(StateTest, ActiveImuRangeSkipsRetainedHostPlaceholder) {
-    State state(3);
-    EXPECT_EQ(state.firstImuFactorSlot(), 0);
-
-    state.has_retained_host = true;
-    EXPECT_EQ(state.firstImuFactorSlot(), 1);
+    EXPECT_EQ(state.frames[0].type, FrameType::KeyFrame);
 }
 
 }  // namespace

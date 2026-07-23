@@ -16,7 +16,7 @@ LandmarkBlock::LandmarkBlock(int dim, ceres::LossFunction* loss)
       res_idx_(0),
       padding_idx_(0),
       num_rows_(0),
-      eliminated_landmark_rank_(0),
+      marginalized_landmark_rank_(0),
       qr_performed_(false),
       dim_(dim),
       loss_(loss) {}
@@ -24,7 +24,7 @@ LandmarkBlock::LandmarkBlock(int dim, ceres::LossFunction* loss)
 void LandmarkBlock::allocate(int num_frames, int num_obs, int dim) {
     padding_idx_ = num_frames * dim;
     num_rows_ = num_obs * 2;
-    eliminated_landmark_rank_ = 0;
+    marginalized_landmark_rank_ = 0;
     qr_performed_ = false;
 
     int padding_size = padding_idx_ % 4;
@@ -46,14 +46,15 @@ void LandmarkBlock::linearize(
     const Feature& feature = *marginalized_observation.feature;
     const std::vector<FeaturePerFrame>& observations = feature.observations;
     TASSEL_ASSERT(!observations.empty());
-    const int target_observation_index = marginalized_observation.target_slot - feature.start_slot;
+    const int target_observation_index =
+        marginalized_observation.target_frame_index - feature.host_frame_index;
     TASSEL_ASSERT(target_observation_index > 0);
     TASSEL_ASSERT(target_observation_index < static_cast<int>(observations.size()));
     const auto target_observation = observations.begin() + target_observation_index;
 
     const Eigen::Vector3d uv_i = observations[0].uv;
-    const int host_slot = feature.start_slot;
-    const int target_slot = marginalized_observation.target_slot;
+    const int host_frame_index = feature.host_frame_index;
+    const int target_frame_index = marginalized_observation.target_frame_index;
     double depth = feature.estimated_depth;
     Eigen::Matrix<double, 2, 6, Eigen::RowMajor> jacobian_pose_i, jacobian_pose_j;
     Eigen::Matrix<double, 2, 1> jacobian_dt;
@@ -64,28 +65,31 @@ void LandmarkBlock::linearize(
     double inv_depth = 1.0 / depth;
     Eigen::Vector2d pt_j(target_observation->pt.x, target_observation->pt.y);
     ReprojectionFactor reprojection_factor(
-        uv_i, pt_j, ric, tic, state.frames[host_slot].gyro, state.frames[target_slot].gyro,
-        state.frames[host_slot].acc, state.frames[target_slot].acc,
-        state.frames[host_slot].speed_bias.data(), state.frames[target_slot].speed_bias.data(),
-        state.frames[host_slot].speed_bias.data() + 6,
-        state.frames[target_slot].speed_bias.data() + 6,
-        state.frames[host_slot].speed_bias.data() + 3,
-        state.frames[target_slot].speed_bias.data() + 3, sqrt_info, state.camera,
+        uv_i, pt_j, ric, tic, state.frames[host_frame_index].gyro,
+        state.frames[target_frame_index].gyro, state.frames[host_frame_index].acc,
+        state.frames[target_frame_index].acc, state.frames[host_frame_index].speed_bias.data(),
+        state.frames[target_frame_index].speed_bias.data(),
+        state.frames[host_frame_index].speed_bias.data() + 6,
+        state.frames[target_frame_index].speed_bias.data() + 6,
+        state.frames[host_frame_index].speed_bias.data() + 3,
+        state.frames[target_frame_index].speed_bias.data() + 3, sqrt_info, state.camera,
         observations[0].sync_delay, target_observation->sync_delay);
 
     std::vector<double*> jacobians = {
         jacobian_pose_i.data(), jacobian_pose_j.data(), jacobian_dt.data(),
         jacobian_landmark.data()};
     std::vector<double const*> parameters = {
-        state.frames[host_slot].pose.data(), state.frames[target_slot].pose.data(),
+        state.frames[host_frame_index].pose.data(), state.frames[target_frame_index].pose.data(),
         &state.param_delay_time, &inv_depth};
     reprojection_factor.Evaluate(parameters.data(), residual.data(), jacobians.data());
+    // ReprojectionFactor 返回旋转向量参数的雅可比；先转换到当前姿态的右扰动切空间，
+    // 再与 IMU 块及旧先验共同组成平方根边缘化系统。
     jacobian_pose_i.block<2, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Eigen::Vector3d(
-        state.frames[host_slot].pose[3], state.frames[host_slot].pose[4],
-        state.frames[host_slot].pose[5]));
+        state.frames[host_frame_index].pose[3], state.frames[host_frame_index].pose[4],
+        state.frames[host_frame_index].pose[5]));
     jacobian_pose_j.block<2, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Eigen::Vector3d(
-        state.frames[target_slot].pose[3], state.frames[target_slot].pose[4],
-        state.frames[target_slot].pose[5]));
+        state.frames[target_frame_index].pose[3], state.frames[target_frame_index].pose[4],
+        state.frames[target_frame_index].pose[5]));
 
     double scale = 1.0;
     if (loss_) {
@@ -94,16 +98,16 @@ void LandmarkBlock::linearize(
         scale = std::sqrt(rho[1]);
     }
 
-    storage_.block<2, 6>(0, host_slot * dim_) = scale * jacobian_pose_i;
-    storage_.block<2, 6>(0, target_slot * dim_) = scale * jacobian_pose_j;
+    storage_.block<2, 6>(0, host_frame_index * dim_) = scale * jacobian_pose_i;
+    storage_.block<2, 6>(0, target_frame_index * dim_) = scale * jacobian_pose_j;
     storage_.block<2, 1>(0, delay_idx_) = scale * jacobian_dt;
     storage_.block<2, 1>(0, lm_idx_) = scale * jacobian_landmark;
     storage_.block<2, 1>(0, res_idx_) = scale * residual;
 }
 
-void LandmarkBlock::eliminateLandmark() {
+void LandmarkBlock::marginalizeLandmark() {
     int n = num_rows_;
-    eliminated_landmark_rank_ = 0;
+    marginalized_landmark_rank_ = 0;
     qr_performed_ = true;
     if (n <= 0) {
         return;
@@ -114,7 +118,8 @@ void LandmarkBlock::eliminateLandmark() {
     if (norm < 1e-12) {
         return;
     }
-    eliminated_landmark_rank_ = 1;
+    // 用一次 Householder 变换将逆深度雅可比压缩到首行，剩余行不再依赖该路标。
+    marginalized_landmark_rank_ = 1;
     if (n == 1) {
         return;
     }
@@ -136,11 +141,11 @@ void LandmarkBlock::writeReducedSystem(
         return;
     }
     residual.segment(start_row, kept_rows) =
-        storage_.col(res_idx_).segment(eliminated_landmark_rank_, kept_rows);
+        storage_.col(res_idx_).segment(marginalized_landmark_rank_, kept_rows);
     jacobian.block(start_row, 0, kept_rows, padding_idx_) =
-        storage_.block(eliminated_landmark_rank_, 0, kept_rows, padding_idx_);
+        storage_.block(marginalized_landmark_rank_, 0, kept_rows, padding_idx_);
     jacobian.col(jacobian.cols() - 1).segment(start_row, kept_rows) =
-        storage_.col(delay_idx_).segment(eliminated_landmark_rank_, kept_rows);
+        storage_.col(delay_idx_).segment(marginalized_landmark_rank_, kept_rows);
 }
 
 }  // namespace tassel_core

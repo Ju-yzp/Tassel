@@ -25,7 +25,7 @@ gtsam::Pose3 makePose(const Eigen::Matrix3d& rotation, const Eigen::Vector3d& tr
 }  // namespace
 
 void PoseGraph::addKeyframe(
-    tassel_utils::FrameId frame_id, const Eigen::Matrix3d& local_R_camera,
+    KeyframeId frame_id, const Eigen::Matrix3d& local_R_camera,
     const Eigen::Vector3d& local_t_camera) {
     if (frame_keys_.find(frame_id) != frame_keys_.end()) {
         throw std::invalid_argument("Duplicate pose graph frame id");
@@ -58,7 +58,7 @@ void PoseGraph::addKeyframe(
 }
 
 bool PoseGraph::addPoseLoop(
-    tassel_utils::FrameId candidate_frame_id, tassel_utils::FrameId current_frame_id,
+    KeyframeId candidate_frame_id, KeyframeId current_frame_id,
     const Eigen::Matrix3d& candidate_R_current, const Eigen::Vector3d& candidate_t_current,
     const PoseLoopNoise& noise) {
     const auto candidate = frame_keys_.find(candidate_frame_id);
@@ -168,7 +168,7 @@ bool PoseGraph::optimize(double max_normalized_loop_error) {
     return true;
 }
 
-std::optional<GraphPose> PoseGraph::pose(tassel_utils::FrameId frame_id) const {
+std::optional<GraphPose> PoseGraph::pose(KeyframeId frame_id) const {
     const auto key = frame_keys_.find(frame_id);
     if (key == frame_keys_.end()) {
         return std::nullopt;
@@ -177,10 +177,10 @@ std::optional<GraphPose> PoseGraph::pose(tassel_utils::FrameId frame_id) const {
     return GraphPose{pose.rotation().matrix(), pose.translation()};
 }
 
-std::vector<std::pair<tassel_utils::FrameId, GraphPose>> PoseGraph::poses() const {
-    std::vector<std::pair<tassel_utils::FrameId, GraphPose>> output;
+std::vector<std::pair<KeyframeId, GraphPose>> PoseGraph::poses() const {
+    std::vector<std::pair<KeyframeId, GraphPose>> output;
     output.reserve(frame_order_.size());
-    for (tassel_utils::FrameId frame_id : frame_order_) {
+    for (KeyframeId frame_id : frame_order_) {
         output.emplace_back(frame_id, *pose(frame_id));
     }
     return output;

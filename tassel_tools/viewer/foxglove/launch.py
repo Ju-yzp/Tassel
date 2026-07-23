@@ -39,7 +39,7 @@ def apply_viewer_config(config: dict, layout: dict) -> None:
     viewer = config.get("viewer", {})
     config_by_id = layout["configById"]
     scene = config_by_id["3D!tasselmain"]
-    path = scene["topics"]["/vo/path"]
+    path = scene["topics"]["/vio/path"]
 
     path["color"] = str(viewer.get("path_color", path.get("color", "#ef4444")))
     path["lineWidth"] = float(viewer.get("path_line_width", path.get("lineWidth", 0.005)))

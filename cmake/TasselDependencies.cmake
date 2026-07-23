@@ -7,7 +7,8 @@ function(tassel_configure_dependencies)
       CACHE PATH "Eigen3 package directory shared by Ceres and GTSAM")
   set(TASSEL_MATH_PREFIX
       "$ENV{HOME}/.local"
-      CACHE PATH "Prefix containing Sophus and Ceres built against TASSEL_EIGEN_DIR")
+      CACHE PATH
+            "Prefix containing Sophus and Ceres built against TASSEL_EIGEN_DIR")
   set(TASSEL_VISION_PREFIX
       ""
       CACHE PATH "Prefix containing a consistent OpenCV and DBoW3 build")
@@ -62,7 +63,8 @@ function(tassel_configure_dependencies)
   if(NOT CERES_EIGEN_VERSION VERSION_EQUAL Eigen3_VERSION)
     message(
       FATAL_ERROR
-        "Ceres Eigen ${CERES_EIGEN_VERSION} does not match project Eigen ${Eigen3_VERSION}")
+        "Ceres Eigen ${CERES_EIGEN_VERSION} does not match project Eigen ${Eigen3_VERSION}"
+    )
   endif()
   find_package(GTSAM REQUIRED)
   find_package(fastcdr REQUIRED)

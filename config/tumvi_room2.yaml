@@ -104,8 +104,8 @@ sfm_e_ransac_threshold: 0.004
 sfm_min_pnp_pts: 10
 sfm_pnp_reproj_threshold: 0.03
 sfm_max_bad_pnp_ratio: 0.3
-sfm_ba_max_iterations: 10
-sfm_ba_num_threads: 5
+sfm_epipolar_max_iterations: 10
+sfm_epipolar_num_threads: 5
 
 # 可视化
 viewer:

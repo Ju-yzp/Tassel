@@ -16,6 +16,13 @@
 namespace tassel_core {
 class CameraBase;
 
+enum class FrameType {
+    Unknown,
+    KeyFrame,
+    NonKeyFrame,
+};
+
+// 同时保存物理状态和优化参数缓存；进入和退出求解器时必须显式同步。
 struct FrameState {
     tassel_utils::FrameId timestamp_ns = tassel_utils::kInvalidFrameId;
     Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
@@ -28,7 +35,7 @@ struct FrameState {
     double sync_delay = 0.0;
     std::array<double, 6> pose{};
     std::array<double, 9> speed_bias{};
-    bool is_keyframe = false;
+    FrameType type = FrameType::Unknown;
 
     void stateToParam() {
         const Eigen::Vector3d phi = Sophus::SO3d(R).log();
@@ -59,8 +66,8 @@ struct State {
         frames.resize(max_frame_count);
     }
 
-    void stateToParam(int slot) { frames[slot].stateToParam(); }
-    void paramToState(int slot) { frames[slot].paramToState(); }
+    void stateToParam(int frame_index) { frames[frame_index].stateToParam(); }
+    void paramToState(int frame_index) { frames[frame_index].paramToState(); }
 
     void stateToParams() {
         for (auto& frame : frames) {
@@ -76,15 +83,15 @@ struct State {
         delay_time = param_delay_time;
     }
 
-    int firstImuFactorSlot() const { return has_retained_host ? 1 : 0; }
-
-    void copyFrameSlot(int source, int destination) { frames[destination] = frames[source]; }
+    void copyFrameState(int source_index, int target_frame_index) {
+        frames[target_frame_index] = frames[source_index];
+    }
 
     State get_compensated_state() const {
         State compensated = *this;
-        for (int slot = 0; slot <= newest_slot; ++slot) {
-            const auto& frame = frames[slot];
-            auto& output = compensated.frames[slot];
+        for (int frame_index = 0; frame_index <= latest_frame_index; ++frame_index) {
+            const auto& frame = frames[frame_index];
+            auto& output = compensated.frames[frame_index];
             const double dt = delay_time - frame.sync_delay;
             const Eigen::Vector3d omega = frame.gyro - frame.Bg;
             const Eigen::Vector3d acc_body = frame.acc - frame.Ba;
@@ -92,6 +99,7 @@ struct State {
             const Eigen::Vector3d rotational_acceleration =
                 frame.R * Sophus::SO3d::hat(omega) * acc_body;
 
+            // 从该帧实际采用的同步延迟传播到当前全局延迟，运动量均在世界系更新。
             output.R = frame.R * Sophus::SO3d::exp(omega * dt).matrix();
             output.V = frame.V + acc_world * dt + 0.5 * rotational_acceleration * dt * dt;
             output.P = frame.P + frame.V * dt + 0.5 * acc_world * dt * dt +
@@ -101,8 +109,7 @@ struct State {
     }
 
     void reset() {
-        newest_slot = 0;
-        has_retained_host = false;
+        latest_frame_index = 0;
         frames.assign(max_frame_count, FrameState{});
         delay_time = 0.0;
         param_delay_time = 0.0;
@@ -110,9 +117,8 @@ struct State {
 
     std::vector<FrameState> frames;
     int max_frame_count;
-    // 最新有效帧的槽位；窗口填满时为 max_frame_count - 1。
-    int newest_slot = 0;
-    bool has_retained_host = false;
+    // 最新有效帧的索引；窗口填满时为 max_frame_count - 1。
+    int latest_frame_index = 0;
     double delay_time = 0.0;
     double param_delay_time = 0.0;
     const CameraBase* camera = nullptr;

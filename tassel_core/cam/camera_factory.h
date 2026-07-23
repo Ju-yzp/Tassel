@@ -11,13 +11,13 @@
 
 namespace tassel_core {
 
-enum class CameraModel { kRadTan, kEqui };
+enum class CameraModel { RadTan, Equi };
 
 using Camera = std::unique_ptr<CameraBase>;
 
 inline const std::unordered_map<std::string, CameraModel> kCameraModelMap = {
-    {"radtan", CameraModel::kRadTan},
-    {"equi", CameraModel::kEqui},
+    {"radtan", CameraModel::RadTan},
+    {"equi", CameraModel::Equi},
 };
 
 template <typename T>
@@ -36,10 +36,10 @@ public:
         }
         CameraBase* raw = nullptr;
         switch (it->second) {
-            case CameraModel::kRadTan:
+            case CameraModel::RadTan:
                 raw = new CameraRadTan(k, dist_coeffs, width, height);
                 break;
-            case CameraModel::kEqui:
+            case CameraModel::Equi:
                 raw = new CameraEqui(k, dist_coeffs, width, height);
                 break;
         }

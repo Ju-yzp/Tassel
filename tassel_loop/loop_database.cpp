@@ -48,7 +48,7 @@ LoopDatabase::Record LoopDatabase::extract(const cv::Mat& gray_image) const {
     return record;
 }
 
-LoopQuery LoopDatabase::addKeyframe(tassel_utils::FrameId frame_id, const cv::Mat& gray_image) {
+LoopQuery LoopDatabase::addKeyframe(KeyframeId frame_id, const cv::Mat& gray_image) {
     if (records_.find(frame_id) != records_.end()) {
         throw std::invalid_argument("Duplicate loop keyframe id");
     }
@@ -59,7 +59,7 @@ LoopQuery LoopDatabase::addKeyframe(tassel_utils::FrameId frame_id, const cv::Ma
     query.keypoint_count = static_cast<int>(record.keypoints.size());
 
     const int eligible_count = static_cast<int>(entry_frames_.size()) - options_.recent_exclusion;
-    std::vector<std::pair<tassel_utils::FrameId, double>> visual_scores;
+    std::vector<std::pair<KeyframeId, double>> visual_scores;
     if (!record.descriptors.empty() && eligible_count > 0) {
         DBoW3::QueryResults results;
         // DBoW3 1cc587b 实际将 max_id 作为开区间上界，
@@ -103,7 +103,7 @@ LoopQuery LoopDatabase::addKeyframe(tassel_utils::FrameId frame_id, const cv::Ma
 }
 
 size_t LoopDatabase::attachLandmarks(
-    tassel_utils::FrameId frame_id, const std::vector<LandmarkInput>& landmarks) {
+    KeyframeId frame_id, const std::vector<LandmarkInput>& landmarks) {
     const auto record_it = records_.find(frame_id);
     if (record_it == records_.end()) {
         throw std::invalid_argument("Cannot attach landmarks to an unknown keyframe");
@@ -143,7 +143,7 @@ size_t LoopDatabase::attachLandmarks(
 }
 
 cv::Mat LoopDatabase::drawCandidate(
-    tassel_utils::FrameId current_frame_id, tassel_utils::FrameId candidate_frame_id) const {
+    KeyframeId current_frame_id, KeyframeId candidate_frame_id) const {
     const auto current_it = records_.find(current_frame_id);
     const auto candidate_it = records_.find(candidate_frame_id);
     if (current_it == records_.end() || candidate_it == records_.end()) {
@@ -167,7 +167,7 @@ cv::Mat LoopDatabase::drawCandidate(
 }
 
 PnpMatches LoopDatabase::matchCandidateLandmarks(
-    tassel_utils::FrameId current_frame_id, tassel_utils::FrameId candidate_frame_id) const {
+    KeyframeId current_frame_id, KeyframeId candidate_frame_id) const {
     PnpMatches output;
     output.current_frame_id = current_frame_id;
     output.candidate_frame_id = candidate_frame_id;

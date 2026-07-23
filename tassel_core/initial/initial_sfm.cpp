@@ -300,7 +300,7 @@ bool InitialSFM::resolvePose(
     return true;
 }
 
-bool InitialSFM::runBA(
+bool InitialSFM::reconstructScene(
     int frame_num, int seed_id, int other_id, const Eigen::Vector3d& relative_T,
     std::vector<Eigen::Quaterniond>& q_cam_rel, std::vector<Eigen::Vector3d>& t_arr,
     std::vector<SFMFeature>& sfm_f, std::map<int, Eigen::Vector3d>& tracked_pts) {
@@ -443,8 +443,9 @@ bool InitialSFM::runBA(
 
         ceres::Solver::Options options;
         options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
-        options.max_num_iterations = ba_max_iterations_;
-        options.num_threads = ba_num_threads_;
+        options.max_num_iterations = epipolar_max_iterations_;
+        options.num_threads = epipolar_num_threads_;
+        options.logging_type = ceres::SILENT;
         ceres::Solver::Summary summary;
         ceres::Solve(options, &problem, &summary);
         spdlog::info(
@@ -715,7 +716,7 @@ void InitialSFM::scoreByCheirality(
 bool InitialSFM::construct(
     State& cur_state, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
     std::vector<Eigen::Matrix3d>& Rs_out, std::vector<Eigen::Vector3d>& Ps_out) {
-    int frame_num = cur_state.newest_slot + 1;
+    int frame_num = cur_state.latest_frame_index + 1;
     if (frame_num < 2) {
         return false;
     }
@@ -763,7 +764,8 @@ bool InitialSFM::construct(
 
         std::vector<Eigen::Vector3d> t_arr(frame_num, Eigen::Vector3d::Zero());
         std::map<int, Eigen::Vector3d> tracked_pts;
-        if (!runBA(frame_num, seed_id, other_id, T_dir, q_cam_rel, t_arr, sfm_f, tracked_pts)) {
+        if (!reconstructScene(
+                frame_num, seed_id, other_id, T_dir, q_cam_rel, t_arr, sfm_f, tracked_pts)) {
             continue;
         }
 

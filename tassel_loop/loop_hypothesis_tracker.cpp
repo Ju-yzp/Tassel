@@ -16,7 +16,7 @@ LoopHypothesisTracker::LoopHypothesisTracker(std::vector<double> prediction)
     }
 }
 
-void LoopHypothesisTracker::addPlace(tassel_utils::FrameId frame_id) {
+void LoopHypothesisTracker::addPlace(KeyframeId frame_id) {
     if (place_indices_.contains(frame_id)) {
         throw std::invalid_argument("Duplicate loop hypothesis place id");
     }
@@ -26,7 +26,7 @@ void LoopHypothesisTracker::addPlace(tassel_utils::FrameId frame_id) {
 }
 
 std::vector<double> LoopHypothesisTracker::adjustedLikelihoods(
-    const std::vector<std::pair<tassel_utils::FrameId, double>>& visual_scores,
+    const std::vector<std::pair<KeyframeId, double>>& visual_scores,
     double& virtual_likelihood) const {
     std::vector<double> likelihoods(places_.size(), 1.0);
     std::vector<double> positive_scores;
@@ -104,7 +104,7 @@ std::vector<double> LoopHypothesisTracker::predictPrior() const {
 }
 
 HypothesisUpdate LoopHypothesisTracker::update(
-    const std::vector<std::pair<tassel_utils::FrameId, double>>& visual_scores) {
+    const std::vector<std::pair<KeyframeId, double>>& visual_scores) {
     double virtual_likelihood = 1.0;
     const std::vector<double> likelihoods = adjustedLikelihoods(visual_scores, virtual_likelihood);
     const std::vector<double> prior = predictPrior();
@@ -122,7 +122,7 @@ HypothesisUpdate LoopHypothesisTracker::update(
         posterior /= normalization;
     }
 
-    std::unordered_map<tassel_utils::FrameId, double> raw_scores;
+    std::unordered_map<KeyframeId, double> raw_scores;
     for (const auto& [frame_id, score] : visual_scores) {
         raw_scores[frame_id] = score;
     }

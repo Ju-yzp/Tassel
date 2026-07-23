@@ -43,8 +43,8 @@ struct StereoObservation {
 };
 
 enum class IntegratorType {
-    kMidPoint,
-    kEuler,
+    MidPoint,
+    Euler,
 };
 
 // 估计器输出回调类型

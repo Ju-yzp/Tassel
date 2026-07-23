@@ -10,6 +10,9 @@
 
 namespace tassel_core {
 
+// 参数块依次为 [pose_i(6), pose_j(6), delay_time(1), inverse_depth(1)]。
+// pose 中 R_k 将 IMU 体坐标系向量旋转到世界坐标系，ric/tic 将相机点变换到 IMU 系。
+// 残差定义为 sqrt_info * (project(p_C_j) - pixel_j)。
 class ReprojectionFactor : public ceres::SizedCostFunction<2, 6, 6, 1, 1> {
 public:
     explicit ReprojectionFactor(

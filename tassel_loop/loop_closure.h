@@ -6,14 +6,11 @@
 #include <sophus/se3.hpp>
 
 #include <condition_variable>
-#include <cstddef>
 #include <deque>
 #include <exception>
 #include <functional>
-#include <memory>
 #include <mutex>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -48,25 +45,26 @@ struct LoopPoseTransaction {
 };
 
 struct LoopKeyframeTransaction {
-    tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
+    tassel_utils::FrameId source_frame_id = tassel_utils::kInvalidFrameId;
     cv::Mat image;
     Sophus::SE3d local_T_imu;
+    KeyframeId keyframe_id = kInvalidKeyframeId;
 };
 
 struct LoopLandmarkTransaction {
-    tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
+    KeyframeId keyframe_id = kInvalidKeyframeId;
     std::vector<LandmarkInput> landmarks;
 };
 
-enum class LoopEvent { kGlobalPoseUpdated, kGraphUpdated, kLoopAccepted, kLoopRejected };
+enum class LoopEvent { GlobalPoseUpdated, GraphUpdated, LoopAccepted, LoopRejected };
 
 struct LoopClosureResult {
-    LoopEvent event = LoopEvent::kGraphUpdated;
+    LoopEvent event = LoopEvent::GraphUpdated;
     tassel_utils::FrameId current_frame_id = tassel_utils::kInvalidFrameId;
     tassel_utils::FrameId candidate_frame_id = tassel_utils::kInvalidFrameId;
     std::string reason;
     cv::Mat match_image;
-    std::vector<std::pair<tassel_utils::FrameId, GraphPose>> graph_poses;
+    std::vector<std::pair<KeyframeId, GraphPose>> graph_poses;
     std::vector<Sophus::SE3d> corrected_trajectory;
     Sophus::SE3d global_T_local;
     PnpVerification verification;
@@ -88,7 +86,7 @@ public:
     LoopClosure& operator=(const LoopClosure&) = delete;
 
     void submitPose(LoopPoseTransaction transaction);
-    void submitKeyframe(LoopKeyframeTransaction transaction);
+    KeyframeId submitKeyframe(LoopKeyframeTransaction transaction);
     void submitLandmarks(LoopLandmarkTransaction transaction);
     void finish();
 
@@ -96,7 +94,7 @@ private:
     using Transaction =
         std::variant<LoopPoseTransaction, LoopKeyframeTransaction, LoopLandmarkTransaction>;
 
-    void submit(Transaction transaction);
+    KeyframeId submit(Transaction transaction, bool assign_keyframe_id = false);
     void drain();
     void process(const LoopPoseTransaction& transaction);
     void process(const LoopKeyframeTransaction& transaction);
@@ -111,10 +109,12 @@ private:
     LoopDatabase database_;
     PnpVerifier verifier_;
     PoseGraph graph_;
-    std::unordered_map<tassel_utils::FrameId, Sophus::SE3d> local_poses_;
-    std::unordered_map<tassel_utils::FrameId, cv::Mat> keyframe_images_;
+    std::unordered_map<KeyframeId, tassel_utils::FrameId> keyframe_sources_;
+    std::unordered_map<KeyframeId, Sophus::SE3d> keyframe_local_poses_;
+    std::unordered_map<KeyframeId, cv::Mat> keyframe_images_;
     std::vector<TimedPose> local_trajectory_;
     Sophus::SE3d global_T_local_;
+    KeyframeId next_keyframe_id_ = 0;
 
     std::mutex mutex_;
     std::condition_variable finished_condition_;

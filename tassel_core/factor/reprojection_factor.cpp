@@ -58,8 +58,19 @@ bool ReprojectionFactor::Evaluate(
     const Eigen::Vector3d omega_j = w_j - bg_j;
     const Eigen::Vector3d acc_i = a_i - ba_i;
     const Eigen::Vector3d acc_j = a_j - ba_j;
-    const Eigen::Vector3d rot_acc_i = R_i * Sophus::SO3d::hat(omega_i) * acc_i;
-    const Eigen::Vector3d rot_acc_j = R_j * Sophus::SO3d::hat(omega_j) * acc_j;
+    const Eigen::Vector3d body_rot_acc_i = Sophus::SO3d::hat(omega_i) * acc_i;
+    const Eigen::Vector3d body_rot_acc_j = Sophus::SO3d::hat(omega_j) * acc_j;
+    const Eigen::Vector3d rot_acc_i = R_i * body_rot_acc_i;
+    const Eigen::Vector3d rot_acc_j = R_j * body_rot_acc_j;
+
+    // rho 为逆深度，dt_k = delay_time - sync_delay_k。两帧使用同一时间补偿模型：
+    //   A_k       = Exp((gyro_k - Bg_k) * dt_k)
+    //   P_bar_k   = P_k + V_k*dt_k + 1/2*(R_k*acc_k-G)*dt_k^2
+    //               + 1/6*R_k*[omega_k]x*acc_k*dt_k^3
+    //   p_C_i     = uv_i / rho
+    //   p_G       = R_i*A_i*(ric*p_C_i+tic) + P_bar_i
+    //   p_C_j     = ric^T*(A_j^T*R_j^T*(p_G-P_bar_j)-tic)
+    // 代码中的目标帧 A_j 直接构造为 Exp(-omega_j*dt_j)，等价于上式的 A_j^T。
     Eigen::Vector3d pi_in_C = uv_i / inv_depth;
     Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
     Eigen::Vector3d pi_in_G = R_i * A_i * pi_in_I + P_i + v_i * dt_i +
@@ -76,9 +87,11 @@ bool ReprojectionFactor::Evaluate(
     Eigen::Vector2d uv_pred_pixel = camera->distort(uv_pred_norm);
 
     Eigen::Map<Eigen::Vector2d> r(residuals);
+    // pi(.) 包含透视除法和相机畸变模型，观测 pt_j 使用像素坐标。
     r = sqrt_info * (uv_pred_pixel - pt_j);
 
     if (jacobians) {
+        // 此处输出对优化参数中旋转向量的雅可比；写入边缘化系统时再转换到右扰动切空间。
         Eigen::MatrixXd H_dz_dzn;
         camera->get_jacobian_dzn(uv_pred_norm, H_dz_dzn);
 
@@ -91,8 +104,8 @@ bool ReprojectionFactor::Evaluate(
             jacobian_pose_i.block<2, 3>(0, 0) = reduce * ric.transpose() * A_j * R_j.transpose();
             jacobian_pose_i.block<2, 3>(0, 3) =
                 -reduce * ric.transpose() * A_j * R_j.transpose() * R_i *
-                (Sophus::SO3d::hat(A_i * pi_in_I) +
-                 0.5 * Sophus::SO3d::hat((a_i - ba_i) * dt_i * dt_i));
+                (Sophus::SO3d::hat(A_i * pi_in_I) + 0.5 * Sophus::SO3d::hat(acc_i * dt_i * dt_i) +
+                 (1.0 / 6.0) * Sophus::SO3d::hat(body_rot_acc_i * dt_i * dt_i * dt_i));
             jacobian_pose_i.block<2, 3>(0, 3) *= Sophus::SO3d::leftJacobian(-phi_i);
         }
 
@@ -109,8 +122,10 @@ bool ReprojectionFactor::Evaluate(
 
         if (jacobians[2]) {
             Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_dt(jacobians[2]);
-            const Eigen::Vector3d dP_i_dt = v_i + (R_i * (a_i - ba_i) - tassel_utils::G) * dt_i;
-            const Eigen::Vector3d dP_j_dt = v_j + (R_j * (a_j - ba_j) - tassel_utils::G) * dt_j;
+            const Eigen::Vector3d dP_i_dt =
+                v_i + (R_i * acc_i - tassel_utils::G) * dt_i + 0.5 * rot_acc_i * dt_i * dt_i;
+            const Eigen::Vector3d dP_j_dt =
+                v_j + (R_j * acc_j - tassel_utils::G) * dt_j + 0.5 * rot_acc_j * dt_j * dt_j;
             jacobian_dt =
                 reduce * ric.transpose() *
                 (Sophus::SO3d::hat(bg_j - w_j) * pj_in_I +

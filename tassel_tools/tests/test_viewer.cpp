@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
     auto viewer = std::make_shared<tassel_tools::Viewer>("world");
 
-    viewer->createOdometryPublisher("camera", "odom/camera");
+    viewer->createOdometryPublisher("camera", "vio/odometry");
     viewer->createPathPublisher("path/camera");
     viewer->createCompressedImagePublisher("image/camera");
 
@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
                 " px",
             cv::Point(20, 80), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(200, 200, 200), 2);
 
-        viewer->publishOdometry("odom/camera", pos, ori, vel, ang_vel);
+        viewer->publishOdometry("vio/odometry", pos, ori, vel, ang_vel);
         viewer->publishPath("path/camera", pos, ori);
         viewer->publishCompressedImage("image/camera", "camera", canvas);
 

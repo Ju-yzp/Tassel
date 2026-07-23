@@ -35,6 +35,7 @@ MarginalizationPriorFactor::MarginalizationPriorFactor(const MargLinData& data)
 
 bool MarginalizationPriorFactor::Evaluate(
     double const* const* parameters, double* residuals, double** jacobians) const {
+    // 先验残差始终定义为 r = H * delta + b；旋转增量采用线性化姿态到当前姿态的右扰动。
     Eigen::VectorXd delta(H_.cols());
     if (!has_speed_bias_) {
         for (int i = 0; i < num_kept_; ++i) {
@@ -69,9 +70,9 @@ bool MarginalizationPriorFactor::Evaluate(
             delta.segment<3>(i * 15 + 3) = dR.log();
 
             for (int d = 0; d < 3; ++d) {
-                delta(i * 15 + 6 + d) = sb[d] - lin_speed_bias_[i][d];           // V
-                delta(i * 15 + 9 + d) = sb[3 + d] - lin_speed_bias_[i][3 + d];   // Ba
-                delta(i * 15 + 12 + d) = sb[6 + d] - lin_speed_bias_[i][6 + d];  // Bg
+                delta(i * 15 + 6 + d) = sb[d] - lin_speed_bias_[i][d];          // 速度
+                delta(i * 15 + 9 + d) = sb[3 + d] - lin_speed_bias_[i][3 + d];  // 加速度计偏置
+                delta(i * 15 + 12 + d) = sb[6 + d] - lin_speed_bias_[i][6 + d];  // 陀螺仪偏置
             }
         }
     }

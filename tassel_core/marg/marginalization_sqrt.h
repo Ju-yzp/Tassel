@@ -27,19 +27,19 @@ public:
         std::unique_ptr<ceres::LossFunction> loss_function, std::shared_ptr<State> state,
         std::vector<IntegratorBase<Derived>*>& preintegrators, const Eigen::Matrix3d& ric,
         const Eigen::Vector3d& tic, const MargLinData* prior = nullptr,
-        int first_imu_factor_slot = 0)
+        int first_imu_factor_index = 0)
         : retiring_observations_(std::move(retiring_observations)),
           loss_function_(std::move(loss_function)),
           state_(std::move(state)),
           preintegrators_(preintegrators),
           prior_(prior),
-          first_imu_factor_slot_(first_imu_factor_slot),
+          first_imu_factor_index_(first_imu_factor_index),
           ric_(ric),
           tic_(tic) {
         if (!preintegrators_.empty()) {
             TASSEL_ASSERT(
                 preintegrators.size() <= static_cast<size_t>(state_->max_frame_count - 1));
-            TASSEL_ASSERT(state_->newest_slot == state_->max_frame_count - 1);
+            TASSEL_ASSERT(state_->latest_frame_index == state_->max_frame_count - 1);
         }
     }
 
@@ -66,7 +66,7 @@ public:
 
         for (size_t i = 0; i < imu_blocks_.size(); ++i) {
             auto& imu_block = imu_blocks_[i];
-            const int state_i = first_imu_factor_slot_ + static_cast<int>(i);
+            const int state_i = first_imu_factor_index_ + static_cast<int>(i);
             const int state_j = state_i + 1;
             Eigen::Vector3d Q_i = Sophus::SO3d(state_->frames[state_i].R).log();
             Eigen::Vector3d Q_j = Sophus::SO3d(state_->frames[state_j].R).log();
@@ -77,9 +77,10 @@ public:
         }
     }
 
-    void eliminateLandmarks() {
+    void marginalizeLandmarks() {
+        // 每个逆深度先独立边缘化，再与 IMU 因子及旧先验组装，避免构造完整路标 Hessian。
         for (auto& landmark_block : landmark_blocks_) {
-            landmark_block.eliminateLandmark();
+            landmark_block.marginalizeLandmark();
         }
         num_rows_ = static_cast<int>(imu_blocks_.size()) * 15;
         for (const auto& landmark_block : landmark_blocks_) {
@@ -97,6 +98,7 @@ public:
 
         jacobian = Eigen::MatrixXd::Zero(total_rows, num_cols_);
         residual = Eigen::VectorXd::Zero(total_rows);
+        // 全局列布局固定为 [frame0(15), frame1(15), ..., delay(1)]。
         int rows = 0;
         for (size_t idx = 0; idx < landmark_blocks_.size(); ++idx) {
             auto& landmark_block = landmark_blocks_[idx];
@@ -107,11 +109,12 @@ public:
         for (size_t i = 0; i < imu_blocks_.size(); ++i) {
             auto& imu_block = imu_blocks_[i];
             imu_block.get_dense_Jp_b(
-                jacobian, residual, rows, (first_imu_factor_slot_ + static_cast<int>(i)) * 15);
+                jacobian, residual, rows, (first_imu_factor_index_ + static_cast<int>(i)) * 15);
             rows += 15;
         }
 
         if (prior_) {
+            // 旧先验已由调用方传输到当前切空间，这里只按统一状态布局追加。
             int prior_cols = static_cast<int>(prior_->H.cols());
             const int state_cols = std::min(prior_cols, (state_->max_frame_count - 1) * 15);
             if (state_cols > 0) {
@@ -136,7 +139,7 @@ private:
     std::vector<IntegratorBase<Derived>*> preintegrators_;
 
     const MargLinData* prior_ = nullptr;
-    int first_imu_factor_slot_ = 0;
+    int first_imu_factor_index_ = 0;
     Eigen::Matrix3d ric_;
     Eigen::Vector3d tic_;
     int num_rows_ = 0;

@@ -89,7 +89,7 @@ struct Parameters {
     int delay_obs_min_frames = 3;
     double imu_repropagate_ba_threshold = 0.02;
     double imu_repropagate_bg_threshold = 0.002;
-    tassel_utils::IntegratorType integrator_type = tassel_utils::IntegratorType::kMidPoint;
+    tassel_utils::IntegratorType integrator_type = tassel_utils::IntegratorType::MidPoint;
 
     // IMU 模型和标定：用于 Estimator 预测、预积分和初始化。
     double acc_n, acc_w;
@@ -106,8 +106,8 @@ struct Parameters {
     int sfm_min_pnp_pts = 10;
     double sfm_pnp_reproj_threshold = 0.03;
     double sfm_max_bad_pnp_ratio = 0.3;
-    int sfm_ba_max_iterations = 30;
-    int sfm_ba_num_threads = 5;
+    int sfm_epipolar_max_iterations = 30;
+    int sfm_epipolar_num_threads = 5;
 
     // 可视化：用于 Viewer 发布器。
     size_t viewer_path_max_poses = 300;
@@ -252,8 +252,8 @@ private:
         sfm_min_pnp_pts = parser.as<int>("sfm_min_pnp_pts");
         sfm_pnp_reproj_threshold = parser.as<double>("sfm_pnp_reproj_threshold");
         sfm_max_bad_pnp_ratio = parser.as<double>("sfm_max_bad_pnp_ratio");
-        sfm_ba_max_iterations = parser.as<int>("sfm_ba_max_iterations");
-        sfm_ba_num_threads = parser.as<int>("sfm_ba_num_threads");
+        sfm_epipolar_max_iterations = parser.as<int>("sfm_epipolar_max_iterations");
+        sfm_epipolar_num_threads = parser.as<int>("sfm_epipolar_num_threads");
     }
 
     void loadViewer(ParamsParser& parser) {
@@ -280,10 +280,10 @@ private:
         const std::string& integrator_name_raw) {
         const std::string integrator_name = normalizeToken(integrator_name_raw);
         if (integrator_name == "midpoint") {
-            return tassel_utils::IntegratorType::kMidPoint;
+            return tassel_utils::IntegratorType::MidPoint;
         }
         if (integrator_name == "euler") {
-            return tassel_utils::IntegratorType::kEuler;
+            return tassel_utils::IntegratorType::Euler;
         }
         throw std::runtime_error(
             "Invalid integrator_type: \"" + integrator_name_raw +

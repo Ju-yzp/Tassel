@@ -26,18 +26,18 @@
         }
       },
       "topics": {
-        "/odom/camera": { "visible": true },
-        "/vo/path": {
+        "/vio/odometry": { "visible": true },
+        "/vio/path": {
           "visible": true,
           "lineWidth": 0.015,
           "color": "#ef4444"
         },
-        "/loop/optimized_path": {
+        "/slam/path": {
           "visible": true,
           "lineWidth": 0.02,
           "color": "#06b6d4"
         },
-        "/loop/graph_path": {
+        "/slam/keyframe_path": {
           "visible": true,
           "lineWidth": 0.025,
           "color": "#f59e0b"

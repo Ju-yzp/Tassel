@@ -16,15 +16,17 @@ TEST(EstimatorKeyframeTest, ReportsLatestDecisionAndClearsItOnReset) {
     auto state = std::make_shared<tassel_core::State>(static_cast<int>(params.max_frame_count));
     auto feature_manager = std::make_shared<tassel_core::FeatureManager>(
         params.reproj_err_thres, params.tracked_times_thres, params.min_translation,
-        params.min_depth, params.max_depth);
+        params.keyframe_new_feature_ratio, params.min_depth, params.max_depth);
     tassel_core::Estimator estimator(params, state, feature_manager);
 
     EXPECT_FALSE(estimator.lastMeasurementWasKeyframe());
     estimator.processMeasurement(1, std::unordered_map<int, tassel_core::FeaturePerFrame>{});
     EXPECT_TRUE(estimator.lastMeasurementWasKeyframe());
+    EXPECT_EQ(state->frames[0].type, tassel_core::FrameType::KeyFrame);
 
     estimator.reset();
     EXPECT_FALSE(estimator.lastMeasurementWasKeyframe());
+    EXPECT_EQ(state->frames[0].type, tassel_core::FrameType::Unknown);
 }
 
 }  // namespace

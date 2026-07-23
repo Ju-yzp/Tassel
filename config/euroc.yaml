@@ -37,7 +37,7 @@ min_feature_num: 150
 
 flow_back: true
 max_square_move_dist: 1.0
-min_gradient: 10.0
+min_gradient: 15.0
 enable_statistics: true
 
 # 特征与关键帧管理
@@ -72,10 +72,10 @@ loop_pnp_max_translation_variance: 0.0
 loop_optimize_max_error: 3.0
 
 # 滑窗优化
-num_iterations: 6
+num_iterations: 8
 max_frame_count: 7
-visual_factor_weight: 37.0
-num_threads: 1
+visual_factor_weight: 45.0
+num_threads: 2
 
 # 时间延迟可观测性
 delay_obs_gyro_threshold: 0.2
@@ -104,8 +104,8 @@ sfm_e_ransac_threshold: 0.004
 sfm_min_pnp_pts: 10
 sfm_pnp_reproj_threshold: 0.03
 sfm_max_bad_pnp_ratio: 0.3
-sfm_ba_max_iterations: 10
-sfm_ba_num_threads: 5
+sfm_epipolar_max_iterations: 10
+sfm_epipolar_num_threads: 5
 
 # 可视化
 viewer:

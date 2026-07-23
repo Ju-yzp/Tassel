@@ -5,7 +5,7 @@
 //   验证平方根边缘化输出和 MarginalizationPriorFactor 的残差/雅各比一致性。
 //
 // 测试设计：
-//   对 MargHelper::eliminateSquareRootSystem 使用 Eigen HouseholderQR 构造参考结果;
+//   对 MargHelper::marginalizeSquareRootSystem 使用 Eigen HouseholderQR 构造参考结果;
 //   对 prior factor 使用人工线性化数据, 分别检查残差计算、参数块布局和 manifold
 //   下的数值雅各比。
 //
@@ -56,7 +56,7 @@ void computeExpected(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// MargHelper::eliminateSquareRootSystem 测试
+// MargHelper::marginalizeSquareRootSystem 测试
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST(MarginalizeSqrtToSqrtTest, FullRank3x4) {
@@ -71,7 +71,7 @@ TEST(MarginalizeSqrtToSqrtTest, FullRank3x4) {
 
     Eigen::MatrixXd marg_sqrt_H;
     Eigen::VectorXd marg_sqrt_b;
-    MargHelper::eliminateSquareRootSystem(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+    MargHelper::marginalizeSquareRootSystem(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
 
     // 输入矩阵会被消耗
     EXPECT_EQ(Q2Jp.rows(), 0);
@@ -115,7 +115,7 @@ TEST(MarginalizeSqrtToSqrtTest, ShortWide2x3) {
 
     Eigen::MatrixXd marg_sqrt_H;
     Eigen::VectorXd marg_sqrt_b;
-    MargHelper::eliminateSquareRootSystem(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+    MargHelper::marginalizeSquareRootSystem(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
 
     EXPECT_GT(marg_sqrt_H.rows(), 0);
     EXPECT_EQ(marg_sqrt_H.cols(), keep_size);
@@ -141,7 +141,7 @@ TEST(MarginalizeSqrtToSqrtTest, RankDeficient4x5) {
     const size_t keep_size = 4;
     Eigen::MatrixXd marg_sqrt_H;
     Eigen::VectorXd marg_sqrt_b;
-    MargHelper::eliminateSquareRootSystem(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+    MargHelper::marginalizeSquareRootSystem(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
 
     EXPECT_EQ(marg_sqrt_H.cols(), keep_size);
     EXPECT_LE(marg_sqrt_H.rows(), 2);  // rank-limited
@@ -155,13 +155,13 @@ TEST(MarginalizeSqrtToSqrtTest, EmptyInput) {
 
     Eigen::MatrixXd marg_sqrt_H;
     Eigen::VectorXd marg_sqrt_b;
-    MargHelper::eliminateSquareRootSystem(1, 3, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+    MargHelper::marginalizeSquareRootSystem(1, 3, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
 
     EXPECT_EQ(marg_sqrt_H.rows(), 0);
     EXPECT_EQ(marg_sqrt_b.rows(), 0);
 }
 
-TEST(MarginalizeSqrtToSqrtTest, NoConstraintRemainsAfterElimination) {
+TEST(MarginalizeSqrtToSqrtTest, NoConstraintRemainsAfterMarginalization) {
     Eigen::MatrixXd Q2Jp(1, 2);
     Q2Jp << 2.0, 3.0;
     Eigen::VectorXd Q2r(1);
@@ -169,7 +169,7 @@ TEST(MarginalizeSqrtToSqrtTest, NoConstraintRemainsAfterElimination) {
 
     Eigen::MatrixXd marg_sqrt_H;
     Eigen::VectorXd marg_sqrt_b;
-    MargHelper::eliminateSquareRootSystem(1, 1, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+    MargHelper::marginalizeSquareRootSystem(1, 1, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
 
     EXPECT_EQ(marg_sqrt_H.rows(), 0);
     EXPECT_EQ(marg_sqrt_H.cols(), 1);

@@ -12,8 +12,7 @@
 #include <vector>
 
 #include "loop_hypothesis_tracker.h"
-#include "tassel_utils/types.h"
-
+#include "loop_types.h"
 namespace tassel_loop {
 
 struct LoopOptions {
@@ -28,19 +27,19 @@ struct LoopOptions {
 };
 
 struct LoopCandidate {
-    tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
+    KeyframeId frame_id = kInvalidKeyframeId;
     double score = 0.0;
 };
 
 struct LoopVerificationCandidate {
-    tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
+    KeyframeId frame_id = kInvalidKeyframeId;
     double raw_score = 0.0;
     double likelihood = 1.0;
     double posterior = 0.0;
 };
 
 struct LoopQuery {
-    tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
+    KeyframeId frame_id = kInvalidKeyframeId;
     int keypoint_count = 0;
     double loop_probability = 0.0;
     std::vector<LoopCandidate> candidates;
@@ -56,8 +55,8 @@ struct LandmarkInput {
 };
 
 struct PnpMatches {
-    tassel_utils::FrameId current_frame_id = tassel_utils::kInvalidFrameId;
-    tassel_utils::FrameId candidate_frame_id = tassel_utils::kInvalidFrameId;
+    KeyframeId current_frame_id = kInvalidKeyframeId;
+    KeyframeId candidate_frame_id = kInvalidKeyframeId;
     std::vector<cv::Point2f> current_points;
     std::vector<Eigen::Vector3d> host_points;
 };
@@ -66,16 +65,12 @@ class LoopDatabase {
 public:
     LoopDatabase(const std::string& vocabulary_path, LoopOptions options = {});
 
-    LoopQuery addKeyframe(tassel_utils::FrameId frame_id, const cv::Mat& gray_image);
-    size_t attachLandmarks(
-        tassel_utils::FrameId frame_id, const std::vector<LandmarkInput>& landmarks);
+    LoopQuery addKeyframe(KeyframeId frame_id, const cv::Mat& gray_image);
+    size_t attachLandmarks(KeyframeId frame_id, const std::vector<LandmarkInput>& landmarks);
     PnpMatches matchCandidateLandmarks(
-        tassel_utils::FrameId current_frame_id, tassel_utils::FrameId candidate_frame_id) const;
-    cv::Mat drawCandidate(
-        tassel_utils::FrameId current_frame_id, tassel_utils::FrameId candidate_frame_id) const;
-    bool contains(tassel_utils::FrameId frame_id) const {
-        return records_.find(frame_id) != records_.end();
-    }
+        KeyframeId current_frame_id, KeyframeId candidate_frame_id) const;
+    cv::Mat drawCandidate(KeyframeId current_frame_id, KeyframeId candidate_frame_id) const;
+    bool contains(KeyframeId frame_id) const { return records_.find(frame_id) != records_.end(); }
     size_t size() const { return records_.size(); }
 
 private:
@@ -94,8 +89,8 @@ private:
     cv::Ptr<cv::Feature2D> descriptor_;
     DBoW3::Database database_;
     LoopHypothesisTracker hypothesis_tracker_;
-    std::vector<tassel_utils::FrameId> entry_frames_;
-    std::unordered_map<tassel_utils::FrameId, Record> records_;
+    std::vector<KeyframeId> entry_frames_;
+    std::unordered_map<KeyframeId, Record> records_;
 };
 
 }  // namespace tassel_loop

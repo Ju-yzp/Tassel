@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "tassel_utils/types.h"
+#include "loop_types.h"
 
 namespace tassel_loop {
 
@@ -46,16 +46,16 @@ struct PoseLoopNoise {
 class PoseGraph {
 public:
     void addKeyframe(
-        tassel_utils::FrameId frame_id, const Eigen::Matrix3d& local_R_camera,
+        KeyframeId frame_id, const Eigen::Matrix3d& local_R_camera,
         const Eigen::Vector3d& local_t_camera);
     bool addPoseLoop(
-        tassel_utils::FrameId candidate_frame_id, tassel_utils::FrameId current_frame_id,
+        KeyframeId candidate_frame_id, KeyframeId current_frame_id,
         const Eigen::Matrix3d& candidate_R_current, const Eigen::Vector3d& candidate_t_current,
         const PoseLoopNoise& noise = {});
     bool optimize(double max_normalized_loop_error = 0.0);
-    std::optional<GraphPose> pose(tassel_utils::FrameId frame_id) const;
-    std::vector<std::pair<tassel_utils::FrameId, GraphPose>> poses() const;
-    bool contains(tassel_utils::FrameId frame_id) const {
+    std::optional<GraphPose> pose(KeyframeId frame_id) const;
+    std::vector<std::pair<KeyframeId, GraphPose>> poses() const;
+    bool contains(KeyframeId frame_id) const {
         return frame_keys_.find(frame_id) != frame_keys_.end();
     }
 
@@ -69,8 +69,8 @@ public:
 private:
     gtsam::NonlinearFactorGraph factors_;
     gtsam::Values values_;
-    std::unordered_map<tassel_utils::FrameId, gtsam::Key> frame_keys_;
-    std::vector<tassel_utils::FrameId> frame_order_;
+    std::unordered_map<KeyframeId, gtsam::Key> frame_keys_;
+    std::vector<KeyframeId> frame_order_;
     gtsam::Key last_key_ = 0;
     gtsam::Pose3 last_local_pose_;
     bool has_last_key_ = false;

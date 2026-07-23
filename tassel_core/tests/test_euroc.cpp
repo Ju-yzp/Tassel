@@ -452,11 +452,10 @@ int main(int argc, char** argv) {
     rclcpp::QoS image_qos(rclcpp::KeepLast(1));
     image_qos.best_effort().durability_volatile();
     viewer->createCompressedImagePublisher("mono/image", image_qos);
-    viewer->createOdometryPublisher("imu", "odom/camera");
-    viewer->createPathPublisher("vo/path", rclcpp::QoS(10), params.viewer_path_max_poses);
-    viewer->createPathPublisher(
-        "loop/optimized_path", rclcpp::QoS(10), params.viewer_path_max_poses);
-    viewer->createPathPublisher("loop/graph_path", rclcpp::QoS(10), 0);
+    viewer->createOdometryPublisher("imu", "vio/odometry");
+    viewer->createPathPublisher("vio/path", rclcpp::QoS(10), params.viewer_path_max_poses);
+    viewer->createPathPublisher("slam/path", rclcpp::QoS(10), params.viewer_path_max_poses);
+    viewer->createPathPublisher("slam/keyframe_path", rclcpp::QoS(10), 0);
     viewer->createPathPublisher("ground_truth/path", rclcpp::QoS(10), params.viewer_path_max_poses);
     viewer->createCompressedImagePublisher("optimization/visual_window", image_qos);
     viewer->createCompressedImagePublisher("loop/matches", image_qos);
@@ -484,13 +483,11 @@ int main(int argc, char** argv) {
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count));
     auto feature_manager = std::make_shared<FeatureManager>(
         params.reproj_err_thres, params.tracked_times_thres, params.min_translation,
-        params.min_depth, params.max_depth);
+        params.keyframe_new_feature_ratio, params.min_depth, params.max_depth);
 
     Estimator estimator(params, state, feature_manager);
     state->camera = camera_ptr;
     estimator.setCamera(camera_ptr);
-    std::mutex global_correction_mutex;
-    Sophus::SE3d global_T_local;
     tassel_loop::PoseGraphStats final_graph_stats;
     std::shared_ptr<tassel_loop::LoopClosure> loop_closure;
     if (!loop_vocabulary_path.empty()) {
@@ -519,8 +516,7 @@ int main(int argc, char** argv) {
         loop_closure = std::make_shared<tassel_loop::LoopClosure>(
             loop_vocabulary_path.string(), options,
             [camera_ptr](const Eigen::Vector2d& point) { return camera_ptr->undistort(point); },
-            [&viewer, &global_correction_mutex, &global_T_local,
-             &final_graph_stats](const tassel_loop::LoopClosureResult& result) {
+            [&viewer, &final_graph_stats](const tassel_loop::LoopClosureResult& result) {
                 final_graph_stats = result.graph_stats;
                 const double timestamp =
                     result.current_frame_id != tassel_utils::kInvalidFrameId
@@ -537,19 +533,14 @@ int main(int argc, char** argv) {
                         orientations.emplace_back(pose.world_R_camera);
                     }
                     viewer->publishPathSnapshot(
-                        "loop/graph_path", positions, orientations, timestamp);
+                        "slam/keyframe_path", positions, orientations, timestamp);
                 }
-                if (result.event == tassel_loop::LoopEvent::kGlobalPoseUpdated &&
+                if (result.event == tassel_loop::LoopEvent::GlobalPoseUpdated &&
                     !result.corrected_trajectory.empty()) {
                     const Sophus::SE3d& pose = result.corrected_trajectory.back();
                     viewer->publishPath(
-                        "loop/optimized_path", pose.translation(), pose.unit_quaternion(),
-                        timestamp);
-                } else if (result.event == tassel_loop::LoopEvent::kLoopAccepted) {
-                    {
-                        std::lock_guard<std::mutex> lock(global_correction_mutex);
-                        global_T_local = result.global_T_local;
-                    }
+                        "slam/path", pose.translation(), pose.unit_quaternion(), timestamp);
+                } else if (result.event == tassel_loop::LoopEvent::LoopAccepted) {
                     if (!result.match_image.empty()) {
                         viewer->publishCompressedImage(
                             "loop/matches", "camera", result.match_image, "jpeg", timestamp);
@@ -562,8 +553,7 @@ int main(int argc, char** argv) {
                         positions.push_back(pose.translation());
                         orientations.push_back(pose.unit_quaternion());
                     }
-                    viewer->publishPathSnapshot(
-                        "loop/optimized_path", positions, orientations, timestamp);
+                    viewer->publishPathSnapshot("slam/path", positions, orientations, timestamp);
                     std::cout << "[loop_verified] current_frame_id=" << result.current_frame_id
                               << " candidate_frame_id=" << result.candidate_frame_id
                               << " inliers=" << result.verification.inlier_count << "/"
@@ -572,7 +562,7 @@ int main(int argc, char** argv) {
                               << " rotation_variance=" << result.verification.rotation_variance
                               << " normalized_graph_error="
                               << result.optimization.max_normalized_loop_error << "\n";
-                } else if (result.event == tassel_loop::LoopEvent::kLoopRejected) {
+                } else if (result.event == tassel_loop::LoopEvent::LoopRejected) {
                     std::cout << "[loop_rejected] current_frame_id=" << result.current_frame_id
                               << " candidate_frame_id=" << result.candidate_frame_id
                               << " reason=" << result.reason << " normalized_error="
@@ -585,18 +575,11 @@ int main(int argc, char** argv) {
         std::cout << "[loop] disabled: no BRIEF vocabulary path provided\n";
     }
     std::optional<Sophus::SE3d> ground_truth_alignment;
-    estimator.setRealtimePoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment,
-                                       &global_correction_mutex,
-                                       &global_T_local](double ts, const Sophus::SE3d& pose) {
-        Sophus::SE3d correction;
-        {
-            std::lock_guard<std::mutex> lock(global_correction_mutex);
-            correction = global_T_local;
-        }
-        const Sophus::SE3d global_pose = correction * pose;
+    estimator.setRealtimePoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment](
+                                          double ts, const Sophus::SE3d& pose) {
         viewer->publishOdometry(
-            "odom/camera", global_pose.translation(), global_pose.unit_quaternion(),
-            Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+            "vio/odometry", pose.translation(), pose.unit_quaternion(), Eigen::Vector3d::Zero(),
+            Eigen::Vector3d::Zero());
         if (const auto truth = interpolateGroundTruth(ground_truth, ts)) {
             if (!ground_truth_alignment) {
                 ground_truth_alignment = pose * truth->inverse();
@@ -606,17 +589,18 @@ int main(int argc, char** argv) {
                 "ground_truth/path", aligned_truth.translation(), aligned_truth.unit_quaternion(),
                 ts);
         }
-        const Eigen::Vector3d& velocity = state->frames[state->newest_slot].V;
+        const Eigen::Vector3d& velocity = state->frames[state->latest_frame_index].V;
         std::cout << "[pose] t=" << ts << " p=" << pose.translation().transpose()
                   << " |V|=" << velocity.norm() << "\n";
     });
     estimator.setPoseCallback([&viewer](double ts, const Sophus::SE3d& pose) {
-        viewer->publishPath("vo/path", pose.translation(), pose.unit_quaternion(), ts);
+        viewer->publishPath("vio/path", pose.translation(), pose.unit_quaternion(), ts);
     });
-    estimator.setOptimizationCallback([&viewer](double /*ts*/, const OptimizationStats& stats) {
-        viewer->publishVisualFactorWindow(
-            "optimization/visual_window", stats.visual_factors_per_frame);
-    });
+    estimator.setVisualFactorCallback(
+        [&viewer](double /*ts*/, const std::vector<int>& visual_factors_per_frame) {
+            viewer->publishVisualFactorWindow(
+                "optimization/visual_window", visual_factors_per_frame);
+        });
     const size_t frame_limit =
         (max_frames == 0) ? frames.size() : std::min(max_frames, frames.size());
     BlockingDatasetSync sync;
@@ -833,14 +817,14 @@ int main(int argc, char** argv) {
 
     rclcpp::shutdown();
 
-    std::cout << "\n[EuRoC] done. processed=" << processed << ", newest slot=" << state->newest_slot
-              << "\n";
+    std::cout << "\n[EuRoC] done. processed=" << processed
+              << ", newest frame_index=" << state->latest_frame_index << "\n";
     std::cout << "[pose_graph] nodes=" << final_graph_stats.node_count
               << " odometry_factors=" << final_graph_stats.odometry_factor_count
               << " pose_loop_factors=" << final_graph_stats.loop_factor_count
               << " optimized=" << final_graph_stats.optimized << " writeback=global_output\n";
-    if (state->newest_slot > 0) {
-        int idx = state->newest_slot;
+    if (state->latest_frame_index > 0) {
+        int idx = state->latest_frame_index;
         std::cout << "Final pose:\n"
                   << Sophus::SE3d(state->frames[idx].R, state->frames[idx].P).matrix() << "\n";
     }

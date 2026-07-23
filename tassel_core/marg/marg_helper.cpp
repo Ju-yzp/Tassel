@@ -66,10 +66,10 @@ MargLinData MargHelper::transportPriorToCurrentTangent(
     return prior_in_current_tangent;
 }
 
-void MargHelper::eliminateSquareRootSystem(
-    size_t eliminated_size, size_t retained_size, Eigen::MatrixXd& jacobian,
+void MargHelper::marginalizeSquareRootSystem(
+    size_t marginalized_size, size_t retained_size, Eigen::MatrixXd& jacobian,
     Eigen::VectorXd& residual, Eigen::MatrixXd& prior_jacobian, Eigen::VectorXd& prior_residual) {
-    TASSEL_ASSERT(Eigen::Index(eliminated_size + retained_size) == jacobian.cols());
+    TASSEL_ASSERT(Eigen::Index(marginalized_size + retained_size) == jacobian.cols());
     TASSEL_ASSERT(jacobian.rows() == residual.rows());
 
     if (jacobian.rows() == 0) {
@@ -79,7 +79,7 @@ void MargHelper::eliminateSquareRootSystem(
     }
 
     // 丢弃缺秩行，避免将无效约束写入先验。
-    Eigen::Index eliminated_rank = 0;
+    Eigen::Index marginalized_rank = 0;
     Eigen::Index total_rank = 0;
     const double rank_threshold = std::sqrt(std::numeric_limits<double>::epsilon());
 
@@ -112,12 +112,12 @@ void MargHelper::eliminateSquareRootSystem(
 
         jacobian.col(i).tail(remainingRows - 1).setZero();
 
-        if (i == Eigen::Index(eliminated_size) - 1) {
-            eliminated_rank = total_rank;
+        if (i == Eigen::Index(marginalized_size) - 1) {
+            marginalized_rank = total_rank;
         }
     }
 
-    const Eigen::Index retained_rank = total_rank - eliminated_rank;
+    const Eigen::Index retained_rank = total_rank - marginalized_rank;
 
     if (retained_rank == 0) {
         prior_jacobian.resize(0, static_cast<Eigen::Index>(retained_size));
@@ -127,11 +127,42 @@ void MargHelper::eliminateSquareRootSystem(
         return;
     }
 
-    prior_jacobian = jacobian.block(eliminated_rank, eliminated_size, retained_rank, retained_size);
-    prior_residual = residual.segment(eliminated_rank, retained_rank);
+    prior_jacobian =
+        jacobian.block(marginalized_rank, marginalized_size, retained_rank, retained_size);
+    prior_residual = residual.segment(marginalized_rank, retained_rank);
 
     jacobian.resize(0, 0);
     residual.resize(0);
+}
+
+Eigen::MatrixXd MargHelper::reorderForMarginalization(
+    const Eigen::MatrixXd& jacobian, RetainedHostAction action) {
+    TASSEL_ASSERT(jacobian.cols() >= 2 * kFullStateSize + 1);
+
+    // 输入布局为 [宿主位姿, 宿主运动, 下一帧位姿, 下一帧运动, 后续状态, 时间延迟]。
+    // 平方根边缘化要求待边缘化列位于保留列之前。
+    const auto host_pose = jacobian.leftCols(kPoseSize);
+    const auto host_motion = jacobian.middleCols(kPoseSize, kSpeedBiasSize);
+    const auto next_state = jacobian.middleCols(kFullStateSize, kFullStateSize);
+    const auto trailing = jacobian.rightCols(jacobian.cols() - 2 * kFullStateSize);
+    Eigen::MatrixXd reordered(jacobian.rows(), jacobian.cols());
+
+    switch (action) {
+        case RetainedHostAction::Create:
+            // 首次建立先验：保留宿主位姿，边缘化宿主运动和下一帧状态。
+            reordered << host_motion, next_state, host_pose, trailing;
+            break;
+        case RetainedHostAction::Keep:
+            // 继续使用当前宿主：边缘化下一帧状态，保留完整宿主状态布局。
+            reordered << next_state, host_pose, host_motion, trailing;
+            break;
+        case RetainedHostAction::Replace:
+            // 替换宿主：边缘化旧宿主和新宿主运动，仅保留新宿主位姿。
+            reordered << host_pose, host_motion, next_state.rightCols(kSpeedBiasSize),
+                next_state.leftCols(kPoseSize), trailing;
+            break;
+    }
+    return reordered;
 }
 
 }  // namespace tassel_core

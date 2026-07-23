@@ -20,7 +20,7 @@ public:
         const MarginalizedFeatureObservation& observation, const State& state,
         const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
-    void eliminateLandmark();
+    void marginalizeLandmark();
 
     void writeReducedSystem(
         Eigen::MatrixXd& jacobian, Eigen::VectorXd& residual, int start_row) const;
@@ -29,7 +29,7 @@ public:
 
     inline int get_kept_rows() const {
         TASSEL_ASSERT(qr_performed_);
-        return std::max(num_rows_ - eliminated_landmark_rank_, 0);
+        return std::max(num_rows_ - marginalized_landmark_rank_, 0);
     }
 
     inline int get_padding_index() const { return padding_idx_; }
@@ -45,13 +45,15 @@ public:
     const tassel_utils::MatrixRowMajor& get_storage() const { return storage_; }
 
 private:
+    // 列布局为 [各帧状态填充区, 时间延迟, 逆深度, 残差]。
+    // 路标边缘化后仅将状态、时间延迟和残差写入全局平方根系统。
     tassel_utils::MatrixRowMajor storage_;
     int delay_idx_;
     int lm_idx_;
     int res_idx_;
     int padding_idx_;
     int num_rows_;
-    int eliminated_landmark_rank_;
+    int marginalized_landmark_rank_;
     bool qr_performed_;
     int dim_;
     ceres::LossFunction* loss_;
