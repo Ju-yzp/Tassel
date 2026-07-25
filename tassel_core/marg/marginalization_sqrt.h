@@ -68,8 +68,8 @@ public:
             auto& imu_block = imu_blocks_[i];
             const int state_i = first_imu_factor_index_ + static_cast<int>(i);
             const int state_j = state_i + 1;
-            Eigen::Vector3d Q_i = Sophus::SO3d(state_->frames[state_i].R).log();
-            Eigen::Vector3d Q_j = Sophus::SO3d(state_->frames[state_j].R).log();
+            const Eigen::Vector3d Q_i = Sophus::SO3d(state_->frames[state_i].R).log();
+            const Eigen::Vector3d Q_j = Sophus::SO3d(state_->frames[state_j].R).log();
             imu_block.linearize(
                 state_->frames[state_i].V, state_->frames[state_j].V, state_->frames[state_i].P,
                 state_->frames[state_j].P, Q_i, Q_j, state_->frames[state_i].Ba,

@@ -13,7 +13,7 @@ TEST(EstimatorKeyframeTest, ReportsLatestDecisionAndClearsItOnReset) {
         std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "config" /
         "euroc.yaml";
     tassel_tools::Parameters params(config.string());
-    auto state = std::make_shared<tassel_core::State>(static_cast<int>(params.max_frame_count));
+    auto state = std::make_shared<tassel_core::State>(static_cast<int>(params.max_frame_count) + 1);
     auto feature_manager = std::make_shared<tassel_core::FeatureManager>(
         params.reproj_err_thres, params.tracked_times_thres, params.min_translation,
         params.keyframe_new_feature_ratio, params.min_depth, params.max_depth);
@@ -22,11 +22,13 @@ TEST(EstimatorKeyframeTest, ReportsLatestDecisionAndClearsItOnReset) {
     EXPECT_FALSE(estimator.lastMeasurementWasKeyframe());
     estimator.processMeasurement(1, std::unordered_map<int, tassel_core::FeaturePerFrame>{});
     EXPECT_TRUE(estimator.lastMeasurementWasKeyframe());
-    EXPECT_EQ(state->frames[0].type, tassel_core::FrameType::KeyFrame);
+    EXPECT_EQ(state->frames[0].type, tassel_core::FrameType::Unknown);
+    EXPECT_EQ(state->frames[1].type, tassel_core::FrameType::KeyFrame);
 
     estimator.reset();
     EXPECT_FALSE(estimator.lastMeasurementWasKeyframe());
     EXPECT_EQ(state->frames[0].type, tassel_core::FrameType::Unknown);
+    EXPECT_EQ(state->frames[1].type, tassel_core::FrameType::Unknown);
 }
 
 }  // namespace

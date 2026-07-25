@@ -132,21 +132,51 @@ TEST(MarginalizeSqrtToSqrtTest, ShortWide2x3) {
 }
 
 TEST(MarginalizeSqrtToSqrtTest, RankDeficient4x5) {
-    Eigen::MatrixXd Q2Jp(4, 5);
-    Q2Jp << 1.0, 0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0, 1.0, 3.0, 2.0, 5.0, 6.0, 1.0, 0.0, 1.0,
+    Eigen::MatrixXd jacobian(4, 5);
+    jacobian << 1.0, 0.0, 1.0, 2.0, 1.0, 2.0, 1.0, 3.0, 4.0, 1.0, 3.0, 2.0, 5.0, 6.0, 1.0, 0.0, 1.0,
         1.0, 0.0, -1.0;
-    Eigen::VectorXd Q2r(4);
-    Q2r << 0.1, 0.2, 0.3, 0.4;
+    Eigen::VectorXd residual(4);
+    residual << 0.1, 0.2, 0.3, 0.4;
 
-    const size_t keep_size = 4;
-    Eigen::MatrixXd marg_sqrt_H;
-    Eigen::VectorXd marg_sqrt_b;
-    MargHelper::marginalizeSquareRootSystem(1, keep_size, Q2Jp, Q2r, marg_sqrt_H, marg_sqrt_b);
+    Eigen::Index reference_rank = -1;
+    for (const double scale : {1e-12, 1.0, 1e12}) {
+        Eigen::MatrixXd scaled_jacobian = scale * jacobian;
+        Eigen::VectorXd scaled_residual = scale * residual;
+        Eigen::MatrixXd prior_jacobian;
+        Eigen::VectorXd prior_residual;
+        MargHelper::marginalizeSquareRootSystem(
+            1, 4, scaled_jacobian, scaled_residual, prior_jacobian, prior_residual);
 
-    EXPECT_EQ(marg_sqrt_H.cols(), keep_size);
-    EXPECT_LE(marg_sqrt_H.rows(), 2);  // rank-limited
-    EXPECT_GE(marg_sqrt_H.rows(), 1);
-    EXPECT_EQ(marg_sqrt_H.rows(), marg_sqrt_b.rows());
+        EXPECT_LE(prior_jacobian.rows(), 2);  // rank-limited
+        EXPECT_GE(prior_jacobian.rows(), 1);
+        EXPECT_EQ(prior_jacobian.rows(), prior_residual.rows());
+        if (reference_rank < 0) {
+            reference_rank = prior_jacobian.rows();
+        }
+        EXPECT_EQ(prior_jacobian.rows(), reference_rank);
+    }
+}
+
+TEST(MarginalizeSqrtToSqrtTest, RankIsInvariantToSystemScale) {
+    Eigen::MatrixXd jacobian(3, 3);
+    jacobian << 2.0, 1.0, 4.0, 1.0, 3.0, 2.0, 0.5, -1.0, 3.0;
+    Eigen::VectorXd residual(3);
+    residual << 1.0, -2.0, 0.5;
+
+    Eigen::Index reference_rank = -1;
+    for (const double scale : {1e-12, 1.0, 1e12}) {
+        Eigen::MatrixXd scaled_jacobian = scale * jacobian;
+        Eigen::VectorXd scaled_residual = scale * residual;
+        Eigen::MatrixXd prior_jacobian;
+        Eigen::VectorXd prior_residual;
+        MargHelper::marginalizeSquareRootSystem(
+            1, 2, scaled_jacobian, scaled_residual, prior_jacobian, prior_residual);
+
+        if (reference_rank < 0) {
+            reference_rank = prior_jacobian.rows();
+        }
+        EXPECT_EQ(prior_jacobian.rows(), reference_rank);
+    }
 }
 
 TEST(MarginalizeSqrtToSqrtTest, EmptyInput) {

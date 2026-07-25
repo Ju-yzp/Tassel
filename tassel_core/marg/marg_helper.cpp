@@ -6,8 +6,10 @@
 #include "tassel_utils/se3_right_manifold.h"
 #include "tassel_utils/types.h"
 
-#include <cmath>
+#include <algorithm>
 #include <limits>
+
+#include <sophus/so3.hpp>
 
 namespace tassel_core {
 
@@ -81,8 +83,6 @@ void MargHelper::marginalizeSquareRootSystem(
     // 丢弃缺秩行，避免将无效约束写入先验。
     Eigen::Index marginalized_rank = 0;
     Eigen::Index total_rank = 0;
-    const double rank_threshold = std::sqrt(std::numeric_limits<double>::epsilon());
-
     const Eigen::Index rows = jacobian.rows();
     const Eigen::Index cols = jacobian.cols();
 
@@ -92,6 +92,9 @@ void MargHelper::marginalizeSquareRootSystem(
     for (Eigen::Index i = 0; i < cols && total_rank < rows; ++i) {
         Eigen::Index remainingRows = rows - total_rank;
         Eigen::Index remainingCols = cols - i - 1;
+        const double column_norm = jacobian.col(i).norm();
+        const double rank_threshold = std::numeric_limits<double>::epsilon() *
+                                      static_cast<double>(std::max(rows, cols)) * column_norm;
 
         double beta;
         double hCoeff;
@@ -139,7 +142,7 @@ Eigen::MatrixXd MargHelper::reorderForMarginalization(
     const Eigen::MatrixXd& jacobian, RetainedHostAction action) {
     TASSEL_ASSERT(jacobian.cols() >= 2 * kFullStateSize + 1);
 
-    // 输入布局为 [宿主位姿, 宿主运动, 下一帧位姿, 下一帧运动, 后续状态, 时间延迟]。
+    // Keep/Replace 输入从保留宿主开始；Create 输入为 [空保留槽, 首帧状态, 后续状态]。
     // 平方根边缘化要求待边缘化列位于保留列之前。
     const auto host_pose = jacobian.leftCols(kPoseSize);
     const auto host_motion = jacobian.middleCols(kPoseSize, kSpeedBiasSize);
@@ -149,8 +152,11 @@ Eigen::MatrixXd MargHelper::reorderForMarginalization(
 
     switch (action) {
         case RetainedHostAction::Create:
-            // 首次建立先验：保留宿主位姿，边缘化宿主运动和下一帧状态。
-            reordered << host_motion, next_state, host_pose, trailing;
+            // 首次建立先验：消去空槽和首帧运动状态，保留首帧位姿。
+            reordered << jacobian.leftCols(kFullStateSize),
+                jacobian.middleCols(kFullStateSize + kPoseSize, kSpeedBiasSize),
+                jacobian.middleCols(kFullStateSize, kPoseSize),
+                jacobian.rightCols(jacobian.cols() - 2 * kFullStateSize);
             break;
         case RetainedHostAction::Keep:
             // 继续使用当前宿主：边缘化下一帧状态，保留完整宿主状态布局。

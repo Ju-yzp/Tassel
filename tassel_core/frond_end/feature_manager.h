@@ -57,7 +57,7 @@ public:
 
     std::vector<HostLandmark> exportHostLandmarks(int host_frame_index, const State& state) const;
 
-    std::vector<SFMFeature> collectSFMFeatures(const State& state) const;
+    std::vector<SFMFeature> collectSFMFeatures(const State& state, int first_frame_index = 0) const;
 
     std::unordered_map<int, Feature>& features() { return features_; }
 

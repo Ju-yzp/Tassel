@@ -37,7 +37,7 @@ min_feature_num: 150
 
 flow_back: true
 max_square_move_dist: 1.0
-min_gradient: 15.0
+min_gradient: 14.0
 enable_statistics: true
 
 # 特征与关键帧管理
@@ -72,16 +72,15 @@ loop_pnp_max_translation_variance: 0.0
 loop_optimize_max_error: 3.0
 
 # 滑窗优化
-num_iterations: 8
-max_frame_count: 7
-visual_factor_weight: 45.0
+num_iterations: 6
+max_frame_count: 9
+visual_factor_weight: 9.0
 num_threads: 2
 
 # 时间延迟可观测性
-delay_obs_gyro_threshold: 0.2
-delay_obs_speed_threshold: 5.0
+delay_obs_gyro_threshold: 0.1
+delay_obs_speed_threshold: 2.0
 delay_obs_min_frames: 3
-
 # IMU 模型与积分
 integrator_type: midpoint
 acc_n: 9.2200e-3
@@ -90,12 +89,10 @@ gyr_n: 1.110e-5
 gyr_w: 1.1000e-6
 g_norm: 9.81
 acc_bias: [0.0, 0.0, 0.0]
-imu_repropagate_ba_threshold: 0.02
-imu_repropagate_bg_threshold: 0.006
+imu_repropagate_ba_threshold: 0.1
+imu_repropagate_bg_threshold: 0.05
 
 # 视觉惯性初始化
-num_init_iterations: 8
-init_time_span: 5.0
 gravity_diff_threshold: 0.21
 init_scale_zero_threshold: 0.001
 sfm_min_seed_pts: 10

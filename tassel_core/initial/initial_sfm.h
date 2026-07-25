@@ -36,7 +36,8 @@ public:
 
     bool construct(
         State& cur_state, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
-        std::vector<Eigen::Matrix3d>& Rs_out, std::vector<Eigen::Vector3d>& Ps_out);
+        std::vector<Eigen::Matrix3d>& Rs_out, std::vector<Eigen::Vector3d>& Ps_out,
+        int first_frame_index = 0);
 
 private:
     struct PoseCandidate {

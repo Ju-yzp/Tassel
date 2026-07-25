@@ -13,14 +13,14 @@ TEST(MargHelperTest, MovesMarginalizedColumnsBeforeRetainedColumns) {
 
     const Eigen::MatrixXd create_order =
         MargHelper::reorderForMarginalization(columns, RetainedHostAction::Create);
-    for (int i = 0; i < 9; ++i) {
-        EXPECT_EQ(create_order(0, i), i + 6);
-    }
     for (int i = 0; i < 15; ++i) {
-        EXPECT_EQ(create_order(0, i + 9), i + 15);
+        EXPECT_EQ(create_order(0, i), i);
+    }
+    for (int i = 0; i < 9; ++i) {
+        EXPECT_EQ(create_order(0, i + 15), i + 21);
     }
     for (int i = 0; i < 6; ++i) {
-        EXPECT_EQ(create_order(0, i + 24), i);
+        EXPECT_EQ(create_order(0, i + 24), i + 15);
     }
 
     const Eigen::MatrixXd keep_order =

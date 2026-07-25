@@ -81,6 +81,7 @@ struct Parameters {
 
     // 滑窗优化：用于 Estimator::optimize、先验更新和 reset。
     int num_iterations;
+    // 活动图像状态数量；估计器会额外分配一个保留宿主槽。
     size_t max_frame_count;
     double visual_factor_weight;
     int num_threads = 1;

@@ -715,13 +715,17 @@ void InitialSFM::scoreByCheirality(
 
 bool InitialSFM::construct(
     State& cur_state, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
-    std::vector<Eigen::Matrix3d>& Rs_out, std::vector<Eigen::Vector3d>& Ps_out) {
-    int frame_num = cur_state.latest_frame_index + 1;
+    std::vector<Eigen::Matrix3d>& Rs_out, std::vector<Eigen::Vector3d>& Ps_out,
+    int first_frame_index) {
+    if (first_frame_index < 0 || first_frame_index > cur_state.latest_frame_index) {
+        return false;
+    }
+    int frame_num = cur_state.latest_frame_index - first_frame_index + 1;
     if (frame_num < 2) {
         return false;
     }
 
-    auto sfm_f = feature_manager.collectSFMFeatures(cur_state);
+    auto sfm_f = feature_manager.collectSFMFeatures(cur_state, first_frame_index);
 
     int seed_id = selectSeedFrame(frame_num, sfm_f);
     if (seed_id < 0) {
@@ -735,7 +739,8 @@ bool InitialSFM::construct(
 
     std::vector<Eigen::Quaterniond> q_cam_i0(frame_num);
     for (int i = 0; i < frame_num; i++) {
-        q_cam_i0[i] = Eigen::Quaterniond(cur_state.frames[i].R * ric).normalized();
+        q_cam_i0[i] =
+            Eigen::Quaterniond(cur_state.frames[first_frame_index + i].R * ric).normalized();
     }
 
     for (const auto& [other_id, common] : other_candidates) {

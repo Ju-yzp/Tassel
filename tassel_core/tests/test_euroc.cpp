@@ -480,7 +480,7 @@ int main(int argc, char** argv) {
         std::move(cameras[1]), params.per_grid_rows, params.per_grid_cols, params.edge_y,
         params.edge_x, params.mask_radius, params.min_feature_num);
 
-    auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count));
+    auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count) + 1);
     auto feature_manager = std::make_shared<FeatureManager>(
         params.reproj_err_thres, params.tracked_times_thres, params.min_translation,
         params.keyframe_new_feature_ratio, params.min_depth, params.max_depth);

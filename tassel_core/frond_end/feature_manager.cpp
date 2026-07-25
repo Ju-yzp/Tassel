@@ -278,7 +278,11 @@ std::vector<Feature*> FeatureManager::collectLandmarks() {
     return result;
 }
 
-std::vector<SFMFeature> FeatureManager::collectSFMFeatures(const State& state) const {
+std::vector<SFMFeature> FeatureManager::collectSFMFeatures(
+    const State& state, int first_frame_index) const {
+    if (first_frame_index < 0 || first_frame_index > state.latest_frame_index) {
+        throw std::logic_error("SFM first frame index is outside the active window");
+    }
     std::vector<SFMFeature> sfm_features;
     sfm_features.reserve(features_.size());
     for (const auto& [id, feature] : features_) {
@@ -292,11 +296,11 @@ std::vector<SFMFeature> FeatureManager::collectSFMFeatures(const State& state) c
              ++observation_index) {
             const auto& observation = feature.observations[observation_index];
             const int frame_index = feature.observationFrameIndex(observation_index);
-            if (frame_index > state.latest_frame_index) {
+            if (frame_index < first_frame_index || frame_index > state.latest_frame_index) {
                 throw std::logic_error("SFM observation index is outside the active window");
             }
             Eigen::Vector2d uv_norm(observation.uv(0), observation.uv(1));
-            sfm_f.observation.emplace_back(frame_index, uv_norm);
+            sfm_f.observation.emplace_back(frame_index - first_frame_index, uv_norm);
         }
         sfm_features.push_back(std::move(sfm_f));
     }

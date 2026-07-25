@@ -13,7 +13,8 @@ namespace tassel_core {
 template <typename Derived>
 class IMUFactor : public ceres::SizedCostFunction<15, 6, 9, 6, 9> {
 public:
-    IMUFactor(std::shared_ptr<IntegratorBase<Derived>> integrator_) : integrator(integrator_) {}
+    explicit IMUFactor(std::shared_ptr<IntegratorBase<Derived>> integrator_)
+        : integrator(std::move(integrator_)) {}
 
     bool Evaluate(
         double const* const* parameters, double* residuals, double** jacobians) const override {
@@ -43,8 +44,8 @@ public:
         Eigen::Matrix3d dv_dba = integrator->get_dv_dba();
         Eigen::Matrix3d dv_dbg = integrator->get_dv_dbg();
 
-        Eigen::Vector3d dba = Ba_i - integrator->ba_linearized;
-        Eigen::Vector3d dbg = Bg_i - integrator->bg_linearized;
+        const Eigen::Vector3d dba = Ba_i - integrator->ba_linearized;
+        const Eigen::Vector3d dbg = Bg_i - integrator->bg_linearized;
 
         Eigen::Matrix3d corrected_delta_q =
             integrator->final_delta_q * Sophus::SO3d::exp(dq_dbg * dbg).matrix();
@@ -96,16 +97,13 @@ public:
                     jacobians[1]);
                 jacobian_speedbias_i.setZero();
                 jacobian_speedbias_i.block<3, 3>(0, 0) = -R_i.transpose() * sum_dt;
+                jacobian_speedbias_i.block<3, 3>(6, 0) = -R_i.transpose();
                 jacobian_speedbias_i.block<3, 3>(0, 3) = -dp_dba;
                 jacobian_speedbias_i.block<3, 3>(0, 6) = -dp_dbg;
-
                 jacobian_speedbias_i.block<3, 3>(3, 6) =
                     -Jr_inv * R_j.transpose() * R_i * corrected_delta_q * dq_dbg;
-
-                jacobian_speedbias_i.block<3, 3>(6, 0) = -R_i.transpose();
                 jacobian_speedbias_i.block<3, 3>(6, 3) = -dv_dba;
                 jacobian_speedbias_i.block<3, 3>(6, 6) = -dv_dbg;
-
                 jacobian_speedbias_i.block<3, 3>(9, 3) = -Eigen::Matrix3d::Identity();
                 jacobian_speedbias_i.block<3, 3>(12, 6) = -Eigen::Matrix3d::Identity();
 

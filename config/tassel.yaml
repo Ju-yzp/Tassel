@@ -82,7 +82,6 @@ num_threads: 1
 delay_obs_gyro_threshold: 0.2
 delay_obs_speed_threshold: 0.2
 delay_obs_min_frames: 3
-
 # IMU 模型与积分
 integrator_type: midpoint
 acc_n: 1.9291286492253038e-02
@@ -95,7 +94,6 @@ imu_repropagate_ba_threshold: 0.02
 imu_repropagate_bg_threshold: 0.002
 
 # 视觉惯性初始化
-num_init_iterations: 8
 gravity_diff_threshold: 0.21
 init_scale_zero_threshold: 0.001
 sfm_min_seed_pts: 10

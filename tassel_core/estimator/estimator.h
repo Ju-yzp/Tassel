@@ -101,21 +101,17 @@ private:
     const tassel_tools::Parameters& params_;
     std::shared_ptr<State> state_;
     std::shared_ptr<FeatureManager> feature_manager_;
-
     const CameraBase* camera_ = nullptr;
 
     Eigen::Matrix<double, 18, 18> noise_;
 
     bool initialized_ = false;
     bool last_measurement_was_keyframe_ = false;
-
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
     std::function<void(double, const Sophus::SE3d&)> realtime_pose_callback_;
     std::function<void(double, const std::vector<int>&)> visual_factor_callback_;
     std::shared_ptr<tassel_loop::LoopClosure> loop_closure_;
     std::map<tassel_utils::FrameId, cv::Mat> frame_images_;
-    std::map<tassel_utils::FrameId, tassel_loop::KeyframeId> loop_keyframes_;
-
     PreintegratorStorage preintegrators_;
     double last_ts_ = -1;
     Eigen::Vector3d last_imu_acc_;

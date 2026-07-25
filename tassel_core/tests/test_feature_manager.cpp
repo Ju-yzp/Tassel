@@ -273,6 +273,23 @@ TEST(FeatureManagerTest, ExportsValidLandmarksForRequestedHostAsIndependentValue
     EXPECT_DOUBLE_EQ(landmarks.front().host_depth, 2.0);
 }
 
+TEST(FeatureManagerTest, MapsReservedSlotIndicesToCompactSfmIndices) {
+    auto fm = manager();
+    State state(4);
+    state.latest_frame_index = 3;
+
+    Feature feature(1, 3);
+    feature.observations = {observation(0.1), observation(0.2), observation(0.3)};
+    fm.features().emplace(7, std::move(feature));
+
+    const std::vector<SFMFeature> features = fm.collectSFMFeatures(state, 1);
+    ASSERT_EQ(features.size(), 1u);
+    ASSERT_EQ(features.front().observation.size(), 3u);
+    EXPECT_EQ(features.front().observation[0].first, 0);
+    EXPECT_EQ(features.front().observation[1].first, 1);
+    EXPECT_EQ(features.front().observation[2].first, 2);
+}
+
 TEST(FeatureManagerTest, ExcludesDepthOutsideConfiguredRange) {
     auto fm = manager();
     State state(1);
