@@ -46,7 +46,7 @@ struct Feature {
 
     void monoTriangulate(
         const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
-        double min_translation, double min_depth, double max_depth);
+        double min_translation, double min_depth);
 
     void removeFrame(
         int frame_index, const State& state, const Eigen::Matrix3d& ric,

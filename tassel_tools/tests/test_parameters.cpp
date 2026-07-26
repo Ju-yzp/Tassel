@@ -25,7 +25,7 @@ TEST(ParametersTest, LoadsEuRoCRadTanModels) {
     EXPECT_EQ(params.loop_pnp_variance_quantile_divisor, 4);
     EXPECT_DOUBLE_EQ(params.loop_pnp_max_translation_variance, 0.0);
     EXPECT_DOUBLE_EQ(params.loop_optimize_max_error, 3.0);
-    EXPECT_DOUBLE_EQ(params.visual_factor_weight, 9.0);
+    EXPECT_DOUBLE_EQ(params.visual_factor_weight, 8.0);
 }
 
 TEST(ParametersTest, LoadsTumViEquidistantCalibrationAndNoise) {

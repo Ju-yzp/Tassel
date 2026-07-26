@@ -253,7 +253,7 @@ TEST(MarginalizationPriorTest, ResidualMatchesDirect) {
     EXPECT_TRUE(r.isApprox(expected_r, 1e-12));
 }
 
-TEST(MarginalizationPriorTest, JacobiansMatchManifoldFiniteDiff) {
+TEST(MarginalizationPriorTest, JacobiansRemainFixedInLocalTangent) {
     std::mt19937 rng(123);
     std::normal_distribution<double> n(0.0, 1.0);
 
@@ -291,7 +291,6 @@ TEST(MarginalizationPriorTest, JacobiansMatchManifoldFiniteDiff) {
         factor.Evaluate(params, r0.data(), jacs);
     }
 
-    const double eps = 1e-6;
     SE3RightManifold manifold;
     for (int p = 0; p < 2; ++p) {
         double* pose = (p == 0) ? pose0 : pose1;
@@ -300,34 +299,12 @@ TEST(MarginalizationPriorTest, JacobiansMatchManifoldFiniteDiff) {
         double plus_data[36];
         manifold.PlusJacobian(pose, plus_data);
         Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus(plus_data);
-        Eigen::MatrixXd J_tangent = J * plus;
-
-        for (int c = 0; c < 6; ++c) {
-            Eigen::Matrix<double, 6, 1> delta = Eigen::Matrix<double, 6, 1>::Zero();
-            delta[c] = eps;
-            double pose_plus[6], pose_minus[6];
-            manifold.Plus(pose, delta.data(), pose_plus);
-            manifold.Plus(pose, (-delta).eval().data(), pose_minus);
-            const double* original = params[p];
-            params[p] = pose_plus;
-            Eigen::VectorXd rp(res_dim);
-            factor.Evaluate(params, rp.data(), nullptr);
-            params[p] = pose_minus;
-            Eigen::VectorXd rm(res_dim);
-            factor.Evaluate(params, rm.data(), nullptr);
-            params[p] = original;
-
-            Eigen::VectorXd fd = (rp - rm) / (2.0 * eps);
-            for (int row = 0; row < res_dim; ++row) {
-                double denom = std::max(1e-6, std::abs(J_tangent(row, c)));
-                EXPECT_NEAR(J_tangent(row, c), fd(row), 5e-5 * denom)
-                    << "Block " << p << " col " << c << " row " << row;
-            }
-        }
+        const Eigen::MatrixXd J_tangent = J * plus;
+        EXPECT_TRUE(J_tangent.isApprox(H.middleCols(p * 6, 6), 1e-12));
     }
 }
 
-TEST(MarginalizationPriorTest, RebaseMatchesOldPriorAtCurrentState) {
+TEST(MarginalizationPriorTest, CurrentResidualMatchesStoredPrior) {
     constexpr int kFrames = 2;
     constexpr int kCols = kFrames * 15 + 1;
     constexpr int kRows = 24;
@@ -366,7 +343,7 @@ TEST(MarginalizationPriorTest, RebaseMatchesOldPriorAtCurrentState) {
     }
     double current_delay = -0.003;
 
-    const MargLinData prior_in_current_tangent = MargHelper::transportPriorToCurrentTangent(
+    const Eigen::VectorXd current_residual = MargHelper::evaluatePriorResidual(
         old_prior, current_poses, current_speed_bias, current_delay);
     MarginalizationPriorFactor old_factor(old_prior);
     std::vector<const double*> parameters;
@@ -378,53 +355,86 @@ TEST(MarginalizationPriorTest, RebaseMatchesOldPriorAtCurrentState) {
 
     Eigen::VectorXd residual(kRows);
     ASSERT_TRUE(old_factor.Evaluate(parameters.data(), residual.data(), nullptr));
-    EXPECT_TRUE(prior_in_current_tangent.b.isApprox(residual, 1e-12));
+    EXPECT_TRUE(current_residual.isApprox(residual, 1e-12));
+}
 
-    const double eps = 1e-7;
-    SE3RightManifold manifold;
-    Eigen::MatrixXd numerical(kRows, kCols);
-    for (int frame = 0; frame < kFrames; ++frame) {
-        for (int c = 0; c < 6; ++c) {
-            Eigen::Matrix<double, 6, 1> delta = Eigen::Matrix<double, 6, 1>::Zero();
-            delta[c] = eps;
-            double plus[6], minus[6];
-            manifold.Plus(current_poses[frame].data(), delta.data(), plus);
-            manifold.Plus(current_poses[frame].data(), (-delta).eval().data(), minus);
-            const int parameter_index = frame * 2;
-            const double* original = parameters[parameter_index];
-            parameters[parameter_index] = plus;
-            Eigen::VectorXd rp(kRows);
-            old_factor.Evaluate(parameters.data(), rp.data(), nullptr);
-            parameters[parameter_index] = minus;
-            Eigen::VectorXd rm(kRows);
-            old_factor.Evaluate(parameters.data(), rm.data(), nullptr);
-            parameters[parameter_index] = original;
-            numerical.col(frame * 15 + c) = (rp - rm) / (2.0 * eps);
-        }
-        for (int c = 0; c < 9; ++c) {
-            const int parameter_index = frame * 2 + 1;
-            const double original = current_speed_bias[frame][c];
-            current_speed_bias[frame][c] = original + eps;
-            Eigen::VectorXd rp(kRows);
-            old_factor.Evaluate(parameters.data(), rp.data(), nullptr);
-            current_speed_bias[frame][c] = original - eps;
-            Eigen::VectorXd rm(kRows);
-            old_factor.Evaluate(parameters.data(), rm.data(), nullptr);
-            current_speed_bias[frame][c] = original;
-            numerical.col(frame * 15 + 6 + c) = (rp - rm) / (2.0 * eps);
+TEST(MarginalizationPriorTest, PoseOnlyHostMixedLayout) {
+    constexpr int kFrames = 3;
+    constexpr int kCols = 6 + (kFrames - 1) * 15 + 1;
+    constexpr int kRows = 10;
+    std::mt19937 rng(321);
+    std::normal_distribution<double> n(0.0, 1.0);
+
+    MargLinData data;
+    data.H.resize(kRows, kCols);
+    data.b.resize(kRows);
+    for (int r = 0; r < kRows; ++r) {
+        data.b[r] = 0.1 * n(rng);
+        for (int c = 0; c < kCols; ++c) {
+            data.H(r, c) = n(rng);
         }
     }
-    current_delay += eps;
-    Eigen::VectorXd rp(kRows);
-    old_factor.Evaluate(parameters.data(), rp.data(), nullptr);
-    current_delay -= 2.0 * eps;
-    Eigen::VectorXd rm(kRows);
-    old_factor.Evaluate(parameters.data(), rm.data(), nullptr);
-    current_delay += eps;
-    numerical.col(kCols - 1) = (rp - rm) / (2.0 * eps);
+    data.linearization_poses.resize(kFrames);
+    data.linearization_speed_bias.resize(kFrames);
+    for (int i = 0; i < kFrames; ++i) {
+        for (double& value : data.linearization_poses[i]) {
+            value = 0.1 * n(rng);
+        }
+        for (double& value : data.linearization_speed_bias[i]) {
+            value = 0.1 * n(rng);
+        }
+    }
+    data.linearization_delay_time = 0.002;
 
-    EXPECT_TRUE(prior_in_current_tangent.H.isApprox(numerical, 2e-7))
-        << "max error: " << (prior_in_current_tangent.H - numerical).cwiseAbs().maxCoeff();
+    auto poses = data.linearization_poses;
+    auto speed_bias = data.linearization_speed_bias;
+    for (int i = 0; i < kFrames; ++i) {
+        for (double& value : poses[i]) {
+            value += 0.03 * n(rng);
+        }
+        for (double& value : speed_bias[i]) {
+            value += 0.02 * n(rng);
+        }
+    }
+    double delay_time = -0.004;
+
+    MarginalizationPriorFactor factor(data);
+    std::vector<const double*> parameters = {poses[0].data(),      poses[1].data(),
+                                             speed_bias[1].data(), poses[2].data(),
+                                             speed_bias[2].data(), &delay_time};
+
+    Eigen::VectorXd residual(kRows);
+    std::vector<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
+        jacobian_blocks;
+    jacobian_blocks.emplace_back(kRows, 6);
+    jacobian_blocks.emplace_back(kRows, 6);
+    jacobian_blocks.emplace_back(kRows, 9);
+    jacobian_blocks.emplace_back(kRows, 6);
+    jacobian_blocks.emplace_back(kRows, 9);
+    jacobian_blocks.emplace_back(kRows, 1);
+    std::vector<double*> jacobians;
+    for (auto& block : jacobian_blocks) {
+        jacobians.push_back(block.data());
+    }
+
+    ASSERT_TRUE(factor.Evaluate(parameters.data(), residual.data(), jacobians.data()));
+    const Eigen::VectorXd helper_residual =
+        MargHelper::evaluatePriorResidual(data, poses, speed_bias, delay_time);
+    EXPECT_TRUE(residual.isApprox(helper_residual, 1e-12));
+
+    SE3RightManifold manifold;
+    std::array<int, kFrames> pose_parameter_indices = {0, 1, 3};
+    std::array<int, kFrames> pose_column_indices = {0, 6, 21};
+    for (int i = 0; i < kFrames; ++i) {
+        double plus_data[36];
+        ASSERT_TRUE(manifold.PlusJacobian(parameters[pose_parameter_indices[i]], plus_data));
+        Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus(plus_data);
+        const Eigen::MatrixXd J_tangent = jacobian_blocks[pose_parameter_indices[i]] * plus;
+        EXPECT_TRUE(J_tangent.isApprox(data.H.middleCols(pose_column_indices[i], 6), 1e-12));
+    }
+    EXPECT_TRUE(jacobian_blocks[2].isApprox(data.H.middleCols(12, 9), 1e-12));
+    EXPECT_TRUE(jacobian_blocks[4].isApprox(data.H.middleCols(27, 9), 1e-12));
+    EXPECT_TRUE(jacobian_blocks[5].isApprox(data.H.rightCols(1), 1e-12));
 }
 
 TEST(SE3RightManifoldTest, PlusAndMinusJacobiansAreInverse) {
@@ -446,11 +456,10 @@ TEST(MarginalizationPriorTest, CeresConvergesWithPrior) {
     std::mt19937 rng(99);
     std::normal_distribution<double> n(0.0, 1.0);
 
-    // 真值为随机 x_gt，先验残差为 r = H*(x - x_lin) + b。
-    // 当 x_lin = 0 且最优点为 x_gt 时，需要满足 b = -H * x_gt。
-    Eigen::VectorXd x_gt(12);
-    for (int i = 0; i < 12; ++i) {
-        x_gt(i) = n(rng);
+    // FEJ 旋转雅各比有意不等于远离线性化点后的真实导数；Ceres 集成测试使用精确线性的平移方向。
+    Eigen::VectorXd x_gt = Eigen::VectorXd::Zero(12);
+    for (const int index : {0, 1, 2, 6, 7, 8}) {
+        x_gt(index) = n(rng);
     }
 
     Eigen::MatrixXd H = Eigen::MatrixXd::Identity(12, 12);
@@ -468,15 +477,11 @@ TEST(MarginalizationPriorTest, CeresConvergesWithPrior) {
     marg_data.linearization_poses = {lin0, lin1};
     auto* factor = new MarginalizationPriorFactor(marg_data);
 
-    // 扰动的初值
-    double pose0[6], pose1[6];
-    {
-        Eigen::Map<Eigen::Matrix<double, 6, 1>> p0(pose0);
-        p0 = x_gt.segment<6>(0) + Eigen::VectorXd::Random(6) * 0.5;
-    }
-    {
-        Eigen::Map<Eigen::Matrix<double, 6, 1>> p1(pose1);
-        p1 = x_gt.segment<6>(6) + Eigen::VectorXd::Random(6) * 0.5;
+    double pose0[6] = {};
+    double pose1[6] = {};
+    for (int axis = 0; axis < 3; ++axis) {
+        pose0[axis] = x_gt(axis) + 0.5 * n(rng);
+        pose1[axis] = x_gt(6 + axis) + 0.5 * n(rng);
     }
 
     ceres::Problem problem;
@@ -495,10 +500,10 @@ TEST(MarginalizationPriorTest, CeresConvergesWithPrior) {
     ceres::Solve(opts, &problem, &summary);
 
     EXPECT_EQ(summary.termination_type, ceres::CONVERGENCE);
-    EXPECT_NEAR(pose0[0], x_gt(0), 1e-6);
-    EXPECT_NEAR(pose0[1], x_gt(1), 1e-6);
-    EXPECT_NEAR(pose1[0], x_gt(6), 1e-6);
-    EXPECT_NEAR(pose1[1], x_gt(7), 1e-6);
+    for (int axis = 0; axis < 3; ++axis) {
+        EXPECT_NEAR(pose0[axis], x_gt(axis), 1e-9);
+        EXPECT_NEAR(pose1[axis], x_gt(6 + axis), 1e-9);
+    }
 }
 
 }  // namespace

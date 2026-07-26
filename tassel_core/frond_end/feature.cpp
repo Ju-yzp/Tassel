@@ -17,7 +17,7 @@ Feature::Feature(int host_frame_index, size_t max_capacity)
 
 void Feature::monoTriangulate(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
-    double min_translation, double min_depth, double max_depth) {
+    double min_translation, double min_depth) {
     if (estimated_depth != INVALID_DEPTH || observations.size() <= 1) {
         return;
     }
@@ -70,8 +70,7 @@ void Feature::monoTriangulate(
     Eigen::Vector4d h = tassel_utils::triangulateMultiView(poses, uvs, &cond);
     if (std::isfinite(cond) && cond < 1e6 && std::abs(h(3)) > 1e-12) {
         Eigen::Vector3d p_ref = tassel_utils::dehomogenize(h);
-        bool positive_depth =
-            std::isfinite(p_ref.z()) && p_ref.z() > min_depth && p_ref.z() < max_depth;
+        bool positive_depth = std::isfinite(p_ref.z()) && p_ref.z() > min_depth;
         for (const auto& pose : poses) {
             Eigen::Vector3d p_cur = pose.block<3, 3>(0, 0) * p_ref + pose.block<3, 1>(0, 3);
             positive_depth = positive_depth && std::isfinite(p_cur.z()) && p_cur.z() > min_depth;

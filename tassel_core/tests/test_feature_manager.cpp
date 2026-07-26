@@ -18,7 +18,7 @@ FeaturePerFrame observation(double x = 0.0, double delay = 0.0) {
     return result;
 }
 
-FeatureManager manager() { return FeatureManager(3.0, 2, 0.0, 0.25, 0.1, 100.0); }
+FeatureManager manager() { return FeatureManager(3.0, 2, 1e9, 0.0, 0.25, 0.1, 100.0); }
 
 TEST(ReprojectionTest, SplitTransformMatchesComposedTransform) {
     FrameState host;
@@ -139,6 +139,22 @@ TEST(FeatureManagerTest, RejectsTriangulationObservationOutsideActiveWindow) {
     EXPECT_THROW(
         fm.triangulate(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero()),
         std::logic_error);
+}
+
+TEST(FeatureManagerTest, TriangulatesDepthBeyondExportLimit) {
+    FeatureManager fm(3.0, 2, 1e9, 0.0, 0.25, 0.1, 10.0);
+    State state(3);
+    state.latest_frame_index = 2;
+    state.frames[1].P = Eigen::Vector3d(1.0, 0.0, 0.0);
+    state.frames[2].P = Eigen::Vector3d(2.0, 0.0, 0.0);
+
+    Feature feature(0, 3);
+    feature.observations = {observation(0.0), observation(-0.05), observation(-0.1001)};
+    fm.features().emplace(1, std::move(feature));
+
+    fm.triangulate(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+
+    EXPECT_NEAR(fm.features().at(1).estimated_depth, 20.0, 0.1);
 }
 
 TEST(FeatureManagerTest, RejectsSfmObservationOutsideActiveWindow) {

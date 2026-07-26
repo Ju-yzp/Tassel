@@ -25,8 +25,8 @@ struct HostLandmark {
 class FeatureManager {
 public:
     FeatureManager(
-        double reproj_err_thres, int tracked_times_thres, double min_translation,
-        double keyframe_new_feature_ratio, double min_depth = MIN_DISTANCE,
+        double reproj_err_thres, int tracked_times_thres, double parallax_threshold,
+        double min_translation, double keyframe_new_feature_ratio, double min_depth = MIN_DISTANCE,
         double max_depth = MAX_DISTANCE);
 
     bool addFeatureFrame(
@@ -65,6 +65,8 @@ private:
     double reproj_err_thres_;
 
     int tracked_times_thres_;
+
+    double parallax_threshold_ = 0.0;
 
     double min_translation_;
 

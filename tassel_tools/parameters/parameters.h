@@ -51,6 +51,7 @@ struct Parameters {
     // 路标和关键帧管理：用于 FeatureManager。
     double reproj_err_thres;
     double reproj_huber_thres;
+    double parallax_threshold;
     int tracked_times_thres;
     double min_translation;
     double min_depth;
@@ -197,6 +198,7 @@ private:
         min_depth = parser.as<double>("min_depth");
         max_depth = parser.as<double>("max_depth");
         keyframe_new_feature_ratio = parser.as<double>("keyframe_new_feature_ratio");
+        parallax_threshold = parser.as<double>("parallax_threshold");
     }
 
     void loadLoop(ParamsParser& parser) {

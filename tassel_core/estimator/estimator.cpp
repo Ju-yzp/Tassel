@@ -58,6 +58,25 @@ bool allFinite(const Range& values) {
         values.begin(), values.end(), [](double value) { return std::isfinite(value); });
 }
 
+double evaluateCost(ceres::Problem& problem, const std::vector<ceres::ResidualBlockId>& blocks) {
+    if (blocks.empty()) {
+        return 0.0;
+    }
+    ceres::Problem::EvaluateOptions options;
+    options.residual_blocks = blocks;
+    options.apply_loss_function = true;
+    double cost = 0.0;
+    TASSEL_ASSERT(problem.Evaluate(options, &cost, nullptr, nullptr, nullptr));
+    return cost;
+}
+
+double averageCost(double cost, const std::vector<ceres::ResidualBlockId>& blocks) {
+    if (blocks.empty()) {
+        return 0.0;
+    }
+    return cost / static_cast<double>(blocks.size());
+}
+
 }  // namespace
 
 Estimator::Estimator(
@@ -261,8 +280,8 @@ void Estimator::predictFrameState(
 
 void Estimator::optimize(double timestamp) {
     const int latest_id = state_->latest_frame_index;
-    const int gauge_frame_index =
-        marginalization_prior_ ? kRetainedFrameIndex : kFirstActiveFrameIndex;
+    // 保留宿主不在活动 IMU 链中，使用第一活动帧维持实时轨迹的规范连续性。
+    const int gauge_frame_index = kFirstActiveFrameIndex;
     const Eigen::Matrix3d gauge_rotation = state_->frames[gauge_frame_index].R;
     const Eigen::Vector3d gauge_position = state_->frames[gauge_frame_index].P;
     state_->stateToParams();
@@ -270,15 +289,20 @@ void Estimator::optimize(double timestamp) {
 
     ceres::Problem problem;
     std::vector<int> visual_factors_per_frame(state_->latest_frame_index + 1, 0);
+    std::vector<ceres::ResidualBlockId> prior_residual_blocks;
+    std::vector<ceres::ResidualBlockId> visual_residual_blocks;
+    std::vector<ceres::ResidualBlockId> imu_residual_blocks;
 
     for (int i = 0; i < state_->max_frame_count; ++i) {
         auto se3_manifold = new SE3RightManifold();
         problem.AddParameterBlock(state_->frames[i].pose.data(), 6, se3_manifold);
-        problem.AddParameterBlock(state_->frames[i].speed_bias.data(), 9);
+        if (i != kRetainedFrameIndex || !marginalization_prior_) {
+            problem.AddParameterBlock(state_->frames[i].speed_bias.data(), 9);
+        }
     }
-    problem.SetParameterBlockConstant(state_->frames[kRetainedFrameIndex].speed_bias.data());
     if (!marginalization_prior_) {
         // 初始化期间 frame0 为空，不参与任何物理因子。
+        problem.SetParameterBlockConstant(state_->frames[kRetainedFrameIndex].speed_bias.data());
         problem.SetParameterBlockConstant(state_->frames[kRetainedFrameIndex].pose.data());
     }
 
@@ -303,20 +327,23 @@ void Estimator::optimize(double timestamp) {
         auto* prior_cost = new MarginalizationPriorFactor(*marginalization_prior_);
         std::vector<double*> prior_blocks;
         int num_kept = static_cast<int>(marginalization_prior_->linearization_poses.size());
-        for (int i = 0; i < num_kept; ++i) {
+        prior_blocks.push_back(state_->frames[0].pose.data());
+        for (int i = 1; i < num_kept; ++i) {
             prior_blocks.push_back(state_->frames[i].pose.data());
             prior_blocks.push_back(state_->frames[i].speed_bias.data());
         }
         prior_blocks.push_back(&state_->param_delay_time);
-        problem.AddResidualBlock(prior_cost, nullptr, prior_blocks);
+        prior_residual_blocks.push_back(
+            problem.AddResidualBlock(prior_cost, nullptr, prior_blocks));
     }
 
     const double visual_huber_delta = params_.reproj_huber_thres * params_.visual_factor_weight;
     ceres::LossFunction* loss = new ceres::HuberLoss(visual_huber_delta);
     std::vector<double> inv_depth_params(features.size());
     for (size_t k = 0; k < features.size(); ++k) {
-        double d = features[k]->estimated_depth;
-        inv_depth_params[k] = (d > 0 && d < params_.max_depth) ? (1.0 / d) : 1.0;
+        const double depth = features[k]->estimated_depth;
+        TASSEL_ASSERT(std::isfinite(depth) && depth > 1e-12);
+        inv_depth_params[k] = 1.0 / depth;
         problem.AddParameterBlock(&inv_depth_params[k], 1);
     }
 
@@ -349,10 +376,10 @@ void Estimator::optimize(double timestamp) {
                 state_->frames[host_id].speed_bias.data() + 3,
                 state_->frames[target_id].speed_bias.data() + 3, sqrt_info, state_->camera,
                 f->observations[0].sync_delay, f->observations[obs_idx].sync_delay);
-            problem.AddResidualBlock(
+            visual_residual_blocks.push_back(problem.AddResidualBlock(
                 cost, loss, state_->frames[host_id].pose.data(),
                 state_->frames[target_id].pose.data(), &state_->param_delay_time,
-                &inv_depth_params[k]);
+                &inv_depth_params[k]));
         }
     }
 
@@ -365,12 +392,16 @@ void Estimator::optimize(double timestamp) {
             }
             auto pint_ptr = std::shared_ptr<Integrator>(&preintegrators[i], [](Integrator*) {});
             auto* imu_cost = new IMUFactor<Integrator>(pint_ptr);
-            problem.AddResidualBlock(
+            imu_residual_blocks.push_back(problem.AddResidualBlock(
                 imu_cost, nullptr, state_->frames[i].pose.data(),
                 state_->frames[i].speed_bias.data(), state_->frames[i + 1].pose.data(),
-                state_->frames[i + 1].speed_bias.data());
+                state_->frames[i + 1].speed_bias.data()));
         }
     });
+
+    const double visual_cost_before = evaluateCost(problem, visual_residual_blocks);
+    const double prior_cost_before = evaluateCost(problem, prior_residual_blocks);
+    const double imu_cost_before = evaluateCost(problem, imu_residual_blocks);
 
     ceres::Solver::Options opts;
     opts.linear_solver_type = ceres::DENSE_SCHUR;
@@ -381,6 +412,17 @@ void Estimator::optimize(double timestamp) {
 
     ceres::Solver::Summary summary;
     ceres::Solve(opts, &problem, &summary);
+
+    const double visual_cost_after = evaluateCost(problem, visual_residual_blocks);
+    const double prior_cost_after = evaluateCost(problem, prior_residual_blocks);
+    const double imu_cost_after = evaluateCost(problem, imu_residual_blocks);
+    const double visual_average_cost_before =
+        averageCost(visual_cost_before, visual_residual_blocks);
+    const double visual_average_cost_after = averageCost(visual_cost_after, visual_residual_blocks);
+    const double prior_average_cost_before = averageCost(prior_cost_before, prior_residual_blocks);
+    const double prior_average_cost_after = averageCost(prior_cost_after, prior_residual_blocks);
+    const double imu_average_cost_before = averageCost(imu_cost_before, imu_residual_blocks);
+    const double imu_average_cost_after = averageCost(imu_cost_after, imu_residual_blocks);
 
     bool finite_solution = std::isfinite(state_->param_delay_time);
     for (int i = 0; i <= latest_id && finite_solution; ++i) {
@@ -407,9 +449,19 @@ void Estimator::optimize(double timestamp) {
             "Optimization\n"
             "  Ba: ({:.5f}, {:.5f}, {:.5f})\n"
             "  Bg: ({:.5f}, {:.5f}, {:.5f})\n"
-            "  delay: {:.6f}",
+            "  delay: {:.6f}\n"
+            "  factor_count: visual={} prior={} imu={}\n"
+            "  visual_avg_cost: {:.6e} -> {:.6e} ({:+.6e})\n"
+            "  prior_avg_cost: {:.6e} -> {:.6e} ({:+.6e})\n"
+            "  imu_avg_cost: {:.6e} -> {:.6e} ({:+.6e})",
             final_frame.Ba.x(), final_frame.Ba.y(), final_frame.Ba.z(), final_frame.Bg.x(),
-            final_frame.Bg.y(), final_frame.Bg.z(), state_->delay_time);
+            final_frame.Bg.y(), final_frame.Bg.z(), state_->delay_time,
+            visual_residual_blocks.size(), prior_residual_blocks.size(), imu_residual_blocks.size(),
+            visual_average_cost_before, visual_average_cost_after,
+            visual_average_cost_after - visual_average_cost_before, prior_average_cost_before,
+            prior_average_cost_after, prior_average_cost_after - prior_average_cost_before,
+            imu_average_cost_before, imu_average_cost_after,
+            imu_average_cost_after - imu_average_cost_before);
     }
 
     for (size_t k = 0; k < features.size(); ++k) {
@@ -437,9 +489,8 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
     state_->stateToParams();
     const double visual_huber_delta = params_.reproj_huber_thres * params_.visual_factor_weight;
 
-    // 在当前状态处表达已有先验，但不修改其保存的线性化点。
-    // 旋转列仅被传输到当前状态的右扰动切空间。
-    MargLinData prior_in_current_tangent;
+    // 旧先验保持边缘化时的线性化雅各比，仅在当前状态更新残差常数项。
+    MargLinData prior_at_current_state;
     const MargLinData* prior_to_linearize = nullptr;
     if (marginalization_prior_) {
         const int num_kept = static_cast<int>(marginalization_prior_->linearization_poses.size());
@@ -450,9 +501,10 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
             current_poses[i] = state_->frames[i].pose;
             current_speed_bias[i] = state_->frames[i].speed_bias;
         }
-        prior_in_current_tangent = MargHelper::transportPriorToCurrentTangent(
+        prior_at_current_state = *marginalization_prior_;
+        prior_at_current_state.b = MargHelper::evaluatePriorResidual(
             *marginalization_prior_, current_poses, current_speed_bias, state_->param_delay_time);
-        prior_to_linearize = &prior_in_current_tangent;
+        prior_to_linearize = &prior_at_current_state;
     }
 
     // 仅将宿主帧到退出帧之间的观测写入先验。
@@ -528,8 +580,17 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
         TASSEL_ASSERT(
             prior_jacobian.middleCols(host_pose_size, host_speed_bias_size).isZero(1e-12));
 
+        // 保留宿主的速度和偏置只作为运动补偿快照，不作为先验优化变量。
+        Eigen::MatrixXd pose_only_host_prior(
+            prior_jacobian.rows(), host_pose_size + (window_capacity - 2) * full_state_size + 1);
+        pose_only_host_prior.leftCols(host_pose_size) = prior_jacobian.leftCols(host_pose_size);
+        pose_only_host_prior.middleCols(host_pose_size, (window_capacity - 2) * full_state_size) =
+            prior_jacobian.middleCols(full_state_size, (window_capacity - 2) * full_state_size);
+        pose_only_host_prior.col(pose_only_host_prior.cols() - 1) =
+            prior_jacobian.col(prior_jacobian.cols() - 1);
+
         auto updated_prior = std::make_unique<MargLinData>();
-        updated_prior->H = std::move(prior_jacobian);
+        updated_prior->H = std::move(pose_only_host_prior);
         updated_prior->b = std::move(prior_residual);
         updated_prior->linearization_poses.resize(window_capacity - 1);
         updated_prior->linearization_speed_bias.resize(window_capacity - 1);

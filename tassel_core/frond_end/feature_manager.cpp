@@ -54,17 +54,18 @@ bool computeReprojectionError(
 }  // namespace
 
 FeatureManager::FeatureManager(
-    double reproj_err_thres, int tracked_times_thres, double min_translation,
-    double keyframe_new_feature_ratio, double min_depth, double max_depth)
+    double reproj_err_thres, int tracked_times_thres, double parallax_threshold,
+    double min_translation, double keyframe_new_feature_ratio, double min_depth, double max_depth)
     : reproj_err_thres_(reproj_err_thres),
       tracked_times_thres_(tracked_times_thres),
+      parallax_threshold_(parallax_threshold),
       min_translation_(min_translation),
       keyframe_new_feature_ratio_(keyframe_new_feature_ratio),
       min_depth_(min_depth),
       max_depth_(max_depth) {
     if (reproj_err_thres_ <= 0.0 || tracked_times_thres_ < 2 || min_translation_ < 0.0 ||
-        keyframe_new_feature_ratio_ < 0.0 || keyframe_new_feature_ratio_ > 1.0 ||
-        min_depth_ <= 0.0 || max_depth_ <= min_depth_) {
+        parallax_threshold_ < 0.0 || keyframe_new_feature_ratio_ < 0.0 ||
+        keyframe_new_feature_ratio_ > 1.0 || min_depth_ <= 0.0 || max_depth_ <= min_depth_) {
         throw std::invalid_argument("Invalid FeatureManager configuration");
     }
     features_.reserve(1000);
@@ -73,17 +74,27 @@ FeatureManager::FeatureManager(
 bool FeatureManager::addFeatureFrame(
     int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
     const bool has_keyframe = hasLatestKeyframe();
-    size_t connected_to_keyframe_count = 0;
     std::unordered_set<int> current_feature_ids;
     current_feature_ids.reserve(feature_frame.size());
 
+    int connected_to_keyframe_count = 0;
+    double parallax_sum = 0.0;
+    int valid_parallax_count = 0;
     for (const auto& [id, per_frame_feature] : feature_frame) {
         current_feature_ids.insert(id);
+        auto it = features_.find(id);
         if (latest_keyframe_feature_ids_.contains(id)) {
             ++connected_to_keyframe_count;
+            if (it != features_.end()) {
+                ++valid_parallax_count;
+                const auto& keyframe_point = it->second.observations.front().pt;
+                const double dx = keyframe_point.x - per_frame_feature.pt.x;
+                const double dy = keyframe_point.y - per_frame_feature.pt.y;
+                parallax_sum += std::sqrt(dx * dx + dy * dy);
+            }
         }
         FeaturePerFrame observation = per_frame_feature;
-        auto it = features_.find(id);
+
         if (it != features_.end()) {
             const int expected_frame_index =
                 it->second.host_frame_index + static_cast<int>(it->second.observations.size());
@@ -98,12 +109,16 @@ bool FeatureManager::addFeatureFrame(
         }
     }
 
-    const double connection_ratio = feature_frame.empty()
-                                        ? 0.0
-                                        : static_cast<double>(connected_to_keyframe_count) /
-                                              static_cast<double>(feature_frame.size());
-    const bool is_keyframe =
-        !has_keyframe || connection_ratio <= (1.0 - keyframe_new_feature_ratio_);
+    const double average_parallax =
+        valid_parallax_count > 0 ? parallax_sum / static_cast<double>(valid_parallax_count) : 0.0;
+    const double connection_ratio =
+        latest_keyframe_feature_ids_.empty()
+            ? 0.0
+            : static_cast<double>(connected_to_keyframe_count) /
+                  static_cast<double>(latest_keyframe_feature_ids_.size());
+    const bool is_keyframe = !has_keyframe ||
+                             connection_ratio <= (1.0 - keyframe_new_feature_ratio_) ||
+                             average_parallax >= parallax_threshold_;
     if (is_keyframe) {
         latest_keyframe_feature_ids_.swap(current_feature_ids);
     }
@@ -113,7 +128,7 @@ bool FeatureManager::addFeatureFrame(
 void FeatureManager::triangulate(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
     for (auto& item : features_) {
-        item.second.monoTriangulate(state, ric, tic, min_translation_, min_depth_, max_depth_);
+        item.second.monoTriangulate(state, ric, tic, min_translation_, min_depth_);
     }
 }
 

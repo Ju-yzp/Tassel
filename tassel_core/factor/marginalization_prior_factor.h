@@ -26,6 +26,7 @@ private:
     double lin_delay_time_;
     int num_kept_;
     bool has_speed_bias_;
+    bool has_pose_only_host_;
     bool has_delay_;
 };
 

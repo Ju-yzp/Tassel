@@ -22,8 +22,8 @@ public:
     static constexpr int kSpeedBiasSize = 9;
     static constexpr int kFullStateSize = 15;
 
-    // 将固定先验传输到当前状态的右扰动切空间，不重新线性化原始因子。
-    static MargLinData transportPriorToCurrentTangent(
+    // 在当前状态计算固定线性化先验的残差；先验雅各比保持在原线性化点。
+    static Eigen::VectorXd evaluatePriorResidual(
         const MargLinData& prior, const std::vector<std::array<double, 6>>& poses,
         const std::vector<std::array<double, 9>>& speed_bias, double delay_time);
 

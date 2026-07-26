@@ -114,13 +114,23 @@ public:
         }
 
         if (prior_) {
-            // 旧先验已由调用方传输到当前切空间，这里只按统一状态布局追加。
+            // 旧先验使用当前残差和边缘化时冻结的雅各比。
             int prior_cols = static_cast<int>(prior_->H.cols());
-            const int state_cols = std::min(prior_cols, (state_->max_frame_count - 1) * 15);
-            if (state_cols > 0) {
-                jacobian.block(rows, 0, prior_rows, state_cols) = prior_->H.leftCols(state_cols);
+            const int full_prior_cols = (state_->max_frame_count - 1) * 15;
+            const int mixed_prior_cols = 6 + (state_->max_frame_count - 2) * 15;
+            if (prior_cols == mixed_prior_cols || prior_cols == mixed_prior_cols + 1) {
+                // mixed 布局: [retained_pose(6), active_full_states..., delay]。
+                jacobian.block(rows, 0, prior_rows, 6) = prior_->H.leftCols(6);
+                jacobian.block(rows, 15, prior_rows, mixed_prior_cols - 6) =
+                    prior_->H.middleCols(6, mixed_prior_cols - 6);
+            } else {
+                const int state_cols = std::min(prior_cols, full_prior_cols);
+                if (state_cols > 0) {
+                    jacobian.block(rows, 0, prior_rows, state_cols) =
+                        prior_->H.leftCols(state_cols);
+                }
             }
-            if (prior_cols == state_cols + 1) {
+            if (prior_cols == full_prior_cols + 1 || prior_cols == mixed_prior_cols + 1) {
                 jacobian.col(num_cols_ - 1).segment(rows, prior_rows) =
                     prior_->H.col(prior_cols - 1);
             }
