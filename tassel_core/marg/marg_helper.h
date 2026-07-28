@@ -27,6 +27,15 @@ public:
         const MargLinData& prior, const std::vector<std::array<double, 6>>& poses,
         const std::vector<std::array<double, 9>>& speed_bias, double delay_time);
 
+    // 将先验的一阶模型迁移到当前状态，并同步更新局部雅各比。
+    static void recenterPrior(
+        MargLinData& prior, const std::vector<std::array<double, 6>>& poses,
+        const std::vector<std::array<double, 9>>& speed_bias, double delay_time);
+
+    // 对先验的世界系位置、姿态和速度施加统一的 gauge 变换。
+    static void transformPriorGauge(
+        MargLinData& prior, const Eigen::Matrix3d& rotation, const Eigen::Vector3d& translation);
+
     // 使用秩揭示 Householder QR 边缘化平方根系统前部的参数列。
     // 列顺序为 [待边缘化参数 | 保留参数]。
     static void marginalizeSquareRootSystem(

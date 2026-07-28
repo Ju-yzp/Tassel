@@ -462,6 +462,17 @@ void Estimator::optimize(double timestamp) {
     }
 
     state_->paramsToState();
+    if (marginalization_prior_) {
+        const int num_kept = static_cast<int>(marginalization_prior_->linearization_poses.size());
+        std::vector<std::array<double, 6>> current_poses(num_kept);
+        std::vector<std::array<double, 9>> current_speed_bias(num_kept);
+        for (int i = 0; i < num_kept; ++i) {
+            current_poses[i] = state_->frames[i].pose;
+            current_speed_bias[i] = state_->frames[i].speed_bias;
+        }
+        MargHelper::recenterPrior(
+            *marginalization_prior_, current_poses, current_speed_bias, state_->param_delay_time);
+    }
     restoreGauge(gauge_frame_index);
 
     if (spdlog::should_log(spdlog::level::info)) {
@@ -510,22 +521,10 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
     state_->stateToParams();
     const double visual_huber_delta = params_.reproj_huber_thres * params_.visual_factor_weight;
 
-    // 旧先验保持边缘化时的线性化雅各比，仅在当前状态更新残差常数项。
-    MargLinData prior_at_current_state;
-    const MargLinData* prior_to_linearize = nullptr;
+    const MargLinData* prior_to_linearize = marginalization_prior_.get();
     if (marginalization_prior_) {
         const int num_kept = static_cast<int>(marginalization_prior_->linearization_poses.size());
         TASSEL_ASSERT(num_kept == window_capacity - 1);
-        std::vector<std::array<double, 6>> current_poses(num_kept);
-        std::vector<std::array<double, 9>> current_speed_bias(num_kept);
-        for (int i = 0; i < num_kept; ++i) {
-            current_poses[i] = state_->frames[i].pose;
-            current_speed_bias[i] = state_->frames[i].speed_bias;
-        }
-        prior_at_current_state = *marginalization_prior_;
-        prior_at_current_state.b = MargHelper::evaluatePriorResidual(
-            *marginalization_prior_, current_poses, current_speed_bias, state_->param_delay_time);
-        prior_to_linearize = &prior_at_current_state;
     }
 
     // frame1 不成为保留帧时，其宿主路标会整体退出，必须联合边缘化全部观测。
@@ -702,6 +701,8 @@ void Estimator::restoreGauge(int reference_frame_index) {
     const Eigen::Matrix3d rotation_correction =
         Eigen::AngleAxisd(yaw_correction, Eigen::Vector3d::UnitZ()).toRotationMatrix();
     const Eigen::Vector3d optimized_reference_position = optimized_reference.P;
+    const Eigen::Vector3d gauge_translation =
+        retained_position_ - rotation_correction * optimized_reference_position;
     for (int frame_index = reference_frame_index; frame_index <= state_->latest_frame_index;
          ++frame_index) {
         const FrameState& frame = state_->frames[frame_index];
@@ -716,6 +717,10 @@ void Estimator::restoreGauge(int reference_frame_index) {
             rotation_correction * (frame.P - optimized_reference_position) + retained_position_;
         frame.R = rotation_correction * frame.R;
         frame.V = rotation_correction * frame.V;
+    }
+    if (marginalization_prior_) {
+        MargHelper::transformPriorGauge(
+            *marginalization_prior_, rotation_correction, gauge_translation);
     }
 }
 

@@ -358,6 +358,131 @@ TEST(MarginalizationPriorTest, CurrentResidualMatchesStoredPrior) {
     EXPECT_TRUE(current_residual.isApprox(residual, 1e-12));
 }
 
+TEST(MarginalizationPriorTest, RecenterPreservesResidualAndLocalJacobian) {
+    constexpr int kFrames = 2;
+    constexpr int kCols = 6 + (kFrames - 1) * 15 + 1;
+    constexpr int kRows = 12;
+    MargLinData old_prior;
+    old_prior.H = Eigen::MatrixXd::Random(kRows, kCols);
+    old_prior.b = Eigen::VectorXd::Random(kRows);
+    old_prior.linearization_poses = {
+        std::array<double, 6>{0.1, -0.2, 0.3, 0.2, -0.1, 0.15},
+        std::array<double, 6>{0.4, 0.1, -0.2, -0.15, 0.25, 0.1}};
+    old_prior.linearization_speed_bias = {
+        std::array<double, 9>{0.1, 0.2, 0.3, 0.01, 0.02, 0.03, -0.01, 0.01, 0.02},
+        std::array<double, 9>{-0.2, 0.1, 0.4, -0.02, 0.01, 0.04, 0.02, -0.03, 0.01}};
+    old_prior.linearization_delay_time = 0.003;
+
+    auto poses = old_prior.linearization_poses;
+    auto speed_bias = old_prior.linearization_speed_bias;
+    poses[0] = {0.25, -0.1, 0.28, 0.27, -0.04, 0.08};
+    poses[1] = {0.5, 0.03, -0.1, -0.08, 0.31, 0.04};
+    speed_bias[1][0] += 0.08;
+    speed_bias[1][4] -= 0.02;
+    const double delay = -0.002;
+
+    const Eigen::VectorXd old_residual =
+        MargHelper::evaluatePriorResidual(old_prior, poses, speed_bias, delay);
+    MargLinData recentered = old_prior;
+    MargHelper::recenterPrior(recentered, poses, speed_bias, delay);
+    EXPECT_TRUE(recentered.b.isApprox(old_residual, 1e-12));
+
+    constexpr double kEps = 1e-7;
+    SE3RightManifold manifold;
+    for (int frame = 0; frame < kFrames; ++frame) {
+        const int col = frame == 0 ? 0 : 6;
+        for (int axis = 0; axis < 6; ++axis) {
+            double delta[6] = {};
+            delta[axis] = kEps;
+            auto perturbed_poses = poses;
+            ASSERT_TRUE(manifold.Plus(poses[frame].data(), delta, perturbed_poses[frame].data()));
+            const Eigen::VectorXd perturbed =
+                MargHelper::evaluatePriorResidual(old_prior, perturbed_poses, speed_bias, delay);
+            const Eigen::VectorXd numerical = (perturbed - old_residual) / kEps;
+            EXPECT_TRUE(numerical.isApprox(recentered.H.col(col + axis), 2e-6));
+        }
+    }
+}
+
+TEST(MarginalizationPriorTest, GaugeTransformPreservesResidual) {
+    constexpr int kFrames = 3;
+    constexpr int kCols = 6 + (kFrames - 1) * 15 + 1;
+    constexpr int kRows = 10;
+    MargLinData prior;
+    prior.H = Eigen::MatrixXd::Random(kRows, kCols);
+    prior.b = Eigen::VectorXd::Random(kRows);
+    prior.linearization_poses = {
+        std::array<double, 6>{0.1, 0.2, -0.1, 0.2, -0.1, 0.05},
+        std::array<double, 6>{0.4, -0.2, 0.3, -0.1, 0.3, 0.1},
+        std::array<double, 6>{0.7, 0.1, 0.2, 0.15, 0.2, -0.1}};
+    prior.linearization_speed_bias.resize(kFrames);
+    for (int i = 0; i < kFrames; ++i) {
+        prior.linearization_speed_bias[i] = {0.1 * i, -0.2,  0.3,  0.01, -0.02,
+                                             0.03,    -0.01, 0.02, -0.03};
+    }
+    prior.linearization_delay_time = 0.004;
+    auto poses = prior.linearization_poses;
+    auto speed_bias = prior.linearization_speed_bias;
+    for (int i = 0; i < kFrames; ++i) {
+        poses[i][0] += 0.05;
+        poses[i][2] -= 0.03;
+        poses[i][4] += 0.02;
+        speed_bias[i][0] += 0.04;
+    }
+    const double delay = -0.001;
+    const Eigen::VectorXd original =
+        MargHelper::evaluatePriorResidual(prior, poses, speed_bias, delay);
+
+    const Eigen::Matrix3d rotation =
+        Eigen::AngleAxisd(0.7, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    const Eigen::Vector3d translation(1.2, -0.4, 0.3);
+    MargHelper::transformPriorGauge(prior, rotation, translation);
+    for (int i = 0; i < kFrames; ++i) {
+        const Eigen::Vector3d position(poses[i][0], poses[i][1], poses[i][2]);
+        const Eigen::Vector3d phi(poses[i][3], poses[i][4], poses[i][5]);
+        const Eigen::Vector3d velocity(speed_bias[i][0], speed_bias[i][1], speed_bias[i][2]);
+        const Eigen::Vector3d transformed_position = rotation * position + translation;
+        const Eigen::Vector3d transformed_phi =
+            (Sophus::SO3d(rotation) * Sophus::SO3d::exp(phi)).log();
+        const Eigen::Vector3d transformed_velocity = rotation * velocity;
+        for (int d = 0; d < 3; ++d) {
+            poses[i][d] = transformed_position[d];
+            poses[i][3 + d] = transformed_phi[d];
+            speed_bias[i][d] = transformed_velocity[d];
+        }
+    }
+    const Eigen::VectorXd transformed =
+        MargHelper::evaluatePriorResidual(prior, poses, speed_bias, delay);
+    EXPECT_TRUE(transformed.isApprox(original, 1e-11));
+}
+
+TEST(MarginalizationPriorTest, RecenterRejectsRotationLogSingularity) {
+    MargLinData prior;
+    prior.H = Eigen::MatrixXd::Identity(6, 6);
+    prior.b = Eigen::VectorXd::Zero(6);
+    prior.linearization_poses = {std::array<double, 6>{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+    prior.linearization_speed_bias = {std::array<double, 9>{}};
+    auto poses = prior.linearization_poses;
+    poses[0][3] = 3.14159265358979323846;
+
+    EXPECT_THROW(
+        MargHelper::recenterPrior(prior, poses, prior.linearization_speed_bias, 0.0),
+        std::logic_error);
+}
+
+TEST(MarginalizationPriorTest, GaugeTransformRejectsNonRotation) {
+    MargLinData prior;
+    prior.H = Eigen::MatrixXd::Identity(6, 6);
+    prior.b = Eigen::VectorXd::Zero(6);
+    prior.linearization_poses = {std::array<double, 6>{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+    prior.linearization_speed_bias = {std::array<double, 9>{}};
+    Eigen::Matrix3d scaling = Eigen::Matrix3d::Identity();
+    scaling(0, 0) = 2.0;
+
+    EXPECT_THROW(
+        MargHelper::transformPriorGauge(prior, scaling, Eigen::Vector3d::Zero()), std::logic_error);
+}
+
 TEST(MarginalizationPriorTest, PoseOnlyHostMixedLayout) {
     constexpr int kFrames = 3;
     constexpr int kCols = 6 + (kFrames - 1) * 15 + 1;

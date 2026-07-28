@@ -74,7 +74,7 @@ loop_optimize_max_error: 3.0
 # 滑窗优化
 num_iterations: 8
 max_frame_count: 9
-visual_factor_weight: 6.6666667
+visual_factor_weight: 4.6666667
 num_threads: 2
 
 # 时间延迟可观测性
