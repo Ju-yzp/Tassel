@@ -30,7 +30,7 @@ namespace {
 inline bool canUseFeature(const Feature& feature, int tracked_times_thres) {
     const int observation_count = static_cast<int>(feature.observations.size());
     return feature.estimated_depth != INVALID_DEPTH && observation_count >= 2 &&
-           (feature.has_been_marginalized || observation_count >= tracked_times_thres);
+           (observation_count >= tracked_times_thres);
 }
 
 bool computeReprojectionError(
@@ -55,17 +55,16 @@ bool computeReprojectionError(
 
 FeatureManager::FeatureManager(
     double reproj_err_thres, int tracked_times_thres, double parallax_threshold,
-    double min_translation, double keyframe_new_feature_ratio, double min_depth, double max_depth)
+    double keyframe_new_feature_ratio, double min_depth, double max_depth)
     : reproj_err_thres_(reproj_err_thres),
       tracked_times_thres_(tracked_times_thres),
       parallax_threshold_(parallax_threshold),
-      min_translation_(min_translation),
       keyframe_new_feature_ratio_(keyframe_new_feature_ratio),
       min_depth_(min_depth),
       max_depth_(max_depth) {
-    if (reproj_err_thres_ <= 0.0 || tracked_times_thres_ < 2 || min_translation_ < 0.0 ||
-        parallax_threshold_ < 0.0 || keyframe_new_feature_ratio_ < 0.0 ||
-        keyframe_new_feature_ratio_ > 1.0 || min_depth_ <= 0.0 || max_depth_ <= min_depth_) {
+    if (reproj_err_thres_ <= 0.0 || tracked_times_thres_ < 2 || parallax_threshold_ < 0.0 ||
+        keyframe_new_feature_ratio_ < 0.0 || keyframe_new_feature_ratio_ > 1.0 ||
+        min_depth_ <= 0.0 || max_depth_ <= min_depth_) {
         throw std::invalid_argument("Invalid FeatureManager configuration");
     }
     features_.reserve(1000);
@@ -128,7 +127,7 @@ bool FeatureManager::addFeatureFrame(
 void FeatureManager::triangulate(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
     for (auto& item : features_) {
-        item.second.monoTriangulate(state, ric, tic, min_translation_, min_depth_);
+        item.second.monoTriangulate(state, ric, tic, min_depth_);
     }
 }
 
@@ -250,7 +249,32 @@ std::vector<MarginalizedFeatureObservation> FeatureManager::collectMarginalizedO
             continue;
         }
         feature.has_been_marginalized = true;
-        result.push_back({&feature, target_frame_index});
+        result.push_back({&feature, {target_frame_index}});
+    }
+    return result;
+}
+
+std::vector<MarginalizedFeatureObservation> FeatureManager::collectHostedLandmarks(
+    int host_frame_index) {
+    std::vector<MarginalizedFeatureObservation> result;
+    for (auto& [_, feature] : features_) {
+        if (feature.host_frame_index != host_frame_index ||
+            !canUseFeature(feature, tracked_times_thres_)) {
+            continue;
+        }
+
+        MarginalizedFeatureObservation marginalized{&feature, {}};
+        marginalized.target_frame_indices.reserve(feature.observations.size() - 1);
+        for (size_t observation_index = 1; observation_index < feature.observations.size();
+             ++observation_index) {
+            marginalized.target_frame_indices.push_back(
+                feature.observationFrameIndex(observation_index));
+        }
+        if (marginalized.target_frame_indices.empty()) {
+            throw std::logic_error("Marginalized hosted landmark has no target observation");
+        }
+        feature.has_been_marginalized = true;
+        result.push_back(std::move(marginalized));
     }
     return result;
 }

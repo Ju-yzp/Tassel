@@ -16,8 +16,7 @@ Feature::Feature(int host_frame_index, size_t max_capacity)
 }
 
 void Feature::monoTriangulate(
-    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
-    double min_translation, double min_depth) {
+    const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, double min_depth) {
     if (estimated_depth != INVALID_DEPTH || observations.size() <= 1) {
         return;
     }
@@ -28,8 +27,6 @@ void Feature::monoTriangulate(
     }
     Eigen::Matrix3d reference_r = state.frames[host_index].R * ric;
     Eigen::Vector3d reference_t = state.frames[host_index].R * tic + state.frames[host_index].P;
-    Eigen::Vector3d reference_ray = observations[0].uv.normalized();
-
     std::vector<Eigen::Matrix<double, 3, 4>> poses;
     std::vector<Eigen::Vector2d> uvs;
     poses.reserve(observations.size());
@@ -50,33 +47,19 @@ void Feature::monoTriangulate(
             state.frames[current_frame_index].R * tic + state.frames[current_frame_index].P;
         Eigen::Matrix3d dr = cur_r.transpose() * reference_r;
         Eigen::Vector3d dt = cur_r.transpose() * (reference_t - cur_t);
-        Eigen::Vector3d t_ref_cur = reference_r.transpose() * (cur_t - reference_t);
-        Eigen::Vector3d transverse_t = t_ref_cur - reference_ray * reference_ray.dot(t_ref_cur);
-
-        if (transverse_t.norm() > min_translation) {
-            Eigen::Matrix<double, 3, 4> pose;
-            pose.block<3, 3>(0, 0) = dr;
-            pose.block<3, 1>(0, 3) = dt;
-            poses.push_back(pose);
-            uvs.push_back(observation.uv.head<2>());
-        }
-    }
-
-    if (poses.size() < 2) {
-        return;
+        Eigen::Matrix<double, 3, 4> pose;
+        pose.block<3, 3>(0, 0) = dr;
+        pose.block<3, 1>(0, 3) = dt;
+        poses.push_back(pose);
+        uvs.push_back(observation.uv.head<2>());
     }
 
     double cond;
     Eigen::Vector4d h = tassel_utils::triangulateMultiView(poses, uvs, &cond);
     if (std::isfinite(cond) && cond < 1e6 && std::abs(h(3)) > 1e-12) {
-        Eigen::Vector3d p_ref = tassel_utils::dehomogenize(h);
-        bool positive_depth = std::isfinite(p_ref.z()) && p_ref.z() > min_depth;
-        for (const auto& pose : poses) {
-            Eigen::Vector3d p_cur = pose.block<3, 3>(0, 0) * p_ref + pose.block<3, 1>(0, 3);
-            positive_depth = positive_depth && std::isfinite(p_cur.z()) && p_cur.z() > min_depth;
-        }
-        if (positive_depth) {
-            estimated_depth = p_ref.z();
+        const double depth = tassel_utils::dehomogenize(h).z();
+        if (std::isfinite(depth) && depth > min_depth) {
+            estimated_depth = depth;
         }
     }
 }

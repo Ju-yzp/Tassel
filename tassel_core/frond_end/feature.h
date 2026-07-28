@@ -46,7 +46,7 @@ struct Feature {
 
     void monoTriangulate(
         const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
-        double min_translation, double min_depth);
+        double min_depth);
 
     void removeFrame(
         int frame_index, const State& state, const Eigen::Matrix3d& ric,
@@ -67,7 +67,7 @@ struct Feature {
 
 struct MarginalizedFeatureObservation {
     Feature* feature = nullptr;
-    int target_frame_index = -1;
+    std::vector<int> target_frame_indices;
 };
 }  // namespace tassel_core
 #endif  // TASSEL_CORE_FEATURE_H_

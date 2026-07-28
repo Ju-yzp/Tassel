@@ -483,8 +483,7 @@ int main(int argc, char** argv) {
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count) + 1);
     auto feature_manager = std::make_shared<FeatureManager>(
         params.reproj_err_thres, params.tracked_times_thres, params.parallax_threshold,
-        params.min_translation, params.keyframe_new_feature_ratio, params.min_depth,
-        params.max_depth);
+        params.keyframe_new_feature_ratio, params.min_depth, params.max_depth);
 
     Estimator estimator(params, state, feature_manager);
     state->camera = camera_ptr;
@@ -576,24 +575,15 @@ int main(int argc, char** argv) {
         std::cout << "[loop] disabled: no BRIEF vocabulary path provided\n";
     }
     std::optional<Sophus::SE3d> ground_truth_alignment;
-    estimator.setRealtimePoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment](
-                                          double ts, const Sophus::SE3d& pose) {
+    estimator.setPoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment](
+                                  double ts, const Sophus::SE3d& pose) {
         viewer->publishOdometry(
             "vio/odometry", pose.translation(), pose.unit_quaternion(), Eigen::Vector3d::Zero(),
-            Eigen::Vector3d::Zero());
+            Eigen::Vector3d::Zero(), ts);
+        viewer->publishPath("vio/path", pose.translation(), pose.unit_quaternion(), ts);
         if (const auto truth = interpolateGroundTruth(ground_truth, ts)) {
             if (!ground_truth_alignment) {
-                const Eigen::Matrix3d& vio_rotation = pose.rotationMatrix();
-                const Eigen::Matrix3d& truth_rotation = truth->rotationMatrix();
-                const double vio_yaw = std::atan2(vio_rotation(1, 0), vio_rotation(0, 0));
-                const double truth_yaw = std::atan2(truth_rotation(1, 0), truth_rotation(0, 0));
-                const Eigen::Matrix3d yaw_alignment =
-                    Eigen::AngleAxisd(vio_yaw - truth_yaw, Eigen::Vector3d::UnitZ())
-                        .toRotationMatrix();
-                const Eigen::Vector3d translation_alignment =
-                    pose.translation() - yaw_alignment * truth->translation();
-                // 只对齐平移和 yaw，保留真值的 roll、pitch 与尺度误差。
-                ground_truth_alignment = Sophus::SE3d(yaw_alignment, translation_alignment);
+                ground_truth_alignment = pose * truth->inverse();
             }
             const Sophus::SE3d aligned_truth = *ground_truth_alignment * *truth;
             viewer->publishPath(
@@ -603,9 +593,6 @@ int main(int argc, char** argv) {
         const Eigen::Vector3d& velocity = state->frames[state->latest_frame_index].V;
         std::cout << "[pose] t=" << ts << " p=" << pose.translation().transpose()
                   << " |V|=" << velocity.norm() << "\n";
-    });
-    estimator.setPoseCallback([&viewer](double ts, const Sophus::SE3d& pose) {
-        viewer->publishPath("vio/path", pose.translation(), pose.unit_quaternion(), ts);
     });
     estimator.setVisualFactorCallback(
         [&viewer](double /*ts*/, const std::vector<int>& visual_factors_per_frame) {

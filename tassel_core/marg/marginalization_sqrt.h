@@ -49,7 +49,10 @@ public:
         for (size_t idx = 0; idx < retiring_observations_.size(); ++idx) {
             landmark_blocks_.emplace_back(preintegrators_.empty() ? 6 : 15, loss_function_.get());
             auto& landmark_block = landmark_blocks_.back();
-            landmark_block.allocate(state_->max_frame_count, 1, preintegrators_.empty() ? 6 : 15);
+            landmark_block.allocate(
+                state_->max_frame_count,
+                static_cast<int>(retiring_observations_[idx].target_frame_indices.size()),
+                preintegrators_.empty() ? 6 : 15);
         }
         imu_blocks_.resize(preintegrators_.size());
         for (size_t idx = 0; idx < preintegrators_.size(); ++idx) {

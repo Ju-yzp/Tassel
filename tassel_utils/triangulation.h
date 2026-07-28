@@ -44,7 +44,9 @@ inline Eigen::Vector4d triangulateMultiView(
     Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeFullV);
     if (cond) {
         Eigen::VectorXd s = svd.singularValues();
-        *cond = s(0) / s(3);
+        *cond = s(2) > std::numeric_limits<double>::epsilon()
+                    ? s(0) / s(2)
+                    : std::numeric_limits<double>::infinity();
     }
     return svd.matrixV().col(3);
 }

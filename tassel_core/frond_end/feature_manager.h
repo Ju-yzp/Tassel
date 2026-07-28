@@ -26,7 +26,7 @@ class FeatureManager {
 public:
     FeatureManager(
         double reproj_err_thres, int tracked_times_thres, double parallax_threshold,
-        double min_translation, double keyframe_new_feature_ratio, double min_depth = MIN_DISTANCE,
+        double keyframe_new_feature_ratio, double min_depth = MIN_DISTANCE,
         double max_depth = MAX_DISTANCE);
 
     bool addFeatureFrame(
@@ -55,6 +55,8 @@ public:
     std::vector<MarginalizedFeatureObservation> collectMarginalizedObservations(
         int host_frame_index, int target_frame_index);
 
+    std::vector<MarginalizedFeatureObservation> collectHostedLandmarks(int host_frame_index);
+
     std::vector<HostLandmark> exportHostLandmarks(int host_frame_index, const State& state) const;
 
     std::vector<SFMFeature> collectSFMFeatures(const State& state, int first_frame_index = 0) const;
@@ -67,8 +69,6 @@ private:
     int tracked_times_thres_;
 
     double parallax_threshold_ = 0.0;
-
-    double min_translation_;
 
     double keyframe_new_feature_ratio_;
 

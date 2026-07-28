@@ -46,7 +46,6 @@ reproj_huber_thres: 1.0
 tracked_times_thres: 3
 min_depth: 0.1
 max_depth: 10.0
-min_translation: 0.06
 parallax_threshold: 25.0
 keyframe_new_feature_ratio: 0.25
 

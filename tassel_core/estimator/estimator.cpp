@@ -15,6 +15,7 @@
 #include <ceres/rotation.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <opencv2/calib3d.hpp>
 #include <opencv2/core/eigen.hpp>
@@ -31,7 +32,6 @@
 #include "imu_interpolation.h"
 #include "marg/marg_helper.h"
 #include "marg/marginalization_sqrt.h"
-#include "state/vio_gauge.h"
 #include "tassel_utils/macros.h"
 #include "tassel_utils/se3_right_manifold.h"
 
@@ -44,6 +44,21 @@ namespace {
 
 constexpr int kRetainedFrameIndex = 0;
 constexpr int kFirstActiveFrameIndex = 1;
+constexpr double kGaugeHeadingMinNorm = 1e-8;
+constexpr double kRotationTolerance = 1e-8;
+
+double rotationYaw(const Eigen::Matrix3d& rotation) {
+    if (!rotation.allFinite() ||
+        !(rotation.transpose() * rotation)
+             .isApprox(Eigen::Matrix3d::Identity(), kRotationTolerance) ||
+        std::abs(rotation.determinant() - 1.0) > kRotationTolerance) {
+        throw std::logic_error("Gauge rotation is not a valid SO(3) matrix");
+    }
+    if (std::hypot(rotation(0, 0), rotation(1, 0)) < kGaugeHeadingMinNorm) {
+        throw std::logic_error("Gauge yaw is singular at vertical body x-axis");
+    }
+    return std::atan2(rotation(1, 0), rotation(0, 0));
+}
 
 template <typename Integrator>
 std::vector<Integrator> makePreintegrators(
@@ -115,6 +130,9 @@ void Estimator::reset() {
     marginalization_prior_.reset();
     last_measurement_was_keyframe_ = false;
     frame_images_.clear();
+    retained_gauge_initialized_ = false;
+    retained_rotation_.setIdentity();
+    retained_position_.setZero();
     tassel_utils::G = Eigen::Vector3d(0, 0, params_.g_norm);
     state_->reset();
     TASSEL_ASSERT(state_->max_frame_count >= 3);
@@ -183,9 +201,6 @@ void Estimator::processMeasurement(
     if (pose_callback_) {
         pose_callback_(ts, optimized_pose);
     }
-    if (realtime_pose_callback_) {
-        realtime_pose_callback_(ts, optimized_pose);
-    }
     feature_manager_->removeOutliers(*state_, params_.ric, params_.tic);
     RetainedHostAction host_action = RetainedHostAction::Keep;
     if (!marginalization_prior_) {
@@ -224,6 +239,9 @@ void Estimator::processMeasurement(
         feature_manager_->removeFrameObservations(1, *state_, params_.ric, params_.tic);
     }
     shiftWindowAfterMarginalization(host_action);
+    if (host_action != RetainedHostAction::Keep) {
+        captureRetainedFrameGauge();
+    }
 }
 
 void Estimator::predictFrameState(
@@ -280,10 +298,13 @@ void Estimator::predictFrameState(
 
 void Estimator::optimize(double timestamp) {
     const int latest_id = state_->latest_frame_index;
-    // 保留宿主不在活动 IMU 链中，使用第一活动帧维持实时轨迹的规范连续性。
-    const int gauge_frame_index = kFirstActiveFrameIndex;
-    const Eigen::Matrix3d gauge_rotation = state_->frames[gauge_frame_index].R;
-    const Eigen::Vector3d gauge_position = state_->frames[gauge_frame_index].P;
+    const int gauge_frame_index =
+        marginalization_prior_ ? kRetainedFrameIndex : kFirstActiveFrameIndex;
+    if (!retained_gauge_initialized_) {
+        retained_rotation_ = state_->frames[gauge_frame_index].R;
+        retained_position_ = state_->frames[gauge_frame_index].P;
+        retained_gauge_initialized_ = true;
+    }
     state_->stateToParams();
     auto features = feature_manager_->collectLandmarks();
 
@@ -441,7 +462,7 @@ void Estimator::optimize(double timestamp) {
     }
 
     state_->paramsToState();
-    restoreVioGauge(*state_, gauge_frame_index, gauge_rotation, gauge_position);
+    restoreGauge(gauge_frame_index);
 
     if (spdlog::should_log(spdlog::level::info)) {
         const FrameState& final_frame = state_->frames[latest_id];
@@ -507,9 +528,13 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
         prior_to_linearize = &prior_at_current_state;
     }
 
-    // 仅将宿主帧到退出帧之间的观测写入先验。
-    // 同一路标的其他观测继续保持活跃，并保留非线性优化能力。
-    auto retiring_observations = feature_manager_->collectMarginalizedObservations(0, 1);
+    // frame1 不成为保留帧时，其宿主路标会整体退出，必须联合边缘化全部观测。
+    // Create/Replace 会保留 frame1，只写入旧宿主到 frame1 的退出观测。
+    auto retiring_observations =
+        action == RetainedHostAction::Keep
+            ? feature_manager_->collectHostedLandmarks(kFirstActiveFrameIndex)
+            : feature_manager_->collectMarginalizedObservations(
+                  kRetainedFrameIndex, kFirstActiveFrameIndex);
     visitPreintegrators([&](auto& preintegrators) {
         using Integrator = typename std::decay_t<decltype(preintegrators)>::value_type;
         std::vector<IntegratorBase<Integrator>*> imu_preintegrators;
@@ -645,6 +670,53 @@ void Estimator::shiftWindowAfterMarginalization(RetainedHostAction action) {
         preintegrators.back().reset(
             state_->frames[window_capacity - 2].Ba, state_->frames[window_capacity - 2].Bg, noise_);
     });
+}
+
+void Estimator::captureRetainedFrameGauge() {
+    const FrameState& retained_frame = state_->frames[kRetainedFrameIndex];
+    if (retained_frame.timestamp_ns == tassel_utils::kInvalidFrameId) {
+        throw std::logic_error("Cannot capture gauge from an invalid retained frame");
+    }
+    retained_rotation_ = retained_frame.R;
+    retained_position_ = retained_frame.P;
+    retained_gauge_initialized_ = true;
+}
+
+void Estimator::restoreGauge(int reference_frame_index) {
+    if (reference_frame_index < 0 || reference_frame_index > state_->latest_frame_index) {
+        throw std::out_of_range("Gauge reference frame is outside the active window");
+    }
+    if (!retained_gauge_initialized_) {
+        throw std::logic_error("Gauge anchor has not been initialized");
+    }
+    if (!retained_position_.allFinite()) {
+        throw std::logic_error("Gauge anchor position is not finite");
+    }
+
+    const FrameState& optimized_reference = state_->frames[reference_frame_index];
+    if (!optimized_reference.P.allFinite()) {
+        throw std::logic_error("Gauge reference position is not finite");
+    }
+    const double yaw_correction =
+        rotationYaw(retained_rotation_) - rotationYaw(optimized_reference.R);
+    const Eigen::Matrix3d rotation_correction =
+        Eigen::AngleAxisd(yaw_correction, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    const Eigen::Vector3d optimized_reference_position = optimized_reference.P;
+    for (int frame_index = reference_frame_index; frame_index <= state_->latest_frame_index;
+         ++frame_index) {
+        const FrameState& frame = state_->frames[frame_index];
+        if (!frame.P.allFinite() || !frame.R.allFinite() || !frame.V.allFinite()) {
+            throw std::logic_error("Gauge window contains a non-finite state");
+        }
+    }
+    for (int frame_index = reference_frame_index; frame_index <= state_->latest_frame_index;
+         ++frame_index) {
+        FrameState& frame = state_->frames[frame_index];
+        frame.P =
+            rotation_correction * (frame.P - optimized_reference_position) + retained_position_;
+        frame.R = rotation_correction * frame.R;
+        frame.V = rotation_correction * frame.V;
+    }
 }
 
 Eigen::Matrix<double, 18, 18> Estimator::initNoise() const {

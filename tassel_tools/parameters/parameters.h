@@ -53,7 +53,6 @@ struct Parameters {
     double reproj_huber_thres;
     double parallax_threshold;
     int tracked_times_thres;
-    double min_translation;
     double min_depth;
     double max_depth;
     double keyframe_new_feature_ratio;
@@ -194,7 +193,6 @@ private:
         reproj_err_thres = parser.as<double>("reproj_err_thres");
         reproj_huber_thres = parser.as<double>("reproj_huber_thres");
         tracked_times_thres = parser.as<int>("tracked_times_thres");
-        min_translation = parser.as<double>("min_translation");
         min_depth = parser.as<double>("min_depth");
         max_depth = parser.as<double>("max_depth");
         keyframe_new_feature_ratio = parser.as<double>("keyframe_new_feature_ratio");

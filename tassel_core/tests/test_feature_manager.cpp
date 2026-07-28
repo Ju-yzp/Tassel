@@ -7,6 +7,7 @@
 #include "frond_end/reprojection.h"
 #include "initial/initial_sfm.h"
 #include "state/state.h"
+#include "tassel_utils/triangulation.h"
 
 namespace tassel_core {
 namespace {
@@ -18,7 +19,7 @@ FeaturePerFrame observation(double x = 0.0, double delay = 0.0) {
     return result;
 }
 
-FeatureManager manager() { return FeatureManager(3.0, 2, 1e9, 0.0, 0.25, 0.1, 100.0); }
+FeatureManager manager() { return FeatureManager(3.0, 2, 1e9, 0.25, 0.1, 100.0); }
 
 TEST(ReprojectionTest, SplitTransformMatchesComposedTransform) {
     FrameState host;
@@ -46,6 +47,34 @@ TEST(ReprojectionTest, SplitTransformMatchesComposedTransform) {
     EXPECT_TRUE(split_point.isApprox(composed_point, 1e-12));
 }
 
+TEST(TriangulationTest, ConditionsOnlyTheNonNullSubspace) {
+    Eigen::Matrix<double, 3, 4> first = Eigen::Matrix<double, 3, 4>::Identity();
+    Eigen::Matrix<double, 3, 4> second = first;
+    second(0, 3) = -1.0;
+    const std::vector<Eigen::Matrix<double, 3, 4>> poses = {first, second};
+    const std::vector<Eigen::Vector2d> observations = {
+        Eigen::Vector2d(0.0, 0.0), Eigen::Vector2d(-0.2, 0.0)};
+
+    double condition = 0.0;
+    const Eigen::Vector4d point =
+        tassel_utils::triangulateMultiView(poses, observations, &condition);
+
+    EXPECT_TRUE(std::isfinite(condition));
+    EXPECT_LT(condition, 1e6);
+    EXPECT_NEAR(tassel_utils::dehomogenize(point).z(), 5.0, 1e-12);
+}
+
+TEST(TriangulationTest, RejectsDegenerateNonNullSubspace) {
+    const Eigen::Matrix<double, 3, 4> pose = Eigen::Matrix<double, 3, 4>::Identity();
+    const std::vector<Eigen::Matrix<double, 3, 4>> poses = {pose, pose};
+    const std::vector<Eigen::Vector2d> observations(2, Eigen::Vector2d::Zero());
+
+    double condition = 0.0;
+    tassel_utils::triangulateMultiView(poses, observations, &condition);
+
+    EXPECT_TRUE(std::isinf(condition));
+}
+
 TEST(FeatureManagerTest, MarginalizationUsesContinuousTargetFrameIndex) {
     auto fm = manager();
     Feature feature(0, 4);
@@ -55,7 +84,22 @@ TEST(FeatureManagerTest, MarginalizationUsesContinuousTargetFrameIndex) {
 
     auto marginalized = fm.collectMarginalizedObservations(0, 1);
     ASSERT_EQ(marginalized.size(), 1u);
-    EXPECT_EQ(marginalized[0].target_frame_index, 1);
+    ASSERT_EQ(marginalized[0].target_frame_indices.size(), 1u);
+    EXPECT_EQ(marginalized[0].target_frame_indices[0], 1);
+    EXPECT_TRUE(fm.features().at(1).has_been_marginalized);
+}
+
+TEST(FeatureManagerTest, CollectsEveryObservationHostedByRetiringFrame) {
+    auto fm = manager();
+    Feature feature(1, 4);
+    feature.estimated_depth = 2.0;
+    feature.observations = {observation(), observation(0.1), observation(0.2)};
+    fm.features().emplace(1, std::move(feature));
+
+    auto marginalized = fm.collectHostedLandmarks(1);
+
+    ASSERT_EQ(marginalized.size(), 1u);
+    EXPECT_EQ(marginalized[0].target_frame_indices, (std::vector<int>{2, 3}));
     EXPECT_TRUE(fm.features().at(1).has_been_marginalized);
 }
 
@@ -142,7 +186,7 @@ TEST(FeatureManagerTest, RejectsTriangulationObservationOutsideActiveWindow) {
 }
 
 TEST(FeatureManagerTest, TriangulatesDepthBeyondExportLimit) {
-    FeatureManager fm(3.0, 2, 1e9, 0.0, 0.25, 0.1, 10.0);
+    FeatureManager fm(3.0, 2, 1e9, 0.25, 0.1, 10.0);
     State state(3);
     state.latest_frame_index = 2;
     state.frames[1].P = Eigen::Vector3d(1.0, 0.0, 0.0);
@@ -155,6 +199,20 @@ TEST(FeatureManagerTest, TriangulatesDepthBeyondExportLimit) {
     fm.triangulate(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
 
     EXPECT_NEAR(fm.features().at(1).estimated_depth, 20.0, 0.1);
+}
+
+TEST(FeatureManagerTest, RejectsTriangulatedDepthBelowThreshold) {
+    FeatureManager fm(3.0, 2, 1e9, 0.25, 0.3, 10.0);
+    State state(2);
+    state.latest_frame_index = 1;
+    state.frames[1].P = Eigen::Vector3d(0.1, 0.0, 0.0);
+    Feature feature(0, 2);
+    feature.observations = {observation(0.0), observation(-0.5)};
+    fm.features().emplace(1, std::move(feature));
+
+    fm.triangulate(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+
+    EXPECT_EQ(fm.features().at(1).estimated_depth, INVALID_DEPTH);
 }
 
 TEST(FeatureManagerTest, RejectsSfmObservationOutsideActiveWindow) {

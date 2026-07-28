@@ -42,9 +42,6 @@ public:
     void setPoseCallback(std::function<void(double, const Sophus::SE3d&)> cb) {
         pose_callback_ = std::move(cb);
     }
-    void setRealtimePoseCallback(std::function<void(double, const Sophus::SE3d&)> cb) {
-        realtime_pose_callback_ = std::move(cb);
-    }
     void setVisualFactorCallback(std::function<void(double, const std::vector<int>&)> cb) {
         visual_factor_callback_ = std::move(cb);
     }
@@ -84,6 +81,10 @@ private:
 
     void shiftWindowAfterMarginalization(RetainedHostAction action);
 
+    void captureRetainedFrameGauge();
+
+    void restoreGauge(int reference_frame_index);
+
     bool tryInitialize();
 
     Eigen::Matrix<double, 18, 18> initNoise() const;
@@ -108,7 +109,6 @@ private:
     bool initialized_ = false;
     bool last_measurement_was_keyframe_ = false;
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
-    std::function<void(double, const Sophus::SE3d&)> realtime_pose_callback_;
     std::function<void(double, const std::vector<int>&)> visual_factor_callback_;
     std::shared_ptr<tassel_loop::LoopClosure> loop_closure_;
     std::map<tassel_utils::FrameId, cv::Mat> frame_images_;
@@ -118,6 +118,10 @@ private:
     Eigen::Vector3d last_imu_gyro_;
 
     std::unique_ptr<MargLinData> marginalization_prior_;
+    // 当前 frame0 首次成为保留帧时的 gauge；其保留生命周期内不再更新。
+    bool retained_gauge_initialized_ = false;
+    Eigen::Matrix3d retained_rotation_ = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d retained_position_ = Eigen::Vector3d::Zero();
 
     // 动态初始化使用,存储sfm位姿以及imu在体坐标系下的速度
     std::vector<Eigen::Matrix3d> Rs_;
