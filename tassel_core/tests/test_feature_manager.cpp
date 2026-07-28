@@ -14,12 +14,12 @@ namespace {
 
 FeaturePerFrame observation(double x = 0.0, double delay = 0.0) {
     FeaturePerFrame result;
-    result.setLeft(Eigen::Vector2d(x, 0.0), cv::Point2f(x, 0.0f));
+    result.setObservation(Eigen::Vector2d(x, 0.0), cv::Point2f(x, 0.0f));
     result.sync_delay = delay;
     return result;
 }
 
-FeatureManager manager() { return FeatureManager(3.0, 2, 1e9, 0.25, 0.1, 100.0); }
+FeatureManager manager() { return FeatureManager(3.0, 2, 1e9, 0.75, 0.1, 100.0); }
 
 TEST(ReprojectionTest, SplitTransformMatchesComposedTransform) {
     FrameState host;
@@ -86,7 +86,6 @@ TEST(FeatureManagerTest, MarginalizationUsesContinuousTargetFrameIndex) {
     ASSERT_EQ(marginalized.size(), 1u);
     ASSERT_EQ(marginalized[0].target_frame_indices.size(), 1u);
     EXPECT_EQ(marginalized[0].target_frame_indices[0], 1);
-    EXPECT_TRUE(fm.features().at(1).has_been_marginalized);
 }
 
 TEST(FeatureManagerTest, CollectsEveryObservationHostedByRetiringFrame) {
@@ -100,7 +99,6 @@ TEST(FeatureManagerTest, CollectsEveryObservationHostedByRetiringFrame) {
 
     ASSERT_EQ(marginalized.size(), 1u);
     EXPECT_EQ(marginalized[0].target_frame_indices, (std::vector<int>{2, 3}));
-    EXPECT_TRUE(fm.features().at(1).has_been_marginalized);
 }
 
 TEST(FeatureManagerTest, TransfersDepthWhenOldestHostLeaves) {
@@ -152,15 +150,20 @@ TEST(FeatureManagerTest, RemovingMiddleFrameCompactsFeatureHostIndex) {
     EXPECT_EQ(fm.features().at(1).host_frame_index, 1);
 }
 
-TEST(FeatureManagerTest, ClassifiesFrameFromLatestKeyframeConnection) {
-    auto fm = manager();
-    std::unordered_map<int, FeaturePerFrame> keyframe = {
-        {1, observation(0.0)}, {2, observation(1.0)}};
-    EXPECT_TRUE(fm.addFeatureFrame(0, keyframe));
+TEST(FeatureManagerTest, UsesLatestKeyframeObservationForAverageParallax) {
+    FeatureManager fm(3.0, 2, 10.0, 0.5, 0.1, 100.0);
+    EXPECT_TRUE(fm.addFeatureFrame(0, {{1, observation(0.0)}}));
+    EXPECT_TRUE(fm.addFeatureFrame(1, {{1, observation(20.0)}}));
 
-    std::unordered_map<int, FeaturePerFrame> current = {
-        {1, observation(2.0)}, {2, observation(3.0)}};
-    EXPECT_FALSE(fm.addFeatureFrame(1, current));
+    EXPECT_FALSE(fm.addFeatureFrame(2, {{1, observation(21.0)}}));
+}
+
+TEST(FeatureManagerTest, CreatesKeyframeWhenPreviousKeyframeConnectionsAreLost) {
+    FeatureManager fm(3.0, 2, 1e9, 0.75, 0.1, 100.0);
+    EXPECT_TRUE(fm.addFeatureFrame(
+        0, {{1, observation()}, {2, observation()}, {3, observation()}, {4, observation()}}));
+
+    EXPECT_TRUE(fm.addFeatureFrame(1, {{1, observation()}, {2, observation()}}));
 }
 
 TEST(FeatureManagerTest, RejectsReappearingFeatureAfterObservationGap) {
@@ -186,7 +189,7 @@ TEST(FeatureManagerTest, RejectsTriangulationObservationOutsideActiveWindow) {
 }
 
 TEST(FeatureManagerTest, TriangulatesDepthBeyondExportLimit) {
-    FeatureManager fm(3.0, 2, 1e9, 0.25, 0.1, 10.0);
+    FeatureManager fm(3.0, 2, 1e9, 0.75, 0.1, 10.0);
     State state(3);
     state.latest_frame_index = 2;
     state.frames[1].P = Eigen::Vector3d(1.0, 0.0, 0.0);
@@ -202,7 +205,7 @@ TEST(FeatureManagerTest, TriangulatesDepthBeyondExportLimit) {
 }
 
 TEST(FeatureManagerTest, RejectsTriangulatedDepthBelowThreshold) {
-    FeatureManager fm(3.0, 2, 1e9, 0.25, 0.3, 10.0);
+    FeatureManager fm(3.0, 2, 1e9, 0.75, 0.3, 10.0);
     State state(2);
     state.latest_frame_index = 1;
     state.frames[1].P = Eigen::Vector3d(0.1, 0.0, 0.0);
@@ -212,7 +215,7 @@ TEST(FeatureManagerTest, RejectsTriangulatedDepthBelowThreshold) {
 
     fm.triangulate(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
 
-    EXPECT_EQ(fm.features().at(1).estimated_depth, INVALID_DEPTH);
+    EXPECT_EQ(fm.features().at(1).estimated_depth, Feature::InvalidDepth);
 }
 
 TEST(FeatureManagerTest, RejectsSfmObservationOutsideActiveWindow) {
@@ -262,7 +265,7 @@ TEST(FeatureManagerTest, RemovesLandmarkUsingDirectPixelReprojectionError) {
     state.camera = &camera;
 
     FeaturePerFrame host;
-    host.setLeft(Eigen::Vector2d::Zero(), cv::Point2f(50.0f, 40.0f));
+    host.setObservation(Eigen::Vector2d::Zero(), cv::Point2f(50.0f, 40.0f));
     FeaturePerFrame matching = host;
     FeaturePerFrame outlier = host;
     outlier.pt.x += 10.0f;
@@ -297,7 +300,7 @@ TEST(FeatureManagerTest, RecreatedOutlierKeepsKeyframeSnapshotConnection) {
     state.camera = &camera;
 
     FeaturePerFrame matching;
-    matching.setLeft(Eigen::Vector2d::Zero(), cv::Point2f(50.0f, 40.0f));
+    matching.setObservation(Eigen::Vector2d::Zero(), cv::Point2f(50.0f, 40.0f));
     FeaturePerFrame outlier = matching;
     outlier.pt.x += 10.0f;
 

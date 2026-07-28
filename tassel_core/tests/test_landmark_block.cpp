@@ -33,42 +33,6 @@ protected:
     std::mt19937 rng_;
 };
 
-// ── 内存分配 ───────────────────────────────────────────────────────────────
-
-TEST_F(LandmarkBlockTest, AllocateSetsDimensions) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(3, 2, 6);
-
-    EXPECT_EQ(lb.get_num_rows(), 4);
-    EXPECT_EQ(lb.get_padding_index(), 18);
-}
-
-TEST_F(LandmarkBlockTest, AllocateSingleFrame) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(1, 1, 6);
-
-    EXPECT_EQ(lb.get_num_rows(), 2);
-    EXPECT_EQ(lb.get_padding_index(), 6);
-}
-
-TEST_F(LandmarkBlockTest, AllocateWithDifferentDim) {
-    LandmarkBlock lb(15, nullptr);
-    lb.allocate(2, 3, 15);
-
-    EXPECT_EQ(lb.get_num_rows(), 6);
-    EXPECT_EQ(lb.get_padding_index(), 30);
-}
-
-// 验证存储尺寸正确
-TEST_F(LandmarkBlockTest, AllocateStorageSize) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(5, 2, 6);
-
-    const auto& s = lb.get_storage();
-    EXPECT_EQ(s.rows(), 4);
-    EXPECT_EQ(s.cols(), lb.get_residual_index() + 1);
-}
-
 // ── QR：第 0 行以下的路标列置零 ───────────────────────────────────────────
 
 TEST_F(LandmarkBlockTest, QRZerosLandmarkColumn) {

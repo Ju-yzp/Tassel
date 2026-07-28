@@ -2,7 +2,7 @@
 // test_euroc.cpp
 //
 // 目的：
-//   EuRoC MAV Machine Hall 简单双目序列的离线集成入口。
+//   EuRoC MAV Machine Hall 单目序列的离线集成入口。
 //
 // 用法：
 //   test_euroc [config.yaml] [sequence_dir] [max_frames=0(all)] [replay_hz]
@@ -375,24 +375,9 @@ std::vector<MonoFrame> makeMonoFrames(const fs::path& sequence_dir) {
     return frames;
 }
 
-std::vector<tassel_core::Camera> initializeCameras(const tassel_tools::Parameters& params) {
-    std::vector<tassel_core::Camera> result;
-    for (auto const& [id, T_ci] : params.T_cam_imu_map) {
-        (void)T_ci;
-        if (params.cam_intrinsic_map.find(id) == params.cam_intrinsic_map.end() ||
-            params.cam_distort_map.find(id) == params.cam_distort_map.end()) {
-            continue;
-        }
-        cv::Mat k = params.cam_intrinsic_map.at(id);
-        cv::Mat dist = params.cam_distort_map.at(id);
-        const auto model = params.camera_model_map.find(id);
-        if (model == params.camera_model_map.end()) {
-            throw std::runtime_error("Missing camera model for camera " + std::to_string(id));
-        }
-        result.emplace_back(
-            tassel_core::CameraFactory::create(model->second, k, dist, params.cols, params.rows));
-    }
-    return result;
+tassel_core::Camera initializeCamera(const tassel_tools::Parameters& params) {
+    return tassel_core::CameraFactory::create(
+        params.camera_model, params.cam_intrinsic, params.cam_distort, params.cols, params.rows);
 }
 
 void publishMonoImage(
@@ -441,11 +426,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto cameras = initializeCameras(params);
-    if (cameras.empty()) {
-        std::cerr << "[EuRoC] need one camera in config: " << config_path << "\n";
-        return 1;
-    }
+    auto camera = initializeCamera(params);
 
     rclcpp::init(argc, argv);
     auto viewer = std::make_shared<tassel_tools::Viewer>("world");
@@ -470,20 +451,17 @@ int main(int argc, char** argv) {
         }
     });
 
-    const CameraBase* camera_ptr = cameras[0].get();
+    const CameraBase* camera_ptr = camera.get();
     FeatureTracker tracker(
         params.flow_back, params.max_square_move_dist, false, 5, params.min_gradient);
-    tracker.addCamera(
-        std::move(cameras[0]), params.per_grid_rows, params.per_grid_cols, params.edge_y,
-        params.edge_x, params.mask_radius, params.min_feature_num);
-    tracker.addCamera(
-        std::move(cameras[1]), params.per_grid_rows, params.per_grid_cols, params.edge_y,
-        params.edge_x, params.mask_radius, params.min_feature_num);
+    tracker.setCamera(
+        std::move(camera), params.per_grid_rows, params.per_grid_cols, params.edge_y, params.edge_x,
+        params.mask_radius, params.min_feature_num);
 
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count) + 1);
     auto feature_manager = std::make_shared<FeatureManager>(
-        params.reproj_err_thres, params.tracked_times_thres, params.parallax_threshold,
-        params.keyframe_new_feature_ratio, params.min_depth, params.max_depth);
+        params.reproj_err_thres, params.min_landmark_observations, params.parallax_threshold,
+        params.keyframe_min_connection_ratio, params.min_depth, params.max_depth);
 
     Estimator estimator(params, state, feature_manager);
     state->camera = camera_ptr;
@@ -760,7 +738,7 @@ int main(int argc, char** argv) {
         std::unordered_map<int, FeaturePerFrame> feature_frame;
         {
             tassel_utils::Timer t("euroc_mono_tracking");
-            feature_frame = tracker.monoTracking(0, packet.mono->left_img);
+            feature_frame = tracker.monoTracking(packet.mono->left_img);
         }
         for (auto& [id, feature] : feature_frame) {
             (void)id;
@@ -768,7 +746,7 @@ int main(int argc, char** argv) {
         }
 
         cv::Mat left_tracking = packet.mono->left_img.clone();
-        tracker.drawTrackingResult(0, left_tracking);
+        tracker.drawTrackingResult(left_tracking);
         {
             std::lock_guard<std::mutex> lock(latest_image_mutex);
             latest_image.image = std::move(left_tracking);

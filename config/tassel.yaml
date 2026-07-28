@@ -12,19 +12,6 @@ cam0:
         - [0.0, 806.137546, 344.852773]
         - [0.0, 0.0, 1.0]
 
-cam1:
-    camera_model: radtan
-    T_cam_imu:
-        - [-0.00205114, 0.99998305, -0.00544840, -0.00487269]
-        - [0.99998103, 0.00201943, -0.00581922, -0.00069514]
-        - [-0.00580812, -0.00546023, -0.99996823, -0.00537052]
-        - [0.0, 0.0, 0.0, 1.0]
-    distortion_coeffs: [0.00352322, -0.04856968, 9.228e-05, 0.00055914]
-    intrinsics:
-        - [811.349145, 0.0, 634.047312]
-        - [0.0, 808.546599, 365.454054]
-        - [0.0, 0.0, 1.0]
-
 # 图像与特征跟踪
 rows: 720
 cols: 1280
@@ -43,11 +30,11 @@ enable_statistics: true
 # 特征与关键帧管理
 reproj_err_thres: 1.4
 reproj_huber_thres: 1.0
-tracked_times_thres: 3
+min_landmark_observations: 3
 min_depth: 0.3
 max_depth: 5.0
 parallax_threshold: 25.0
-keyframe_new_feature_ratio: 0.25
+keyframe_min_connection_ratio: 0.75
 
 # 回环检测与位姿图
 loop_fast_threshold: 20

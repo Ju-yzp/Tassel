@@ -38,6 +38,8 @@ message(STATUS "tassel_tools tests:")
 tassel_add_tests(
   TEST_DIR
   "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+  MANUAL_TEST_NAMES
+  test_viewer
   LINK_LIBS
   tassel_tools
   INCLUDE_DIRS

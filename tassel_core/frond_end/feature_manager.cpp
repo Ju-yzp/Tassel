@@ -27,10 +27,9 @@
 namespace tassel_core {
 
 namespace {
-inline bool canUseFeature(const Feature& feature, int tracked_times_thres) {
-    const int observation_count = static_cast<int>(feature.observations.size());
-    return feature.estimated_depth != INVALID_DEPTH && observation_count >= 2 &&
-           (observation_count >= tracked_times_thres);
+inline bool canUseFeature(const Feature& feature, int min_observations) {
+    return feature.estimated_depth != Feature::InvalidDepth &&
+           static_cast<int>(feature.observations.size()) >= min_observations;
 }
 
 bool computeReprojectionError(
@@ -54,16 +53,16 @@ bool computeReprojectionError(
 }  // namespace
 
 FeatureManager::FeatureManager(
-    double reproj_err_thres, int tracked_times_thres, double parallax_threshold,
-    double keyframe_new_feature_ratio, double min_depth, double max_depth)
+    double reproj_err_thres, int min_landmark_observations, double parallax_threshold,
+    double keyframe_min_connection_ratio, double min_depth, double max_depth)
     : reproj_err_thres_(reproj_err_thres),
-      tracked_times_thres_(tracked_times_thres),
+      min_landmark_observations_(min_landmark_observations),
       parallax_threshold_(parallax_threshold),
-      keyframe_new_feature_ratio_(keyframe_new_feature_ratio),
+      keyframe_min_connection_ratio_(keyframe_min_connection_ratio),
       min_depth_(min_depth),
       max_depth_(max_depth) {
-    if (reproj_err_thres_ <= 0.0 || tracked_times_thres_ < 2 || parallax_threshold_ < 0.0 ||
-        keyframe_new_feature_ratio_ < 0.0 || keyframe_new_feature_ratio_ > 1.0 ||
+    if (reproj_err_thres_ <= 0.0 || min_landmark_observations_ < 2 || parallax_threshold_ < 0.0 ||
+        keyframe_min_connection_ratio_ < 0.0 || keyframe_min_connection_ratio_ > 1.0 ||
         min_depth_ <= 0.0 || max_depth_ <= min_depth_) {
         throw std::invalid_argument("Invalid FeatureManager configuration");
     }
@@ -73,24 +72,22 @@ FeatureManager::FeatureManager(
 bool FeatureManager::addFeatureFrame(
     int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
     const bool has_keyframe = hasLatestKeyframe();
-    std::unordered_set<int> current_feature_ids;
-    current_feature_ids.reserve(feature_frame.size());
+    std::unordered_map<int, cv::Point2f> current_observations;
+    current_observations.reserve(feature_frame.size());
 
     int connected_to_keyframe_count = 0;
     double parallax_sum = 0.0;
     int valid_parallax_count = 0;
     for (const auto& [id, per_frame_feature] : feature_frame) {
-        current_feature_ids.insert(id);
+        current_observations.emplace(id, per_frame_feature.pt);
         auto it = features_.find(id);
-        if (latest_keyframe_feature_ids_.contains(id)) {
+        const auto keyframe_observation = latest_keyframe_observations_.find(id);
+        if (keyframe_observation != latest_keyframe_observations_.end()) {
             ++connected_to_keyframe_count;
-            if (it != features_.end()) {
-                ++valid_parallax_count;
-                const auto& keyframe_point = it->second.observations.front().pt;
-                const double dx = keyframe_point.x - per_frame_feature.pt.x;
-                const double dy = keyframe_point.y - per_frame_feature.pt.y;
-                parallax_sum += std::sqrt(dx * dx + dy * dy);
-            }
+            ++valid_parallax_count;
+            const double dx = keyframe_observation->second.x - per_frame_feature.pt.x;
+            const double dy = keyframe_observation->second.y - per_frame_feature.pt.y;
+            parallax_sum += std::sqrt(dx * dx + dy * dy);
         }
         FeaturePerFrame observation = per_frame_feature;
 
@@ -111,15 +108,14 @@ bool FeatureManager::addFeatureFrame(
     const double average_parallax =
         valid_parallax_count > 0 ? parallax_sum / static_cast<double>(valid_parallax_count) : 0.0;
     const double connection_ratio =
-        latest_keyframe_feature_ids_.empty()
+        latest_keyframe_observations_.empty()
             ? 0.0
             : static_cast<double>(connected_to_keyframe_count) /
-                  static_cast<double>(latest_keyframe_feature_ids_.size());
-    const bool is_keyframe = !has_keyframe ||
-                             connection_ratio <= (1.0 - keyframe_new_feature_ratio_) ||
+                  static_cast<double>(latest_keyframe_observations_.size());
+    const bool is_keyframe = !has_keyframe || connection_ratio < keyframe_min_connection_ratio_ ||
                              average_parallax >= parallax_threshold_;
     if (is_keyframe) {
-        latest_keyframe_feature_ids_.swap(current_feature_ids);
+        latest_keyframe_observations_.swap(current_observations);
     }
     return is_keyframe;
 }
@@ -192,7 +188,7 @@ void FeatureManager::removeOutliers(
 
     std::erase_if(features_, [&](const auto& item) {
         const Feature& feature = item.second;
-        if (!canUseFeature(feature, tracked_times_thres_)) {
+        if (!canUseFeature(feature, min_landmark_observations_)) {
             return false;
         }
 
@@ -231,7 +227,7 @@ void FeatureManager::removeOutliers(
 
 void FeatureManager::reset() {
     features_.clear();
-    latest_keyframe_feature_ids_.clear();
+    latest_keyframe_observations_.clear();
 }
 
 std::vector<MarginalizedFeatureObservation> FeatureManager::collectMarginalizedObservations(
@@ -240,7 +236,7 @@ std::vector<MarginalizedFeatureObservation> FeatureManager::collectMarginalizedO
     for (auto& item : features_) {
         auto& feature = item.second;
         if (feature.host_frame_index != host_frame_index ||
-            !canUseFeature(feature, tracked_times_thres_)) {
+            !canUseFeature(feature, min_landmark_observations_)) {
             continue;
         }
         const int observation_index = target_frame_index - feature.host_frame_index;
@@ -248,7 +244,6 @@ std::vector<MarginalizedFeatureObservation> FeatureManager::collectMarginalizedO
             observation_index >= static_cast<int>(feature.observations.size())) {
             continue;
         }
-        feature.has_been_marginalized = true;
         result.push_back({&feature, {target_frame_index}});
     }
     return result;
@@ -259,7 +254,7 @@ std::vector<MarginalizedFeatureObservation> FeatureManager::collectHostedLandmar
     std::vector<MarginalizedFeatureObservation> result;
     for (auto& [_, feature] : features_) {
         if (feature.host_frame_index != host_frame_index ||
-            !canUseFeature(feature, tracked_times_thres_)) {
+            !canUseFeature(feature, min_landmark_observations_)) {
             continue;
         }
 
@@ -273,7 +268,6 @@ std::vector<MarginalizedFeatureObservation> FeatureManager::collectHostedLandmar
         if (marginalized.target_frame_indices.empty()) {
             throw std::logic_error("Marginalized hosted landmark has no target observation");
         }
-        feature.has_been_marginalized = true;
         result.push_back(std::move(marginalized));
     }
     return result;
@@ -309,7 +303,7 @@ std::vector<Feature*> FeatureManager::collectLandmarks() {
     std::vector<Feature*> result;
     for (auto& item : features_) {
         auto& feature = item.second;
-        if (!canUseFeature(feature, tracked_times_thres_)) {
+        if (!canUseFeature(feature, min_landmark_observations_)) {
             continue;
         }
         result.push_back(&feature);

@@ -15,8 +15,8 @@ TEST(EstimatorKeyframeTest, ReportsLatestDecisionAndClearsItOnReset) {
     tassel_tools::Parameters params(config.string());
     auto state = std::make_shared<tassel_core::State>(static_cast<int>(params.max_frame_count) + 1);
     auto feature_manager = std::make_shared<tassel_core::FeatureManager>(
-        params.reproj_err_thres, params.tracked_times_thres, params.parallax_threshold,
-        params.keyframe_new_feature_ratio, params.min_depth, params.max_depth);
+        params.reproj_err_thres, params.min_landmark_observations, params.parallax_threshold,
+        params.keyframe_min_connection_ratio, params.min_depth, params.max_depth);
     tassel_core::Estimator estimator(params, state, feature_manager);
 
     EXPECT_FALSE(estimator.lastMeasurementWasKeyframe());

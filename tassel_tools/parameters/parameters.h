@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
-#include <map>
 #include <opencv2/core.hpp>
 #include <stdexcept>
 #include <string>
@@ -30,10 +29,9 @@ struct Parameters {
     }
 
     // 相机标定：用于 test_estimator 相机构造、特征管理器三角化、视觉因子、初始化和世界/IMU 对齐。
-    std::map<size_t, Eigen::Matrix4d> T_cam_imu_map;
-    std::map<size_t, std::string> camera_model_map;
-    std::map<size_t, cv::Mat> cam_distort_map;
-    std::map<size_t, cv::Mat> cam_intrinsic_map;
+    std::string camera_model;
+    cv::Mat cam_distort;
+    cv::Mat cam_intrinsic;
     Eigen::Matrix3d ric = Eigen::Matrix3d::Identity();
     Eigen::Vector3d tic = Eigen::Vector3d::Zero();
 
@@ -52,10 +50,10 @@ struct Parameters {
     double reproj_err_thres;
     double reproj_huber_thres;
     double parallax_threshold;
-    int tracked_times_thres;
+    int min_landmark_observations;
     double min_depth;
     double max_depth;
-    double keyframe_new_feature_ratio;
+    double keyframe_min_connection_ratio;
 
     // 回环检测与位姿图：用于DBoW检索、贝叶斯门控、PnP验证和GTSAM回环因子。
     int loop_fast_threshold;
@@ -131,8 +129,11 @@ private:
         if (acc_n <= 0.0 || acc_w <= 0.0 || gyr_n <= 0.0 || gyr_w <= 0.0 || g_norm <= 0.0) {
             throw std::invalid_argument("IMU noise and gravity parameters must be positive");
         }
-        if (keyframe_new_feature_ratio < 0.0 || keyframe_new_feature_ratio > 1.0) {
-            throw std::invalid_argument("keyframe_new_feature_ratio must be in [0, 1]");
+        if (min_landmark_observations < 2) {
+            throw std::invalid_argument("min_landmark_observations must be at least 2");
+        }
+        if (keyframe_min_connection_ratio < 0.0 || keyframe_min_connection_ratio > 1.0) {
+            throw std::invalid_argument("keyframe_min_connection_ratio must be in [0, 1]");
         }
         if (loop_fast_threshold <= 0 || loop_max_keypoints <= 0 || loop_recent_exclusion < 0 ||
             loop_top_k <= 0 || loop_likelihood_pool_size < loop_top_k || loop_min_score < 0.0 ||
@@ -147,31 +148,21 @@ private:
             loop_pnp_max_translation_variance < 0.0 || loop_optimize_max_error < 0.0) {
             throw std::invalid_argument("Invalid loop closure parameters");
         }
-        for (const auto& [camera_id, model] : camera_model_map) {
-            (void)camera_id;
-            if (model != "radtan" && model != "equi") {
-                throw std::invalid_argument("Unsupported camera_model: " + model);
-            }
+        if (camera_model != "radtan" && camera_model != "equi") {
+            throw std::invalid_argument("Unsupported camera_model: " + camera_model);
         }
         if (init_scale_zero_threshold < 0.0) {
             throw std::invalid_argument("init_scale_zero_threshold must be non-negative");
         }
     }
 
-    static void loadCamera(ParamsParser& parser, size_t id, Parameters& params) {
-        const std::string cam_key = "cam" + std::to_string(id);
-        params.camera_model_map[id] =
-            normalizeToken(parser.as<std::string>(cam_key, "camera_model"));
-        params.cam_intrinsic_map[id] = parser.as<cv::Mat>(cam_key, "intrinsics");
-        params.cam_distort_map[id] = parser.as<cv::Mat>(cam_key, "distortion_coeffs");
-        params.T_cam_imu_map[id] = parser.as<Eigen::Matrix4d>(cam_key, "T_cam_imu").inverse();
-    }
-
     void loadCameras(ParamsParser& parser) {
-        loadCamera(parser, 0, *this);
-        loadCamera(parser, 1, *this);
-        ric = T_cam_imu_map[0].block<3, 3>(0, 0);
-        tic = T_cam_imu_map[0].block<3, 1>(0, 3);
+        camera_model = normalizeToken(parser.as<std::string>("cam0", "camera_model"));
+        cam_intrinsic = parser.as<cv::Mat>("cam0", "intrinsics");
+        cam_distort = parser.as<cv::Mat>("cam0", "distortion_coeffs");
+        const Eigen::Matrix4d T_imu_cam = parser.as<Eigen::Matrix4d>("cam0", "T_cam_imu").inverse();
+        ric = T_imu_cam.block<3, 3>(0, 0);
+        tic = T_imu_cam.block<3, 1>(0, 3);
     }
 
     void loadTracker(ParamsParser& parser) {
@@ -192,10 +183,10 @@ private:
     void loadFeatureManager(ParamsParser& parser) {
         reproj_err_thres = parser.as<double>("reproj_err_thres");
         reproj_huber_thres = parser.as<double>("reproj_huber_thres");
-        tracked_times_thres = parser.as<int>("tracked_times_thres");
+        min_landmark_observations = parser.as<int>("min_landmark_observations");
         min_depth = parser.as<double>("min_depth");
         max_depth = parser.as<double>("max_depth");
-        keyframe_new_feature_ratio = parser.as<double>("keyframe_new_feature_ratio");
+        keyframe_min_connection_ratio = parser.as<double>("keyframe_min_connection_ratio");
         parallax_threshold = parser.as<double>("parallax_threshold");
     }
 

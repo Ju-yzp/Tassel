@@ -29,6 +29,8 @@ message(STATUS "tassel_core tests:")
 tassel_add_tests(
   TEST_DIR
   "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+  MANUAL_TEST_NAMES
+  test_euroc
   LINK_LIBS
   tassel_core
   tassel_loop

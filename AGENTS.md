@@ -2,7 +2,10 @@
 
 ## Code Implementation
 
-- Every class with functional behavior must have unit tests. Pure data structures do not require dedicated tests.
+- Add automated tests only for stable, deterministic code contracts or regressions that can be reproduced without user data or runtime infrastructure.
+- Parameter parsing, mathematical invariants, and internal error contracts are suitable for automated tests.
+- User configuration values, dataset availability, ROS/runtime environment, tuning results, and trajectory quality are user validation concerns; keep them out of unit tests and verify them through explicit manual runs when the required conditions exist.
+- Pure data structures and trivial forwarding or assignment behavior do not require dedicated tests.
 - Code must remain concise and maintainable.
 - Function names must clearly communicate their intent.
 - Variable, structure, and class names must be short and intention-revealing.

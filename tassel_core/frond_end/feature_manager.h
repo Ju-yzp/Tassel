@@ -4,7 +4,6 @@
 // 标准库
 #include <Eigen/Core>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 // Tassel
@@ -25,9 +24,8 @@ struct HostLandmark {
 class FeatureManager {
 public:
     FeatureManager(
-        double reproj_err_thres, int tracked_times_thres, double parallax_threshold,
-        double keyframe_new_feature_ratio, double min_depth = MIN_DISTANCE,
-        double max_depth = MAX_DISTANCE);
+        double reproj_err_thres, int min_landmark_observations, double parallax_threshold,
+        double keyframe_min_connection_ratio, double min_depth, double max_depth);
 
     bool addFeatureFrame(
         int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
@@ -46,7 +44,7 @@ public:
 
     void removeOutliers(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
-    bool hasLatestKeyframe() const { return !latest_keyframe_feature_ids_.empty(); }
+    bool hasLatestKeyframe() const { return !latest_keyframe_observations_.empty(); }
 
     void reset();
 
@@ -66,15 +64,15 @@ public:
 private:
     double reproj_err_thres_;
 
-    int tracked_times_thres_;
+    int min_landmark_observations_;
 
     double parallax_threshold_ = 0.0;
 
-    double keyframe_new_feature_ratio_;
+    double keyframe_min_connection_ratio_;
 
     double min_depth_, max_depth_;
 
-    std::unordered_set<int> latest_keyframe_feature_ids_;
+    std::unordered_map<int, cv::Point2f> latest_keyframe_observations_;
 
     std::unordered_map<int, Feature> features_;
 };

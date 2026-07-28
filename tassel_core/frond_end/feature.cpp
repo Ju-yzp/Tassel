@@ -11,13 +11,13 @@
 
 namespace tassel_core {
 Feature::Feature(int host_frame_index, size_t max_capacity)
-    : host_frame_index(host_frame_index), estimated_depth(INVALID_DEPTH) {
+    : host_frame_index(host_frame_index), estimated_depth(InvalidDepth) {
     observations.reserve(max_capacity);
 }
 
 void Feature::monoTriangulate(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, double min_depth) {
-    if (estimated_depth != INVALID_DEPTH || observations.size() <= 1) {
+    if (estimated_depth != InvalidDepth || observations.size() <= 1) {
         return;
     }
 
@@ -79,7 +79,7 @@ void Feature::removeFrame(
         } else {
             observations.erase(removed_it);
             host_frame_index = new_host_index;
-            estimated_depth = INVALID_DEPTH;
+            estimated_depth = InvalidDepth;
         }
         return;
     }
@@ -94,7 +94,7 @@ bool Feature::transferHost(
     if (old_frame_index < 0 || new_host_index > state.latest_frame_index ||
         new_observation_index <= 0 ||
         new_observation_index >= static_cast<int>(observations.size()) ||
-        estimated_depth == INVALID_DEPTH) {
+        estimated_depth == InvalidDepth) {
         return false;
     }
     const int new_frame_index = new_host_index;

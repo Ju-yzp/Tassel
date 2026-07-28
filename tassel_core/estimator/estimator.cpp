@@ -498,7 +498,7 @@ void Estimator::optimize(double timestamp) {
 
     for (size_t k = 0; k < features.size(); ++k) {
         double inv_d = inv_depth_params[k];
-        double d = (inv_d > 1e-6) ? (1.0 / inv_d) : INVALID_DEPTH;
+        double d = (inv_d > 1e-6) ? (1.0 / inv_d) : Feature::InvalidDepth;
         features[k]->estimated_depth = d;
     }
 

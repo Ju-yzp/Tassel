@@ -145,22 +145,3 @@ TEST_F(ParamsParserTest, ThrowsOnWrongType) {
 TEST_F(ParamsParserTest, ThrowsOnMissingNestedKey) {
     EXPECT_THROW(parser_->as<int>("cam0", "nonexistent"), std::runtime_error);
 }
-
-TEST_F(ParamsParserTest, PrintedContent) {
-    std::ostringstream oss;
-    oss << "int_val: " << parser_->as<int>("int_val") << "\n"
-        << "double_val: " << parser_->as<double>("double_val") << "\n"
-        << "bool_true: " << parser_->as<bool>("bool_true") << "\n"
-        << "string_val: " << parser_->as<std::string>("string_val") << "\n"
-        << "size_val: " << parser_->as<size_t>("size_val") << "\n"
-        << "nested inner.value: " << parser_->as<int>("outer", "inner", "value");
-
-    std::string out = oss.str();
-    EXPECT_NE(out.find("int_val: 42"), std::string::npos);
-    EXPECT_NE(out.find("double_val: 3.14159"), std::string::npos);
-    EXPECT_NE(out.find("bool_true: 1"), std::string::npos);
-    EXPECT_NE(out.find("string_val: hello_tassel"), std::string::npos);
-    EXPECT_NE(out.find("nested inner.value: 777"), std::string::npos);
-
-    std::cout << "\n─── ParamsParser read results ───\n" << out << "\n\n";
-}

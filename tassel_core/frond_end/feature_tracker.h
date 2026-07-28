@@ -13,27 +13,27 @@
 #include "feature.h"
 
 namespace tassel_core {
+class FeatureTrackerTestAccess;
+
 class FeatureTracker {
 public:
     FeatureTracker(
         bool flow_back = false, double max_square_move_dist = 0.5, bool enable_statistics = false,
-        int tracked_times_thres = 5, double min_gradient = 50.0);
+        int track_age_color_scale = 5, double min_gradient = 50.0);
 
-    void addCamera(
+    void setCamera(
         Camera camera, int per_grid_rows = 4, int per_grid_cols = 4, int grid_edge_rows = 2,
         int grid_edge_cols = 2, double mask_radius = 15.0, int min_feature_num = 100);
 
-    std::unordered_map<int, FeaturePerFrame> monoTracking(size_t camera_id, const cv::Mat& img);
-
-    std::unordered_map<int, FeaturePerFrame> stereoTracking(
-        size_t left_camera_id, const cv::Mat& left_img, size_t right_camera_id,
-        const cv::Mat& right_img);
+    std::unordered_map<int, FeaturePerFrame> monoTracking(const cv::Mat& img);
 
     void reset();
 
-    void drawTrackingResult(size_t camera_id, cv::Mat& img);
+    void drawTrackingResult(cv::Mat& img);
 
 private:
+    friend class FeatureTrackerTestAccess;
+
     struct CameraTrackingContext {
         // 特征信息
         std::vector<cv::Point2f> prev_pts;
@@ -72,23 +72,23 @@ private:
         return dx * dx + dy * dy;
     }
 
-    void extractNewFeatures(size_t camera_id, const cv::Mat& img, std::vector<cv::Point2f>& pts);
+    void extractNewFeatures(const cv::Mat& img, std::vector<cv::Point2f>& pts);
 
     void monoMatching(
-        size_t camera_id, const cv::Mat& prev_img, const cv::Mat& cur_img,
-        std::vector<cv::Point2f>& prev_pts, std::vector<cv::Point2f>& cur_pts,
-        std::vector<size_t>& prev_ids, std::vector<size_t>& cur_ids);
+        const cv::Mat& prev_img, const cv::Mat& cur_img, std::vector<cv::Point2f>& prev_pts,
+        std::vector<cv::Point2f>& cur_pts, std::vector<size_t>& prev_ids,
+        std::vector<size_t>& cur_ids);
 
-    void setMask(size_t camera_id);
+    void setMask();
 
-    std::unordered_map<size_t, CameraTrackingContext> ctc_map_;
+    CameraTrackingContext ctc_;
 
     bool flow_back_;
 
     double max_square_move_dist_;
 
     bool enable_statistics_;
-    int tracked_times_thres_;
+    int track_age_color_scale_;
     double min_gradient_thres_;
 };
 }  // namespace tassel_core
