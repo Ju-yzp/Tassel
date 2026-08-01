@@ -2,14 +2,13 @@
 
 Tassel 是学士帽上的流苏，这寓意着这是送给作者 2027 年毕业的礼物。
 
-![Tassel VIO 演示](media/2026-07-18-03-02-23.gif)
+[![Tassel VIO 演示](media/bilibili_preview.jpg)](https://www.bilibili.com/video/BV1ukGA6sEuq/?vd_source=db129daae448e5d2371829d459869e86)
 
-[在 Bilibili 查看完整演示视频](https://www.bilibili.com/video/BV1TqKq6NE3t/?vd_source=db129daae448e5d2371829d459869e86)
+[在 Bilibili 查看完整演示视频](https://www.bilibili.com/video/BV1ukGA6sEuq/?vd_source=db129daae448e5d2371829d459869e86)
 
 ## 核心特点
 
-局部估计器主要参考 Open-VINS、VINS-Mono 和 Basalt 的相关设计；回环候选管理、
-时序假设过滤、几何验证和位姿图组织参考了 RTAB-Map 的成熟机制。Tassel 保持独立实现，
+局部估计器主要参考 Open-VINS、VINS-Mono 和 Basalt 的相关设计。Tassel 保持独立实现，
 参考项目的版权和许可证归其原作者所有。
 
 - **在线时间延迟估计**：通过[时间延迟运动补偿模型](doc/time_delay_motion_model.md)，
@@ -19,23 +18,21 @@ Tassel 是学士帽上的流苏，这寓意着这是送给作者 2027 年毕业�
 - **SFM 与惯性对齐初始化**：先通过[单目 SFM](doc/sfm_initialization.md)恢复无尺度
   视觉轨迹，再通过[惯性对齐](doc/inertial_alignment.md)顺序估计陀螺仪偏置、尺度、
   重力和速度。
-- **异步回环组件**：估计器提交位姿、关键帧和历史路标事务，回环组件在独立任务中完成
-  BRIEF/DBoW3 检索、时序后验门控、PnP 几何验证和 GTSAM 位姿图优化。
-- **局部与全局解耦**：回环结果用于重建全局轨迹，不直接修改 VIO 滑窗状态、边缘化先验
-  或既有线性化点。
+- **自有硬件适配层**：Nori 双目惯性模组的 V4L2 采集、设备时间戳和内嵌 IMU 数据解析
+  位于独立的 `tassel_hardware` 模块，不让估计器依赖设备协议或 ROS。
 - **对极几何因子预留**：源码中已包含对极几何因子，后续将继续完成与当前单目初始化流程的适配。
 
 ## 当前边界
 
-- 当前回环使用 BRIEF 描述子和 DBoW3 词典，词典需要提前训练。
-- 回环约束必须通过历史深度路标 PnP 验证；仅有图像相似度不会写入位姿图。
-- 全局轨迹接受回环修正，局部 VIO 保持连续但不回写全局修正。
+- 当前仓库只维护局部视觉惯性里程计和硬件采集适配层，回环模块已经移除。
 - 动态场景、强光照变化、弱纹理和长期地图管理仍需要继续验证。
 
 ## 项目框架
 
 ```text
 Tassel
+├── tassel_hardware/            # 自有传感器硬件适配层
+│   └── nori/                   # V4L2 采集、设备协议和时间戳/IMU 解码
 ├── tassel_core/                # 局部视觉惯性估计器
 │   ├── frond_end/              # 单目/多相机跟踪、路标管理、三角化与离群点剔除
 │   ├── factor/                 # 重投影、IMU、先验因子及预积分器
@@ -45,13 +42,6 @@ Tassel
 │   ├── cam/                    # 相机模型与投影接口
 │   ├── estimator/              # 单目 VIO、状态传播、优化、边缘化与窗口管理
 │   └── tests/                  # 核心模块测试
-├── tassel_loop/                # 异步回环和全局位姿图
-│   ├── loop_database.*         # BRIEF/DBoW3 检索与候选似然
-│   ├── loop_hypothesis_tracker.* # 时序后验和候选门控
-│   ├── pnp_verifier.*          # 历史路标 PnP 几何验证
-│   ├── pose_graph.*            # GTSAM 里程计边与回环边优化
-│   ├── trajectory_corrector.*  # 全局关键帧修正传播到稠密轨迹
-│   └── tests/                  # 回环模块测试
 ├── tassel_tools/               # 配套工具模块
 │   ├── parameters/             # YAML 配置读取与参数组织
 │   ├── viewer/                 # ROS 2 话题发布与 Foxglove 启动器
@@ -125,6 +115,19 @@ cmake -S . -B build \
 cmake --build build -j2
 ```
 
+## Nori 硬件运行
+
+`tassel_hardware` 是不依赖 ROS 的自有硬件层，负责 Nori 的 V4L2 采集和图像内嵌的
+时间戳/IMU 协议解析。`test_nori_estimator` 在其上完成图像跟踪、IMU 按曝光结束时间同步和
+局部 VIO；参数依次为配置、设备节点、最大帧数和跟踪图像缩放比例：
+
+```bash
+./build/tassel_core/test_nori_estimator config/tassel.yaml /dev/video4 0 0.4
+```
+
+其中最大帧数为 `0` 时持续运行。缩放比例只影响跟踪图像与其相机内参，设备始终以
+`4000x1200 YUYV@30 Hz` 采集，保证时间戳条带和 IMU 数据在解码前保持原始布局。
+
 ## EuRoC 数据集运行
 
 当前 EuRoC 测试使用单目相机，只读取 `mav0/cam0/data.csv` 和
@@ -151,7 +154,6 @@ cmake --build build -j2
 程序运行时会输出：
 
 - SFM、陀螺仪偏置、重力方向和尺度初始化结果。
-- 回环候选、PnP 验证、拒绝原因和位姿图优化结果（启用词典时）。
 - 最终处理帧数、窗口最新帧索引和最终位姿。
 
 例如，使用短序列快速验证数据流：
@@ -164,48 +166,8 @@ cmake --build build -j2
   100
 ```
 
-正常运行时会输出 `[pose]`、`[EuRoC] processed`和最终位姿；启用词典后还会输出
-`[loop_verified]`、`[loop_rejected]`和最终位姿图统计。序列开头运动不足时，SFM 失败日志
+正常运行时会输出 `[pose]`、`[EuRoC] processed` 和最终位姿。序列开头运动不足时，SFM 失败日志
 表示初始化正在等待足够的视觉与惯性激励，并非数据读取失败。
-
-## 回环运行
-
-先使用与运行序列不同的数据训练 BRIEF 词典：
-
-```bash
-./build/tassel_loop/train_brief_vocabulary \
-  "$HOME/.local/share/tassel/brief.dbow3" 400 \
-  datasets/machine_hall/MH_02_easy \
-  datasets/machine_hall/MH_03_medium \
-  datasets/machine_hall/MH_04_difficult \
-  datasets/machine_hall/MH_05_difficult
-```
-
-将词典作为第五个参数运行完整序列：
-
-```bash
-./build/tassel_core/test_euroc \
-  config/euroc.yaml \
-  datasets/machine_hall/MH_01_easy \
-  0 \
-  20 \
-  "$HOME/.local/share/tassel/brief.dbow3"
-```
-
-回环流水线为：
-
-```text
-关键帧图像和历史深度路标
-  -> BRIEF/DBoW3 候选检索
-  -> 时序后验和似然比门控
-  -> 多候选 PnP 几何验证
-  -> GTSAM BetweenFactor<Pose3>
-  -> 全局关键帧和稠密轨迹修正
-```
-
-该组织方式参考 RTAB-Map 的“外观候选、时序假设、几何验证、图优化”分层机制，
-Tassel 使用自己的关键帧事务、历史路标和局部/全局轨迹接口实现。更详细的话题与 Foxglove
-说明见 [tassel_tools/README.md](tassel_tools/README.md)。
 
 ## 可视化器
 

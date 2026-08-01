@@ -11,9 +11,9 @@
 namespace tassel_core {
 
 enum class RetainedHostAction {
-    Create,
-    Keep,
-    Replace,
+    InitializeRetainedSlot,
+    ReplaceRetainedSlot,
+    MarginalizeOldestFrame,
 };
 
 class MargHelper {

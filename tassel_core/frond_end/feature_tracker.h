@@ -25,6 +25,8 @@ public:
         Camera camera, int per_grid_rows = 4, int per_grid_cols = 4, int grid_edge_rows = 2,
         int grid_edge_cols = 2, double mask_radius = 15.0, int min_feature_num = 100);
 
+    void setValidMask(const cv::Mat& mask, int margin = 0);
+
     std::unordered_map<int, FeaturePerFrame> monoTracking(const cv::Mat& img);
 
     void reset();
@@ -42,6 +44,7 @@ private:
         std::vector<size_t> cur_ids;
         cv::Mat prev_img;
         cv::Mat mask;
+        cv::Mat valid_mask;
         double mask_radius;
         size_t feature_count;
         int min_feature_num;

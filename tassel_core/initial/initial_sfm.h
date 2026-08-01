@@ -24,15 +24,15 @@ public:
     InitialSFM(
         int min_seed_pts = 10, int min_e_inliers = 8, double e_ransac_threshold = 0.004,
         int min_pnp_pts = 10, double pnp_reproj_threshold = 0.03, double max_bad_pnp_ratio = 0.3,
-        int epipolar_max_iterations = 30, int epipolar_num_threads = 5)
+        int ba_max_iterations = 30, int ba_num_threads = 5)
         : min_seed_pts_(min_seed_pts),
           min_e_inliers_(min_e_inliers),
           e_ransac_threshold_(e_ransac_threshold),
           min_pnp_pts_(min_pnp_pts),
           pnp_reproj_threshold_(pnp_reproj_threshold),
           max_bad_pnp_ratio_(max_bad_pnp_ratio),
-          epipolar_max_iterations_(epipolar_max_iterations),
-          epipolar_num_threads_(epipolar_num_threads) {}
+          ba_max_iterations_(ba_max_iterations),
+          ba_num_threads_(ba_num_threads) {}
 
     bool construct(
         State& cur_state, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
@@ -86,7 +86,7 @@ private:
     double e_ransac_threshold_;
     int min_pnp_pts_;
     double pnp_reproj_threshold_, max_bad_pnp_ratio_;
-    int epipolar_max_iterations_, epipolar_num_threads_;
+    int ba_max_iterations_, ba_num_threads_;
     int feature_num_ = 0;
 };
 

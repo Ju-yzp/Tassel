@@ -247,7 +247,8 @@ Eigen::MatrixXd MargHelper::reorderForMarginalization(
     const Eigen::MatrixXd& jacobian, RetainedHostAction action) {
     TASSEL_ASSERT(jacobian.cols() >= 2 * kFullStateSize + 1);
 
-    // Keep/Replace 输入从保留宿主开始；Create 输入为 [空保留槽, 首帧状态, 后续状态]。
+    // Replace/Marginalize 输入从保留宿主开始；Initialize 输入为
+    // [空保留槽, 首帧状态, 后续状态]。
     // 平方根边缘化要求待边缘化列位于保留列之前。
     const auto host_pose = jacobian.leftCols(kPoseSize);
     const auto host_motion = jacobian.middleCols(kPoseSize, kSpeedBiasSize);
@@ -256,18 +257,18 @@ Eigen::MatrixXd MargHelper::reorderForMarginalization(
     Eigen::MatrixXd reordered(jacobian.rows(), jacobian.cols());
 
     switch (action) {
-        case RetainedHostAction::Create:
+        case RetainedHostAction::InitializeRetainedSlot:
             // 首次建立先验：消去空槽和首帧运动状态，保留首帧位姿。
             reordered << jacobian.leftCols(kFullStateSize),
                 jacobian.middleCols(kFullStateSize + kPoseSize, kSpeedBiasSize),
                 jacobian.middleCols(kFullStateSize, kPoseSize),
                 jacobian.rightCols(jacobian.cols() - 2 * kFullStateSize);
             break;
-        case RetainedHostAction::Keep:
+        case RetainedHostAction::MarginalizeOldestFrame:
             // 继续使用当前宿主：边缘化下一帧状态，保留完整宿主状态布局。
             reordered << next_state, host_pose, host_motion, trailing;
             break;
-        case RetainedHostAction::Replace:
+        case RetainedHostAction::ReplaceRetainedSlot:
             // 替换宿主：边缘化旧宿主和新宿主运动，仅保留新宿主位姿。
             reordered << host_pose, host_motion, next_state.rightCols(kSpeedBiasSize),
                 next_state.leftCols(kPoseSize), trailing;

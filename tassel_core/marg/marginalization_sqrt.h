@@ -22,13 +22,16 @@ namespace tassel_core {
 template <typename Derived>
 class MarginalizationSqrt {
 public:
+    // retiring_features 由 FeatureManager 持有；linearize() 前不得修改其容器。
+    // landmark_target_frame_index < 0 表示消去每个宿主路标的全部后续观测。
     MarginalizationSqrt(
-        std::vector<MarginalizedFeatureObservation> retiring_observations,
+        std::vector<Feature*> retiring_features, int landmark_target_frame_index,
         std::unique_ptr<ceres::LossFunction> loss_function, std::shared_ptr<State> state,
         std::vector<IntegratorBase<Derived>*>& preintegrators, const Eigen::Matrix3d& ric,
         const Eigen::Vector3d& tic, const MargLinData* prior = nullptr,
         int first_imu_factor_index = 0)
-        : retiring_observations_(std::move(retiring_observations)),
+        : retiring_features_(std::move(retiring_features)),
+          landmark_target_frame_index_(landmark_target_frame_index),
           loss_function_(std::move(loss_function)),
           state_(std::move(state)),
           preintegrators_(preintegrators),
@@ -45,14 +48,16 @@ public:
 
     void allocate() {
         landmark_blocks_.clear();
-        landmark_blocks_.reserve(retiring_observations_.size());
-        for (size_t idx = 0; idx < retiring_observations_.size(); ++idx) {
+        landmark_blocks_.reserve(retiring_features_.size());
+        for (Feature* feature : retiring_features_) {
+            TASSEL_ASSERT(feature != nullptr);
+            const int num_observations = landmark_target_frame_index_ < 0
+                                             ? static_cast<int>(feature->observations.size()) - 1
+                                             : 1;
             landmark_blocks_.emplace_back(preintegrators_.empty() ? 6 : 15, loss_function_.get());
             auto& landmark_block = landmark_blocks_.back();
             landmark_block.allocate(
-                state_->max_frame_count,
-                static_cast<int>(retiring_observations_[idx].target_frame_indices.size()),
-                preintegrators_.empty() ? 6 : 15);
+                state_->max_frame_count, num_observations, preintegrators_.empty() ? 6 : 15);
         }
         imu_blocks_.resize(preintegrators_.size());
         for (size_t idx = 0; idx < preintegrators_.size(); ++idx) {
@@ -62,9 +67,10 @@ public:
 
     void linearize() {
         num_cols_ = state_->max_frame_count * 15 + 1;
-        for (size_t idx = 0; idx < retiring_observations_.size(); ++idx) {
+        for (size_t idx = 0; idx < retiring_features_.size(); ++idx) {
             auto& landmark_block = landmark_blocks_[idx];
-            landmark_block.linearize(retiring_observations_[idx], *state_, ric_, tic_);
+            landmark_block.linearize(
+                *retiring_features_[idx], landmark_target_frame_index_, *state_, ric_, tic_);
         }
 
         for (size_t i = 0; i < imu_blocks_.size(); ++i) {
@@ -81,7 +87,7 @@ public:
     }
 
     void marginalizeLandmarks() {
-        // 每个逆深度先独立边缘化，再与 IMU 因子及旧先验组装，避免构造完整路标 Hessian。
+        // 每个逆深度独立边缘化，再与 IMU 因子及旧先验组装。
         for (auto& landmark_block : landmark_blocks_) {
             landmark_block.marginalizeLandmark();
         }
@@ -142,7 +148,8 @@ public:
     }
 
 private:
-    std::vector<MarginalizedFeatureObservation> retiring_observations_;
+    std::vector<Feature*> retiring_features_;
+    int landmark_target_frame_index_;
     std::unique_ptr<ceres::LossFunction> loss_function_;
 
     std::shared_ptr<State> state_;

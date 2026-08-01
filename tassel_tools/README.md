@@ -59,42 +59,12 @@ ws://127.0.0.1:8765
 
 图中箭头对应的可视化区域：
 
-- `3D trajectory`：`/vio/path`、`/slam/path`、`/slam/keyframe_path`、
-  `/ground_truth/path` 和 `/vio/odometry`。
+- `3D trajectory`：`/vio/path`、`/ground_truth/path` 和 `/vio/odometry`。
 - `mono image / feature tracking`：`/mono/image`。
 - `visual factors`：`/optimization/visual_window` 中各窗口槽的视觉因子数量。
-- `loop matches`：`/loop/matches` 最终通过 PnP 的 BRIEF 匹配图。
 
 - `/mono/image`：左目单目特征跟踪图。
-- `/vio/odometry`：局部连续且不包含回环修正的视觉惯性里程计。
+- `/vio/odometry`：局部连续的视觉惯性里程计。
 - `/vio/path`：局部视觉惯性轨迹。
 - `/ground_truth/path`：数据集真值轨迹（如果存在）。
 - `/optimization/visual_window`：彩色分段显示各窗口槽的视觉因子数量。
-- `/loop/matches`：当前关键帧与最终通过 PnP 的候选 BRIEF 匹配图。
-- `/slam/keyframe_path`：GTSAM 优化后的全局关键帧轨迹。
-- `/slam/path`：按全局关键帧修正重建的全局稠密轨迹。
-
-## 回环候选演示
-
-先用不参与测试的序列训练 BRIEF 词典：
-
-```bash
-./build/tassel_loop/train_brief_vocabulary \
-  "$HOME/.local/share/tassel/brief.dbow3" 400 \
-  datasets/machine_hall/MH_02_easy \
-  datasets/machine_hall/MH_03_medium \
-  datasets/machine_hall/MH_04_difficult \
-  datasets/machine_hall/MH_05_difficult
-```
-
-再将词典作为第五个可选参数传给 EuRoC 驱动：
-
-```bash
-./build/tassel_core/test_euroc \
-  config/euroc.yaml datasets/machine_hall/MH_01_easy 0 20 \
-  "$HOME/.local/share/tassel/brief.dbow3"
-```
-
-词典必须由 BRIEF 描述子训练，不能直接替换为 ORB 词典。候选先经过时间后验或高分候选
-回退门控，再由宿主相机系深度路标执行 PnP RANSAC。通过验证的六自由度相对位姿作为鲁棒
-`BetweenFactor<Pose3>` 写入 GTSAM。全局结果用于重建输出轨迹，不修改 VIO 滑窗和边缘化先验。

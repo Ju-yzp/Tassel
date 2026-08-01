@@ -25,6 +25,7 @@ struct Feature {
 
     Feature(int host_frame_index, size_t max_capacity);
 
+    // 观测按窗口帧连续存储，observations[0] 对应宿主帧。
     int observationFrameIndex(size_t observation_index) const {
         return host_frame_index + static_cast<int>(observation_index);
     }
@@ -48,9 +49,5 @@ struct Feature {
     std::vector<FeaturePerFrame> observations;
 };
 
-struct MarginalizedFeatureObservation {
-    Feature* feature = nullptr;
-    std::vector<int> target_frame_indices;
-};
 }  // namespace tassel_core
 #endif  // TASSEL_CORE_FEATURE_H_

@@ -5,12 +5,14 @@
 #include "viewer/viewer.h"
 
 #include <algorithm>
+#include <cstring>
 #include <stdexcept>
 #include <utility>
 
 namespace tassel_tools {
 Viewer::Viewer(const std::string& frame_id) : Node("viewer"), frame_id_(frame_id) {
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+    static_tf_broadcaster_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
 }
 
 rclcpp::Time Viewer::messageStamp(double timestamp) const {
@@ -30,6 +32,15 @@ void Viewer::createCompressedImagePublisher(const std::string& topic_name, const
     auto publisher =
         this->template create_publisher<sensor_msgs::msg::CompressedImage>(topic_name, qos);
     compressed_image_publishers_[topic_name] = publisher;
+}
+
+void Viewer::createImagePublisher(const std::string& topic_name, const rclcpp::QoS qos) {
+    if (image_publishers_.find(topic_name) != image_publishers_.end()) {
+        RCLCPP_WARN(this->get_logger(), "Image topic %s already exists, skipping creation.", topic_name.c_str());
+        return;
+    }
+    image_publishers_[topic_name] =
+        this->template create_publisher<sensor_msgs::msg::Image>(topic_name, qos);
 }
 
 void Viewer::publishCompressedImage(
@@ -63,8 +74,36 @@ void Viewer::publishCompressedImage(
     compressed_image_publishers_[topic]->publish(msg);
 }
 
+void Viewer::publishImage(
+    const std::string& topic, const std::string& frame_id, const cv::Mat& image, double timestamp) {
+    const auto publisher = image_publishers_.find(topic);
+    if (publisher == image_publishers_.end()) {
+        RCLCPP_ERROR(this->get_logger(), "Image topic %s not found!", topic.c_str());
+        return;
+    }
+    if (image.empty() || image.depth() != CV_8U ||
+        (image.channels() != 1 && image.channels() != 3 && image.channels() != 4)) {
+        throw std::invalid_argument("Viewer image must be mono8, bgr8, or bgra8");
+    }
+
+    sensor_msgs::msg::Image msg;
+    msg.header.stamp = messageStamp(timestamp);
+    msg.header.frame_id = frame_id;
+    msg.height = static_cast<uint32_t>(image.rows);
+    msg.width = static_cast<uint32_t>(image.cols);
+    msg.encoding = image.channels() == 1 ? "mono8" : (image.channels() == 3 ? "bgr8" : "bgra8");
+    msg.is_bigendian = false;
+    msg.step = static_cast<uint32_t>(image.cols * image.elemSize());
+    msg.data.resize(static_cast<size_t>(msg.step) * msg.height);
+    for (int row = 0; row < image.rows; ++row) {
+        std::memcpy(msg.data.data() + static_cast<size_t>(row) * msg.step, image.ptr(row), msg.step);
+    }
+    publisher->second->publish(std::move(msg));
+}
+
 void Viewer::createOdometryPublisher(
-    const std::string& child_frame_id, const std::string& topic_name, const rclcpp::QoS& qos) {
+    const std::string& child_frame_id, const std::string& topic_name, const rclcpp::QoS& qos,
+    bool broadcast_tf) {
     if (odometry_publishers_.find(topic_name) != odometry_publishers_.end()) {
         RCLCPP_WARN(
             this->get_logger(), "Odometry topic %s already exists, skipping creation.",
@@ -77,6 +116,7 @@ void Viewer::createOdometryPublisher(
     odom.header.frame_id = frame_id_;
     odom.child_frame_id = child_frame_id;
     odometry_[topic_name] = odom;
+    odometry_broadcast_tf_[topic_name] = broadcast_tf;
 }
 
 void Viewer::publishOdometry(
@@ -105,6 +145,10 @@ void Viewer::publishOdometry(
 
     odometry_publishers_[topic]->publish(odom);
 
+    if (!odometry_broadcast_tf_.at(topic)) {
+        return;
+    }
+
     geometry_msgs::msg::TransformStamped tf;
     tf.header.stamp = odom.header.stamp;
     tf.header.frame_id = frame_id_;
@@ -117,6 +161,23 @@ void Viewer::publishOdometry(
     tf.transform.rotation.z = orientation.z();
     tf.transform.rotation.w = orientation.w();
     tf_broadcaster_->sendTransform(tf);
+}
+
+void Viewer::publishStaticTransform(
+    const std::string& parent_frame_id, const std::string& child_frame_id,
+    const Eigen::Vector3d& translation, const Eigen::Quaterniond& rotation) {
+    geometry_msgs::msg::TransformStamped tf;
+    tf.header.stamp = this->now();
+    tf.header.frame_id = parent_frame_id;
+    tf.child_frame_id = child_frame_id;
+    tf.transform.translation.x = translation.x();
+    tf.transform.translation.y = translation.y();
+    tf.transform.translation.z = translation.z();
+    tf.transform.rotation.x = rotation.x();
+    tf.transform.rotation.y = rotation.y();
+    tf.transform.rotation.z = rotation.z();
+    tf.transform.rotation.w = rotation.w();
+    static_tf_broadcaster_->sendTransform(tf);
 }
 
 void Viewer::createPathPublisher(

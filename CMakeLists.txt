@@ -3,7 +3,7 @@ project(
   tassel
   VERSION 1.0.0
   DESCRIPTION
-    "Research-oriented monocular visual-inertial SLAM with loop closure"
+    "Research-oriented visual-inertial odometry with native hardware support"
   HOMEPAGE_URL "https://github.com/Ju-yzp/Tassel"
   LANGUAGES CXX)
 
@@ -18,7 +18,7 @@ tassel_configure_dependencies()
 enable_testing()
 
 add_subdirectory(tassel_utils)
-add_subdirectory(tassel_loop)
+add_subdirectory(tassel_hardware)
 add_subdirectory(tassel_core)
 add_subdirectory(tassel_tools)
 

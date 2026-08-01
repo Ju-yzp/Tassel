@@ -14,6 +14,7 @@
 - Reuse an existing function only when its full behavior is required. If only a small subset is needed, implement that subset directly instead of coupling the new code to unnecessary behavior.
 - Branch and loop bodies must use braces, even when the body contains only one statement.
 - When refactoring, choose the approach with the smallest practical impact on the existing architecture and module boundaries.
+- Engineering contracts not expressed by types or function signatures, including lifetimes, index mappings, state transitions, layouts, and ownership, require concise Chinese comments.
 
 ## Theoretical Rigor
 

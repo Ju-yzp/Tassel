@@ -65,5 +65,18 @@ TEST(FeatureTrackerTest, RejectsMismatchedCurrentFeatureState) {
     EXPECT_THROW(FeatureTrackerTestAccess::setMask(tracker), std::logic_error);
 }
 
+TEST(FeatureTrackerTest, AppliesConfiguredValidRegionToExistingTracks) {
+    FeatureTracker tracker = makeTracker();
+    cv::Mat valid_mask = cv::Mat::zeros(160, 200, CV_8UC1);
+    cv::circle(valid_mask, cv::Point(100, 80), 20, cv::Scalar(255), -1);
+    tracker.setValidMask(valid_mask, 5);
+    FeatureTrackerTestAccess::setCurrentFeatures(
+        tracker, {{100.0F, 80.0F}, {118.0F, 80.0F}}, {10, 20}, {2, 3});
+
+    FeatureTrackerTestAccess::setMask(tracker);
+
+    EXPECT_EQ(FeatureTrackerTestAccess::ids(tracker), (std::vector<size_t>{10}));
+}
+
 }  // namespace
 }  // namespace tassel_core

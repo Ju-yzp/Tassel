@@ -20,7 +20,6 @@ struct Parameters {
         loadCameras(parser);
         loadTracker(parser);
         loadFeatureManager(parser);
-        loadLoop(parser);
         loadEstimator(parser);
         loadImu(parser);
         loadInitialization(parser);
@@ -55,30 +54,9 @@ struct Parameters {
     double max_depth;
     double keyframe_min_connection_ratio;
 
-    // 回环检测与位姿图：用于DBoW检索、贝叶斯门控、PnP验证和GTSAM回环因子。
-    int loop_fast_threshold;
-    int loop_max_keypoints;
-    int loop_recent_exclusion;
-    int loop_top_k;
-    int loop_likelihood_pool_size;
-    double loop_min_score;
-    double loop_min_probability;
-    double loop_min_likelihood_ratio;
-    double loop_pnp_fallback_min_score;
-    double loop_brief_ratio;
-    double loop_brief_max_distance;
-    int loop_pnp_max_candidates;
-    int loop_pnp_min_inliers;
-    double loop_pnp_min_inlier_ratio;
-    double loop_pnp_inlier_threshold;
-    int loop_pnp_max_iterations;
-    double loop_pnp_confidence;
-    int loop_pnp_variance_quantile_divisor;
-    double loop_pnp_max_translation_variance;
-    double loop_optimize_max_error;
-
     // 滑窗优化：用于 Estimator::optimize、先验更新和 reset。
     int num_iterations;
+    double max_solver_time = 0.0;
     // 活动图像状态数量；估计器会额外分配一个保留宿主槽。
     size_t max_frame_count;
     double visual_factor_weight;
@@ -98,15 +76,14 @@ struct Parameters {
 
     // 视觉惯性初始化和 SFM：用于 Estimator::tryInitialize。
     double gravity_diff_threshold = 0.17;
-    double init_scale_zero_threshold = 0.001;
     int sfm_min_seed_pts = 10;
     int sfm_min_e_inliers = 8;
     double sfm_e_ransac_threshold = 0.004;
     int sfm_min_pnp_pts = 10;
     double sfm_pnp_reproj_threshold = 0.03;
     double sfm_max_bad_pnp_ratio = 0.3;
-    int sfm_epipolar_max_iterations = 30;
-    int sfm_epipolar_num_threads = 5;
+    int sfm_ba_max_iterations = 30;
+    int sfm_ba_num_threads = 5;
 
     // 可视化：用于 Viewer 发布器。
     size_t viewer_path_max_poses = 300;
@@ -119,7 +96,8 @@ private:
         if (max_frame_count < 3) {
             throw std::invalid_argument("max_frame_count must be at least 3");
         }
-        if (num_iterations <= 0 || num_threads <= 0 || visual_factor_weight <= 0.0) {
+        if (num_iterations <= 0 || max_solver_time < 0.0 || num_threads <= 0 ||
+            visual_factor_weight <= 0.0) {
             throw std::invalid_argument("Invalid optimization parameters");
         }
         if (delay_obs_gyro_threshold < 0.0 || delay_obs_speed_threshold < 0.0 ||
@@ -135,24 +113,8 @@ private:
         if (keyframe_min_connection_ratio < 0.0 || keyframe_min_connection_ratio > 1.0) {
             throw std::invalid_argument("keyframe_min_connection_ratio must be in [0, 1]");
         }
-        if (loop_fast_threshold <= 0 || loop_max_keypoints <= 0 || loop_recent_exclusion < 0 ||
-            loop_top_k <= 0 || loop_likelihood_pool_size < loop_top_k || loop_min_score < 0.0 ||
-            loop_min_probability < 0.0 || loop_min_probability > 1.0 ||
-            loop_min_likelihood_ratio < 1.0 || loop_brief_ratio <= 0.0 ||
-            loop_pnp_fallback_min_score < 0.0 || loop_brief_ratio >= 1.0 ||
-            loop_brief_max_distance <= 0.0 || loop_pnp_max_candidates <= 0 ||
-            loop_pnp_min_inliers < 6 || loop_pnp_min_inlier_ratio <= 0.0 ||
-            loop_pnp_min_inlier_ratio > 1.0 || loop_pnp_inlier_threshold <= 0.0 ||
-            loop_pnp_max_iterations <= 0 || loop_pnp_confidence <= 0.0 ||
-            loop_pnp_confidence >= 1.0 || loop_pnp_variance_quantile_divisor <= 1 ||
-            loop_pnp_max_translation_variance < 0.0 || loop_optimize_max_error < 0.0) {
-            throw std::invalid_argument("Invalid loop closure parameters");
-        }
         if (camera_model != "radtan" && camera_model != "equi") {
             throw std::invalid_argument("Unsupported camera_model: " + camera_model);
-        }
-        if (init_scale_zero_threshold < 0.0) {
-            throw std::invalid_argument("init_scale_zero_threshold must be non-negative");
         }
     }
 
@@ -190,31 +152,9 @@ private:
         parallax_threshold = parser.as<double>("parallax_threshold");
     }
 
-    void loadLoop(ParamsParser& parser) {
-        loop_fast_threshold = parser.as<int>("loop_fast_threshold");
-        loop_max_keypoints = parser.as<int>("loop_max_keypoints");
-        loop_recent_exclusion = parser.as<int>("loop_recent_exclusion");
-        loop_top_k = parser.as<int>("loop_top_k");
-        loop_likelihood_pool_size = parser.as<int>("loop_likelihood_pool_size");
-        loop_min_score = parser.as<double>("loop_min_score");
-        loop_min_probability = parser.as<double>("loop_min_probability");
-        loop_min_likelihood_ratio = parser.as<double>("loop_min_likelihood_ratio");
-        loop_pnp_fallback_min_score = parser.as<double>("loop_pnp_fallback_min_score");
-        loop_brief_ratio = parser.as<double>("loop_brief_ratio");
-        loop_brief_max_distance = parser.as<double>("loop_brief_max_distance");
-        loop_pnp_max_candidates = parser.as<int>("loop_pnp_max_candidates");
-        loop_pnp_min_inliers = parser.as<int>("loop_pnp_min_inliers");
-        loop_pnp_min_inlier_ratio = parser.as<double>("loop_pnp_min_inlier_ratio");
-        loop_pnp_inlier_threshold = parser.as<double>("loop_pnp_inlier_threshold");
-        loop_pnp_max_iterations = parser.as<int>("loop_pnp_max_iterations");
-        loop_pnp_confidence = parser.as<double>("loop_pnp_confidence");
-        loop_pnp_variance_quantile_divisor = parser.as<int>("loop_pnp_variance_quantile_divisor");
-        loop_pnp_max_translation_variance = parser.as<double>("loop_pnp_max_translation_variance");
-        loop_optimize_max_error = parser.as<double>("loop_optimize_max_error");
-    }
-
     void loadEstimator(ParamsParser& parser) {
         num_iterations = parser.as<int>("num_iterations");
+        max_solver_time = parser.as<double>("max_solver_time");
         max_frame_count = parser.as<size_t>("max_frame_count");
         visual_factor_weight = parser.as<double>("visual_factor_weight");
         num_threads = parser.as<int>("num_threads");
@@ -237,15 +177,14 @@ private:
 
     void loadInitialization(ParamsParser& parser) {
         gravity_diff_threshold = parser.as<double>("gravity_diff_threshold");
-        init_scale_zero_threshold = parser.as<double>("init_scale_zero_threshold");
         sfm_min_seed_pts = parser.as<int>("sfm_min_seed_pts");
         sfm_min_e_inliers = parser.as<int>("sfm_min_e_inliers");
         sfm_e_ransac_threshold = parser.as<double>("sfm_e_ransac_threshold");
         sfm_min_pnp_pts = parser.as<int>("sfm_min_pnp_pts");
         sfm_pnp_reproj_threshold = parser.as<double>("sfm_pnp_reproj_threshold");
         sfm_max_bad_pnp_ratio = parser.as<double>("sfm_max_bad_pnp_ratio");
-        sfm_epipolar_max_iterations = parser.as<int>("sfm_epipolar_max_iterations");
-        sfm_epipolar_num_threads = parser.as<int>("sfm_epipolar_num_threads");
+        sfm_ba_max_iterations = parser.as<int>("sfm_ba_max_iterations");
+        sfm_ba_num_threads = parser.as<int>("sfm_ba_num_threads");
     }
 
     void loadViewer(ParamsParser& parser) {

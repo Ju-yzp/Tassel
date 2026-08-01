@@ -84,20 +84,17 @@ bool ReprojectionFactor::Evaluate(
 
     double inv_z = 1.0 / pj_in_C.z();
     Eigen::Vector2d uv_pred_norm(pj_in_C.x() * inv_z, pj_in_C.y() * inv_z);
-    Eigen::Vector2d uv_pred_pixel = camera->distort(uv_pred_norm);
-
     Eigen::Map<Eigen::Vector2d> r(residuals);
-    // pi(.) 包含透视除法和相机畸变模型，观测 pt_j 使用像素坐标。
-    r = sqrt_info * (uv_pred_pixel - pt_j);
+    r = sqrt_info * (camera->distort(uv_pred_norm) - pt_j);
 
     if (jacobians) {
         // 此处输出对优化参数中旋转向量的雅可比；写入边缘化系统时再转换到右扰动切空间。
         Eigen::MatrixXd H_dz_dzn;
         camera->get_jacobian_dzn(uv_pred_norm, H_dz_dzn);
-
         Eigen::Matrix<double, 2, 3> duv_dP;
-        duv_dP << inv_z, 0, -pj_in_C.x() * inv_z * inv_z, 0, inv_z, -pj_in_C.y() * inv_z * inv_z;
-        Eigen::Matrix<double, 2, 3> reduce = sqrt_info * H_dz_dzn * duv_dP;
+        duv_dP << inv_z, 0, -pj_in_C.x() * inv_z * inv_z, 0, inv_z,
+            -pj_in_C.y() * inv_z * inv_z;
+        const Eigen::Matrix<double, 2, 3> reduce = sqrt_info * H_dz_dzn * duv_dP;
 
         if (jacobians[0]) {
             Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_pose_i(jacobians[0]);

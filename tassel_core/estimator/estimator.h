@@ -3,16 +3,13 @@
 
 #include <Eigen/Core>
 #include <functional>
-#include <map>
 #include <memory>
-#include <opencv2/core.hpp>
 #include <unordered_map>
 #include <variant>
 #include <vector>
 
 #include "factor/integrator_base.h"
 #include "frond_end/feature_manager.h"
-#include "loop_closure.h"
 #include "marg/marg_helper.h"
 #include "marg/marg_lin_data.h"
 #include "parameters/parameters.h"
@@ -45,14 +42,6 @@ public:
     void setVisualFactorCallback(std::function<void(double, const std::vector<int>&)> cb) {
         visual_factor_callback_ = std::move(cb);
     }
-    void setLoopClosure(std::shared_ptr<tassel_loop::LoopClosure> loop_closure) {
-        loop_closure_ = std::move(loop_closure);
-    }
-    void submitFrameImage(tassel_utils::FrameId frame_id, const cv::Mat& image) {
-        if (loop_closure_) {
-            frame_images_[frame_id] = image.clone();
-        }
-    }
     void setCamera(const CameraBase* camera) {
         camera_ = camera;
         if (state_) {
@@ -62,7 +51,7 @@ public:
 
     bool lastMeasurementWasKeyframe() const { return last_measurement_was_keyframe_; }
 
-    void optimize(double timestamp = -1.0);
+    void optimize();
 
     void reset();
 
@@ -74,14 +63,16 @@ private:
 
     void updateMarginalizationPrior(RetainedHostAction action);
 
+    RetainedHostAction selectMarginalizationAction() const;
+
     void predictFrameState(
         int frame_index, const std::vector<tassel_utils::IMUMeasurement>& imu_measurements);
 
     void slideInitializationWindow();
 
-    void shiftWindowAfterMarginalization(RetainedHostAction action);
+    void migrateMarginalizedData(RetainedHostAction action);
 
-    void captureRetainedFrameGauge();
+    void captureGauge(int frame_index);
 
     void restoreGauge(int reference_frame_index);
 
@@ -110,20 +101,17 @@ private:
     bool last_measurement_was_keyframe_ = false;
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
     std::function<void(double, const std::vector<int>&)> visual_factor_callback_;
-    std::shared_ptr<tassel_loop::LoopClosure> loop_closure_;
-    std::map<tassel_utils::FrameId, cv::Mat> frame_images_;
     PreintegratorStorage preintegrators_;
     double last_ts_ = -1;
     Eigen::Vector3d last_imu_acc_;
     Eigen::Vector3d last_imu_gyro_;
 
     std::unique_ptr<MargLinData> marginalization_prior_;
-    // 当前 frame0 首次成为保留帧时的 gauge；其保留生命周期内不再更新。
-    bool retained_gauge_initialized_ = false;
+    // VIO 初始化成功后从当前参考帧捕获；仅在保留槽创建或替换后更新。
     Eigen::Matrix3d retained_rotation_ = Eigen::Matrix3d::Identity();
     Eigen::Vector3d retained_position_ = Eigen::Vector3d::Zero();
 
-    // 动态初始化使用,存储sfm位姿以及imu在体坐标系下的速度
+    // 动态初始化使用，存储 SFM 位姿以及 IMU 在体坐标系下的速度。
     std::vector<Eigen::Matrix3d> Rs_;
     std::vector<Eigen::Vector3d> Ps_;
     std::vector<Eigen::Vector3d> Vs_;

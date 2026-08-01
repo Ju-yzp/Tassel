@@ -50,10 +50,10 @@ public:
 
     std::vector<Feature*> collectLandmarks();
 
-    std::vector<MarginalizedFeatureObservation> collectMarginalizedObservations(
-        int host_frame_index, int target_frame_index);
-
-    std::vector<MarginalizedFeatureObservation> collectHostedLandmarks(int host_frame_index);
+    // target_frame_index < 0 选择宿主帧后的全部观测，否则只选择该目标帧的观测。
+    // 返回指针仅在本次特征管理器不修改 features_ 的边缘化流程内有效。
+    std::vector<Feature*> collectMarginalizedFeatures(
+        int host_frame_index, int target_frame_index = -1);
 
     std::vector<HostLandmark> exportHostLandmarks(int host_frame_index, const State& state) const;
 

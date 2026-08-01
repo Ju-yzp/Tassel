@@ -32,16 +32,6 @@
           "lineWidth": 0.015,
           "color": "#ef4444"
         },
-        "/slam/path": {
-          "visible": true,
-          "lineWidth": 0.02,
-          "color": "#06b6d4"
-        },
-        "/slam/keyframe_path": {
-          "visible": true,
-          "lineWidth": 0.025,
-          "color": "#f59e0b"
-        },
         "/ground_truth/path": {
           "visible": true,
           "lineWidth": 0.015,
@@ -52,12 +42,6 @@
     "Image!tasselmono": {
       "imageMode": {
         "imageTopic": "/mono/image",
-        "synchronize": false
-      }
-    },
-    "Image!tasselloopmatches": {
-      "imageMode": {
-        "imageTopic": "/loop/matches",
         "synchronize": false
       }
     },
@@ -83,12 +67,7 @@
       "direction": "column",
       "splitPercentage": 82
     },
-    "second": {
-      "first": "Image!tasselmono",
-      "second": "Image!tasselloopmatches",
-      "direction": "column",
-      "splitPercentage": 50
-    },
+    "second": "Image!tasselmono",
     "direction": "row",
     "splitPercentage": 68
   }

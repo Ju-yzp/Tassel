@@ -75,30 +75,29 @@ TEST(TriangulationTest, RejectsDegenerateNonNullSubspace) {
     EXPECT_TRUE(std::isinf(condition));
 }
 
-TEST(FeatureManagerTest, MarginalizationUsesContinuousTargetFrameIndex) {
+TEST(FeatureManagerTest, CollectsFeatureForSpecifiedMarginalizationTarget) {
     auto fm = manager();
     Feature feature(0, 4);
     feature.estimated_depth = 2.0;
     feature.observations = {observation(), observation(0.1)};
     fm.features().emplace(1, std::move(feature));
 
-    auto marginalized = fm.collectMarginalizedObservations(0, 1);
+    auto marginalized = fm.collectMarginalizedFeatures(0, 1);
     ASSERT_EQ(marginalized.size(), 1u);
-    ASSERT_EQ(marginalized[0].target_frame_indices.size(), 1u);
-    EXPECT_EQ(marginalized[0].target_frame_indices[0], 1);
+    EXPECT_EQ(marginalized[0], &fm.features().at(1));
 }
 
-TEST(FeatureManagerTest, CollectsEveryObservationHostedByRetiringFrame) {
+TEST(FeatureManagerTest, CollectsFeatureForAllMarginalizationTargets) {
     auto fm = manager();
     Feature feature(1, 4);
     feature.estimated_depth = 2.0;
     feature.observations = {observation(), observation(0.1), observation(0.2)};
     fm.features().emplace(1, std::move(feature));
 
-    auto marginalized = fm.collectHostedLandmarks(1);
+    auto marginalized = fm.collectMarginalizedFeatures(1);
 
     ASSERT_EQ(marginalized.size(), 1u);
-    EXPECT_EQ(marginalized[0].target_frame_indices, (std::vector<int>{2, 3}));
+    EXPECT_EQ(marginalized[0], &fm.features().at(1));
 }
 
 TEST(FeatureManagerTest, TransfersDepthWhenOldestHostLeaves) {

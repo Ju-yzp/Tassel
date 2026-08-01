@@ -10,9 +10,6 @@ bridge:
         - /ground_truth/path
         - /mono/image
         - /optimization/visual_window
-        - /slam/path
-        - /slam/keyframe_path
-        - /loop/matches
 
 studio:
     executable: /usr/bin/foxglove-studio

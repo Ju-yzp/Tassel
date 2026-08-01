@@ -20,7 +20,7 @@ per_grid_cols: 50
 edge_x: 40
 edge_y: 30
 mask_radius: 25.0
-min_feature_num: 150
+min_feature_num: 110
 
 flow_back: true
 max_square_move_dist: 1.0
@@ -33,33 +33,12 @@ reproj_huber_thres: 1.5
 min_landmark_observations: 3
 min_depth: 0.3
 max_depth: 10.0
-parallax_threshold: 10.0
-keyframe_min_connection_ratio: 0.80
-
-# 回环检测与位姿图
-loop_fast_threshold: 20
-loop_max_keypoints: 800
-loop_recent_exclusion: 30
-loop_top_k: 3
-loop_likelihood_pool_size: 20
-loop_min_score: 0.05
-loop_min_probability: 0.03
-loop_min_likelihood_ratio: 1.01
-loop_pnp_fallback_min_score: 0.20
-loop_brief_ratio: 0.8
-loop_brief_max_distance: 80.0
-loop_pnp_max_candidates: 3
-loop_pnp_min_inliers: 20
-loop_pnp_min_inlier_ratio: 0.25
-loop_pnp_inlier_threshold: 0.03
-loop_pnp_max_iterations: 1000
-loop_pnp_confidence: 0.999
-loop_pnp_variance_quantile_divisor: 4
-loop_pnp_max_translation_variance: 0.0
-loop_optimize_max_error: 3.0
+parallax_threshold: 20.0
+keyframe_min_connection_ratio: 0.75
 
 # 滑窗优化
-num_iterations: 8
+num_iterations: 6
+max_solver_time: 0.00
 max_frame_count: 9
 visual_factor_weight: 6.6666667
 num_threads: 2
@@ -82,15 +61,14 @@ imu_repropagate_bg_threshold: 0.05
 
 # 视觉惯性初始化
 gravity_diff_threshold: 0.21
-init_scale_zero_threshold: 0.001
 sfm_min_seed_pts: 10
 sfm_min_e_inliers: 8
 sfm_e_ransac_threshold: 0.004
 sfm_min_pnp_pts: 10
 sfm_pnp_reproj_threshold: 0.03
 sfm_max_bad_pnp_ratio: 0.3
-sfm_epipolar_max_iterations: 10
-sfm_epipolar_num_threads: 5
+sfm_ba_max_iterations: 10
+sfm_ba_num_threads: 2
 
 # 可视化
 viewer:

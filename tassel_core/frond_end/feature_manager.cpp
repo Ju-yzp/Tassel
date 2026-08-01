@@ -42,9 +42,12 @@ bool computeReprojectionError(
         return false;
     }
 
-    const Eigen::Vector2d predicted = camera.distort(point_c.head<2>() / point_c.z());
     const Eigen::Vector2d measured(target_observation.pt.x, target_observation.pt.y);
-    if (!predicted.allFinite() || !measured.allFinite()) {
+    if (!measured.allFinite()) {
+        return false;
+    }
+    const Eigen::Vector2d predicted = camera.distort(point_c.head<2>() / point_c.z());
+    if (!predicted.allFinite()) {
         return false;
     }
     error = (predicted - measured).norm();
@@ -230,45 +233,21 @@ void FeatureManager::reset() {
     latest_keyframe_observations_.clear();
 }
 
-std::vector<MarginalizedFeatureObservation> FeatureManager::collectMarginalizedObservations(
+std::vector<Feature*> FeatureManager::collectMarginalizedFeatures(
     int host_frame_index, int target_frame_index) {
-    std::vector<MarginalizedFeatureObservation> result;
+    std::vector<Feature*> result;
     for (auto& item : features_) {
         auto& feature = item.second;
         if (feature.host_frame_index != host_frame_index ||
             !canUseFeature(feature, min_landmark_observations_)) {
             continue;
         }
-        const int observation_index = target_frame_index - feature.host_frame_index;
-        if (observation_index <= 0 ||
-            observation_index >= static_cast<int>(feature.observations.size())) {
+        if (target_frame_index >= 0 && (target_frame_index <= host_frame_index ||
+                                        target_frame_index - host_frame_index >=
+                                            static_cast<int>(feature.observations.size()))) {
             continue;
         }
-        result.push_back({&feature, {target_frame_index}});
-    }
-    return result;
-}
-
-std::vector<MarginalizedFeatureObservation> FeatureManager::collectHostedLandmarks(
-    int host_frame_index) {
-    std::vector<MarginalizedFeatureObservation> result;
-    for (auto& [_, feature] : features_) {
-        if (feature.host_frame_index != host_frame_index ||
-            !canUseFeature(feature, min_landmark_observations_)) {
-            continue;
-        }
-
-        MarginalizedFeatureObservation marginalized{&feature, {}};
-        marginalized.target_frame_indices.reserve(feature.observations.size() - 1);
-        for (size_t observation_index = 1; observation_index < feature.observations.size();
-             ++observation_index) {
-            marginalized.target_frame_indices.push_back(
-                feature.observationFrameIndex(observation_index));
-        }
-        if (marginalized.target_frame_indices.empty()) {
-            throw std::logic_error("Marginalized hosted landmark has no target observation");
-        }
-        result.push_back(std::move(marginalized));
+        result.push_back(&feature);
     }
     return result;
 }

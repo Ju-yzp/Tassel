@@ -4,10 +4,10 @@
 
 #include <ceres/ceres.h>
 #include <ceres/rotation.h>
-#include <array>
 #include <opencv2/calib3d.hpp>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/core/types.hpp>
+#include <stdexcept>
 
 #include "tassel_utils/macros.h"
 #include "tassel_utils/rotation.h"
@@ -16,103 +16,32 @@
 namespace tassel_core {
 namespace {
 
-class EpipolarSampsonFactor final : public ceres::SizedCostFunction<1, 4, 3, 4, 3> {
+struct SfmReprojectionFactor {
 public:
-    EpipolarSampsonFactor(const Eigen::Vector2d& uv_i, const Eigen::Vector2d& uv_j)
-        : xi_(uv_i.x(), uv_i.y(), 1.0), xj_(uv_j.x(), uv_j.y(), 1.0) {}
+    explicit SfmReprojectionFactor(const Eigen::Vector2d& observation)
+        : observation_(observation) {}
 
-    bool Evaluate(
-        double const* const* parameters, double* residuals, double** jacobians) const override {
-        const Eigen::Quaterniond qi(
-            parameters[0][0], parameters[0][1], parameters[0][2], parameters[0][3]);
-        const Eigen::Quaterniond qj(
-            parameters[2][0], parameters[2][1], parameters[2][2], parameters[2][3]);
-        const Eigen::Matrix3d Ri = qi.toRotationMatrix();
-        const Eigen::Matrix3d Rj = qj.toRotationMatrix();
-        const Eigen::Matrix3d A = Rj * Ri.transpose();
-        const Eigen::Vector3d ti(parameters[1]);
-        const Eigen::Vector3d tj(parameters[3]);
-        const Eigen::Vector3d y = A * xi_;
-        const Eigen::Vector3d t = tj - A * ti;
-        const Eigen::Vector3d e = t.cross(y);
-        const Eigen::Vector3d h = A.transpose() * xj_.cross(t);
-        const double numerator = xj_.dot(e);
-        const double denominator =
-            std::sqrt(e.head<2>().squaredNorm() + h.head<2>().squaredNorm() + 1e-12);
-        residuals[0] = numerator / denominator;
-
-        if (!jacobians) {
-            return true;
-        }
-        std::array<Eigen::Matrix3d, 4> dRi, dRj;
-        rotationJacobian(parameters[0], dRi);
-        rotationJacobian(parameters[2], dRj);
-        if (jacobians[0]) {
-            for (int k = 0; k < 4; ++k) {
-                const Eigen::Matrix3d dA = Rj * dRi[k].transpose();
-                jacobians[0][k] = residualDerivative(
-                    dA, Eigen::Vector3d::Zero(), xi_, xj_, A, ti, t, y, e, h, numerator,
-                    denominator);
-            }
-        }
-        if (jacobians[1]) {
-            for (int k = 0; k < 3; ++k) {
-                Eigen::Vector3d dt = Eigen::Vector3d::Zero();
-                dt[k] = 1.0;
-                jacobians[1][k] = residualDerivative(
-                    Eigen::Matrix3d::Zero(), dt, xi_, xj_, A, ti, t, y, e, h, numerator,
-                    denominator);
-            }
-        }
-        if (jacobians[2]) {
-            for (int k = 0; k < 4; ++k) {
-                const Eigen::Matrix3d dA = dRj[k] * Ri.transpose();
-                jacobians[2][k] = residualDerivative(
-                    dA, Eigen::Vector3d::Zero(), xi_, xj_, A, ti, t, y, e, h, numerator,
-                    denominator);
-            }
-        }
-        if (jacobians[3]) {
-            for (int k = 0; k < 3; ++k) {
-                Eigen::Vector3d dt = -A.col(k);
-                jacobians[3][k] = residualDerivative(
-                    Eigen::Matrix3d::Zero(), dt, xi_, xj_, A, ti, t, y, e, h, numerator,
-                    denominator);
-            }
-        }
+    template <typename T>
+    bool operator()(
+        const T* const rotation, const T* const translation, const T* const point,
+        T* residuals) const {
+        T point_camera[3];
+        ceres::QuaternionRotatePoint(rotation, point, point_camera);
+        point_camera[0] += translation[0];
+        point_camera[1] += translation[1];
+        point_camera[2] += translation[2];
+        residuals[0] = point_camera[0] / point_camera[2] - T(observation_.x());
+        residuals[1] = point_camera[1] / point_camera[2] - T(observation_.y());
         return true;
     }
 
+    static ceres::CostFunction* Create(const Eigen::Vector2d& observation) {
+        return new ceres::AutoDiffCostFunction<SfmReprojectionFactor, 2, 4, 3, 3>(
+            new SfmReprojectionFactor(observation));
+    }
+
 private:
-    static void rotationJacobian(const double* q, std::array<Eigen::Matrix3d, 4>& jacobian) {
-        const double w = q[0], x = q[1], y = q[2], z = q[3];
-        jacobian[0] << 0, -2 * z, 2 * y, 2 * z, 0, -2 * x, -2 * y, 2 * x, 0;
-        jacobian[1] << 0, 2 * y, 2 * z, 2 * y, -4 * x, -2 * w, 2 * z, 2 * w, -4 * x;
-        jacobian[2] << -4 * y, 2 * x, 2 * w, 2 * x, 0, 2 * z, -2 * w, 2 * z, -4 * y;
-        jacobian[3] << -4 * z, -2 * w, 2 * x, 2 * w, -4 * z, 2 * y, 2 * x, 2 * y, 0;
-    }
-
-    static double residualDerivative(
-        const Eigen::Matrix3d& dA, const Eigen::Vector3d& dt, const Eigen::Vector3d& xi,
-        const Eigen::Vector3d& xj, const Eigen::Matrix3d& A, const Eigen::Vector3d& ti,
-        const Eigen::Vector3d& t, const Eigen::Vector3d& y, const Eigen::Vector3d& e,
-        const Eigen::Vector3d& h, double numerator, double denominator) {
-        const Eigen::Vector3d dy = dA * xi;
-        const Eigen::Vector3d actual_dt = dt - dA * ti;
-        const Eigen::Vector3d de = actual_dt.cross(y) + t.cross(dy);
-        const Eigen::Vector3d c = xj.cross(t);
-        const Eigen::Vector3d dc = xj.cross(actual_dt);
-        const Eigen::Vector3d dh = dA.transpose() * c + A.transpose() * dc;
-        const double d_numerator = xj.dot(de);
-        const double half_d_squared_denominator =
-            e.head<2>().dot(de.head<2>()) + h.head<2>().dot(dh.head<2>());
-        const double d_denominator = half_d_squared_denominator / denominator;
-        return (d_numerator * denominator - numerator * d_denominator) /
-               (denominator * denominator);
-    }
-
-    Eigen::Vector3d xi_;
-    Eigen::Vector3d xj_;
+    Eigen::Vector2d observation_;
 };
 
 }  // namespace
@@ -211,21 +140,10 @@ std::vector<std::pair<int, int>> InitialSFM::findParallaxFrames(
     if (parallax_candidates.empty()) {
         if (connected_candidates.empty()) {
             spdlog::info("SFM: no frame has enough visual connection to seed {}", seed_id);
-            return {};
+        } else {
+            spdlog::info("SFM: no frame has enough parallax from seed {}", seed_id);
         }
-        const auto fallback = std::max_element(
-            connected_candidates.begin(), connected_candidates.end(),
-            [](const auto& lhs, const auto& rhs) {
-                if (lhs.frame_distance != rhs.frame_distance) {
-                    return lhs.frame_distance < rhs.frame_distance;
-                }
-                return lhs.common_count < rhs.common_count;
-            });
-        spdlog::info(
-            "SFM: low parallax, fallback frame {} distance={} common={} parallax={:.6f}",
-            fallback->frame_id, fallback->frame_distance, fallback->common_count,
-            fallback->median_parallax);
-        return {{fallback->frame_id, fallback->common_count}};
+        return {};
     }
 
     std::sort(
@@ -277,9 +195,29 @@ bool InitialSFM::computeEssential(
     cv::Mat inlier_mask;
     cv::Mat E = cv::findEssentialMat(
         pts_seed, pts_other, K_cv, cv::RANSAC, 0.99, e_ransac_threshold_, inlier_mask);
-    if (cv::countNonZero(inlier_mask) < min_e_inliers_) {
+    const int inlier_count = cv::countNonZero(inlier_mask);
+    if (inlier_count < min_e_inliers_) {
         return false;
     }
+    if (inlier_mask.total() != pts_seed.size() || !inlier_mask.isContinuous()) {
+        throw std::logic_error("Essential inlier mask does not match the input correspondences");
+    }
+
+    std::vector<cv::Point2f> inlier_seed;
+    std::vector<cv::Point2f> inlier_other;
+    inlier_seed.reserve(inlier_count);
+    inlier_other.reserve(inlier_count);
+    const uchar* mask = inlier_mask.ptr<uchar>();
+    // OpenCV 掩码行与两组匹配点严格同序；位姿分解后的正深度评分只能使用这些内点。
+    for (size_t i = 0; i < pts_seed.size(); ++i) {
+        if (mask[i] == 0) {
+            continue;
+        }
+        inlier_seed.push_back(pts_seed[i]);
+        inlier_other.push_back(pts_other[i]);
+    }
+    pts_seed = std::move(inlier_seed);
+    pts_other = std::move(inlier_other);
 
     Eigen::Matrix3d E_eigen;
     cv::cv2eigen(E, E_eigen);
@@ -405,51 +343,44 @@ bool InitialSFM::reconstructScene(
             c_rotation[i][3] = c_Quat[i].z();
             problem.AddParameterBlock(c_rotation[i].data(), 4, quat_manifold);
             problem.AddParameterBlock(c_translation[i].data(), 3);
-            if (i == l || i == last) {
+            if (i == l) {
                 problem.SetParameterBlockConstant(c_rotation[i].data());
+            }
+            // seed 平移固定世界原点，基线帧平移固定 Essential 给出的单位尺度。
+            if (i == l || i == last) {
                 problem.SetParameterBlockConstant(c_translation[i].data());
             }
         }
 
-        int n_epipolar_edges = 0;
+        int observation_count = 0;
         for (int i = 0; i < feature_num_; i++) {
-            const int nobs = static_cast<int>(sfm_f[i].observation.size());
-            if (nobs < 2) {
+            if (!sfm_f[i].state) {
                 continue;
             }
-            for (int j = 0; j < nobs; j++) {
-                int frame_j = sfm_f[i].observation[j].first;
-                for (int k = j + 1; k < nobs; k++) {
-                    int frame_k = sfm_f[i].observation[k].first;
-                    if (frame_j == frame_k) {
-                        continue;
-                    }
-                    ceres::CostFunction* cost_function = new EpipolarSampsonFactor(
-                        sfm_f[i].observation[j].second, sfm_f[i].observation[k].second);
-                    ceres::LossFunction* loss = new ceres::HuberLoss(e_ransac_threshold_);
-                    problem.AddResidualBlock(
-                        cost_function, loss, c_rotation[frame_j].data(),
-                        c_translation[frame_j].data(), c_rotation[frame_k].data(),
-                        c_translation[frame_k].data());
-                    n_epipolar_edges++;
-                }
+            problem.AddParameterBlock(sfm_f[i].position, 3);
+            for (const auto& [frame_index, observation] : sfm_f[i].observation) {
+                problem.AddResidualBlock(
+                    SfmReprojectionFactor::Create(observation),
+                    new ceres::HuberLoss(e_ransac_threshold_), c_rotation[frame_index].data(),
+                    c_translation[frame_index].data(), sfm_f[i].position);
+                ++observation_count;
             }
         }
 
-        if (n_epipolar_edges == 0) {
-            spdlog::info("SFM epipolar optimization: no valid edges");
+        if (observation_count == 0) {
+            spdlog::info("SFM BA: no valid observations");
             return false;
         }
 
         ceres::Solver::Options options;
-        options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
-        options.max_num_iterations = epipolar_max_iterations_;
-        options.num_threads = epipolar_num_threads_;
+        options.linear_solver_type = ceres::DENSE_SCHUR;
+        options.max_num_iterations = ba_max_iterations_;
+        options.num_threads = ba_num_threads_;
         options.logging_type = ceres::SILENT;
         ceres::Solver::Summary summary;
         ceres::Solve(options, &problem, &summary);
         spdlog::info(
-            "SFM epipolar: {} edges, {}, iters={}, cost={:.4e}", n_epipolar_edges,
+            "SFM BA: {} observations, {}, iters={}, cost={:.4e}", observation_count,
             summary.termination_type == ceres::CONVERGENCE ? "CONV" : "NOCONV",
             summary.iterations.size(), summary.final_cost);
         if (!summary.IsSolutionUsable()) {
@@ -470,41 +401,24 @@ bool InitialSFM::reconstructScene(
         }
 
         for (int i = 0; i < feature_num_; i++) {
-            sfm_f[i].state = false;
-        }
-        for (int i = 0; i < feature_num_; i++) {
-            int nobs = static_cast<int>(sfm_f[i].observation.size());
-            if (nobs < 3) {
+            if (!sfm_f[i].state) {
                 continue;
             }
-            std::vector<Eigen::Matrix<double, 3, 4>> obs_poses;
-            std::vector<Eigen::Vector2d> obs_uvs;
-            for (int j = 0; j < nobs; j++) {
-                int frame_idx = sfm_f[i].observation[j].first;
-                obs_poses.push_back(Pose[frame_idx]);
-                obs_uvs.push_back(sfm_f[i].observation[j].second);
-            }
-            Eigen::Vector3d point_3d =
-                tassel_utils::dehomogenize(tassel_utils::triangulateMultiView(obs_poses, obs_uvs));
-            if (!point_3d.allFinite()) {
-                continue;
-            }
+            const Eigen::Vector3d point_3d(sfm_f[i].position);
             bool ok = true;
-            for (int j = 0; j < nobs; j++) {
-                int frame_idx = sfm_f[i].observation[j].first;
-                if ((point_3d - t_arr[frame_idx])
-                        .dot(q_cam_rel[frame_idx].toRotationMatrix().col(2)) < 0.1) {
+            for (const auto& [frame_index, observation] : sfm_f[i].observation) {
+                (void)observation;
+                const Eigen::Vector3d point_camera =
+                    c_Rotation[frame_index] * point_3d + c_Translation[frame_index];
+                if (!point_camera.allFinite() || point_camera.z() < 0.1) {
                     ok = false;
                     break;
                 }
             }
             if (!ok) {
+                sfm_f[i].state = false;
                 continue;
             }
-            sfm_f[i].state = true;
-            sfm_f[i].position[0] = point_3d(0);
-            sfm_f[i].position[1] = point_3d(1);
-            sfm_f[i].position[2] = point_3d(2);
         }
     }
 
@@ -769,8 +683,11 @@ bool InitialSFM::construct(
 
         std::vector<Eigen::Vector3d> t_arr(frame_num, Eigen::Vector3d::Zero());
         std::map<int, Eigen::Vector3d> tracked_pts;
+        // reconstructScene 会原地写入三角化状态；失败候选不得污染后续候选。
+        auto candidate_features = sfm_f;
         if (!reconstructScene(
-                frame_num, seed_id, other_id, T_dir, q_cam_rel, t_arr, sfm_f, tracked_pts)) {
+                frame_num, seed_id, other_id, T_dir, q_cam_rel, t_arr, candidate_features,
+                tracked_pts)) {
             continue;
         }
 

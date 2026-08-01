@@ -5,12 +5,11 @@
 //   EuRoC MAV Machine Hall 单目序列的离线集成入口。
 //
 // 用法：
-//   test_euroc [config.yaml] [sequence_dir] [max_frames=0(all)] [replay_hz]
-//              [brief_vocabulary]
+//   test_euroc [config.yaml] [sequence_dir] [replay_hz]
 //
 // 示例：
 //   unzip dataset/machine_hall/MH_01_easy/MH_01_easy.zip -d dataset/machine_hall/MH_01_easy
-//   ./build/tassel_core/test_euroc config/euroc.yaml dataset/machine_hall/MH_01_easy 0 20
+//   ./build/tassel_core/test_euroc config/euroc.yaml dataset/machine_hall/MH_01_easy 20
 // =============================================================================
 
 #include <opencv2/imgcodecs.hpp>
@@ -20,6 +19,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
@@ -38,15 +38,14 @@
 #include <vector>
 
 #include <rclcpp/executors/single_threaded_executor.hpp>
+#include <spdlog/spdlog.h>
 
 #include "cam/camera_factory.h"
 #include "estimator/estimator.h"
 #include "frond_end/feature_manager.h"
 #include "frond_end/feature_tracker.h"
-#include "loop_closure.h"
 #include "parameters/parameters.h"
 #include "state/state.h"
-#include "tassel_utils/timer.h"
 #include "viewer/viewer.h"
 
 namespace fs = std::filesystem;
@@ -385,7 +384,7 @@ void publishMonoImage(
     if (image.image.empty()) {
         return;
     }
-    viewer->publishCompressedImage("mono/image", "camera", image.image, "jpeg");
+    viewer->publishImage("mono/image", "camera_optical_frame", image.image);
 }
 
 }  // namespace
@@ -399,9 +398,10 @@ int main(int argc, char** argv) {
                                               : fs::path(
                                                     "/home/adrewn/Tassel/datasets/"
                                                     "machine_hall/MH_01_easy");
-    const size_t max_frames = (argc >= 4) ? static_cast<size_t>(std::stoul(argv[3])) : 0;
-    const double replay_hz = (argc >= 5) ? std::stod(argv[4]) : 20.0;
-    const fs::path loop_vocabulary_path = (argc >= 6) ? fs::path(argv[5]) : fs::path();
+    const double replay_hz = (argc >= 4) ? std::stod(argv[3]) : 20.0;
+    if (!std::isfinite(replay_hz) || replay_hz <= 0.0) {
+        throw std::invalid_argument("replay_hz must be finite and positive");
+    }
 
     const fs::path resolved_sequence_dir = resolveSequenceDir(sequence_dir);
     if (!fs::exists(resolved_sequence_dir / "mav0" / "cam0" / "data.csv")) {
@@ -429,17 +429,19 @@ int main(int argc, char** argv) {
     auto camera = initializeCamera(params);
 
     rclcpp::init(argc, argv);
-    auto viewer = std::make_shared<tassel_tools::Viewer>("world");
+    auto viewer = std::make_shared<tassel_tools::Viewer>("odom");
     rclcpp::QoS image_qos(rclcpp::KeepLast(1));
     image_qos.best_effort().durability_volatile();
-    viewer->createCompressedImagePublisher("mono/image", image_qos);
-    viewer->createOdometryPublisher("imu", "vio/odometry");
+    viewer->createImagePublisher("mono/image", image_qos);
+    viewer->createOdometryPublisher("imu_link", "vio/odometry");
+    viewer->createOdometryPublisher(
+        "camera_optical_frame", "vio/camera_odometry", rclcpp::QoS(10), false);
+    viewer->publishStaticTransform(
+        "imu_link", "camera_optical_frame", params.tic,
+        Eigen::Quaterniond(params.ric).normalized());
     viewer->createPathPublisher("vio/path", rclcpp::QoS(10), params.viewer_path_max_poses);
-    viewer->createPathPublisher("slam/path", rclcpp::QoS(10), params.viewer_path_max_poses);
-    viewer->createPathPublisher("slam/keyframe_path", rclcpp::QoS(10), 0);
     viewer->createPathPublisher("ground_truth/path", rclcpp::QoS(10), params.viewer_path_max_poses);
     viewer->createCompressedImagePublisher("optimization/visual_window", image_qos);
-    viewer->createCompressedImagePublisher("loop/matches", image_qos);
 
     rclcpp::executors::SingleThreadedExecutor executor;
     executor.add_node(viewer);
@@ -466,98 +468,16 @@ int main(int argc, char** argv) {
     Estimator estimator(params, state, feature_manager);
     state->camera = camera_ptr;
     estimator.setCamera(camera_ptr);
-    tassel_loop::PoseGraphStats final_graph_stats;
-    std::shared_ptr<tassel_loop::LoopClosure> loop_closure;
-    if (!loop_vocabulary_path.empty()) {
-        tassel_loop::LoopClosureOptions options;
-        options.database.fast_threshold = params.loop_fast_threshold;
-        options.database.max_keypoints = params.loop_max_keypoints;
-        options.database.recent_exclusion = params.loop_recent_exclusion;
-        options.database.top_k = params.loop_top_k;
-        options.database.likelihood_pool_size = params.loop_likelihood_pool_size;
-        options.database.min_score = params.loop_min_score;
-        options.database.brief_ratio = params.loop_brief_ratio;
-        options.database.brief_max_distance = params.loop_brief_max_distance;
-        options.max_candidates = params.loop_pnp_max_candidates;
-        options.min_probability = params.loop_min_probability;
-        options.min_likelihood_ratio = params.loop_min_likelihood_ratio;
-        options.fallback_min_score = params.loop_pnp_fallback_min_score;
-        options.pnp_min_inliers = params.loop_pnp_min_inliers;
-        options.pnp_min_inlier_ratio = params.loop_pnp_min_inlier_ratio;
-        options.pnp_inlier_threshold = params.loop_pnp_inlier_threshold;
-        options.pnp_max_iterations = params.loop_pnp_max_iterations;
-        options.pnp_confidence = params.loop_pnp_confidence;
-        options.variance_quantile_divisor = params.loop_pnp_variance_quantile_divisor;
-        options.max_translation_variance = params.loop_pnp_max_translation_variance;
-        options.optimize_max_error = params.loop_optimize_max_error;
-        options.imu_T_camera = Sophus::SE3d(params.ric, params.tic);
-        loop_closure = std::make_shared<tassel_loop::LoopClosure>(
-            loop_vocabulary_path.string(), options,
-            [camera_ptr](const Eigen::Vector2d& point) { return camera_ptr->undistort(point); },
-            [&viewer, &final_graph_stats](const tassel_loop::LoopClosureResult& result) {
-                final_graph_stats = result.graph_stats;
-                const double timestamp =
-                    result.current_frame_id != tassel_utils::kInvalidFrameId
-                        ? tassel_utils::frameIdToSeconds(result.current_frame_id)
-                        : -1.0;
-                if (!result.graph_poses.empty()) {
-                    std::vector<Eigen::Vector3d> positions;
-                    std::vector<Eigen::Quaterniond> orientations;
-                    positions.reserve(result.graph_poses.size());
-                    orientations.reserve(result.graph_poses.size());
-                    for (const auto& [frame_id, pose] : result.graph_poses) {
-                        (void)frame_id;
-                        positions.push_back(pose.world_t_camera);
-                        orientations.emplace_back(pose.world_R_camera);
-                    }
-                    viewer->publishPathSnapshot(
-                        "slam/keyframe_path", positions, orientations, timestamp);
-                }
-                if (result.event == tassel_loop::LoopEvent::GlobalPoseUpdated &&
-                    !result.corrected_trajectory.empty()) {
-                    const Sophus::SE3d& pose = result.corrected_trajectory.back();
-                    viewer->publishPath(
-                        "slam/path", pose.translation(), pose.unit_quaternion(), timestamp);
-                } else if (result.event == tassel_loop::LoopEvent::LoopAccepted) {
-                    if (!result.match_image.empty()) {
-                        viewer->publishCompressedImage(
-                            "loop/matches", "camera", result.match_image, "jpeg", timestamp);
-                    }
-                    std::vector<Eigen::Vector3d> positions;
-                    std::vector<Eigen::Quaterniond> orientations;
-                    positions.reserve(result.corrected_trajectory.size());
-                    orientations.reserve(result.corrected_trajectory.size());
-                    for (const Sophus::SE3d& pose : result.corrected_trajectory) {
-                        positions.push_back(pose.translation());
-                        orientations.push_back(pose.unit_quaternion());
-                    }
-                    viewer->publishPathSnapshot("slam/path", positions, orientations, timestamp);
-                    std::cout << "[loop_verified] current_frame_id=" << result.current_frame_id
-                              << " candidate_frame_id=" << result.candidate_frame_id
-                              << " inliers=" << result.verification.inlier_count << "/"
-                              << result.verification.match_count << " translation_variance="
-                              << result.verification.translation_variance
-                              << " rotation_variance=" << result.verification.rotation_variance
-                              << " normalized_graph_error="
-                              << result.optimization.max_normalized_loop_error << "\n";
-                } else if (result.event == tassel_loop::LoopEvent::LoopRejected) {
-                    std::cout << "[loop_rejected] current_frame_id=" << result.current_frame_id
-                              << " candidate_frame_id=" << result.candidate_frame_id
-                              << " reason=" << result.reason << " normalized_error="
-                              << result.optimization.max_normalized_loop_error << "\n";
-                }
-            });
-        estimator.setLoopClosure(loop_closure);
-        std::cout << "[loop] vocabulary=" << loop_vocabulary_path << "\n";
-    } else {
-        std::cout << "[loop] disabled: no BRIEF vocabulary path provided\n";
-    }
     std::optional<Sophus::SE3d> ground_truth_alignment;
-    estimator.setPoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment](
+    estimator.setPoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment, &params](
                                   double ts, const Sophus::SE3d& pose) {
         viewer->publishOdometry(
             "vio/odometry", pose.translation(), pose.unit_quaternion(), Eigen::Vector3d::Zero(),
             Eigen::Vector3d::Zero(), ts);
+        const Sophus::SE3d camera_pose = pose * Sophus::SE3d(params.ric, params.tic);
+        viewer->publishOdometry(
+            "vio/camera_odometry", camera_pose.translation(), camera_pose.unit_quaternion(),
+            Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), ts);
         viewer->publishPath("vio/path", pose.translation(), pose.unit_quaternion(), ts);
         if (const auto truth = interpolateGroundTruth(ground_truth, ts)) {
             if (!ground_truth_alignment) {
@@ -577,8 +497,7 @@ int main(int argc, char** argv) {
             viewer->publishVisualFactorWindow(
                 "optimization/visual_window", visual_factors_per_frame);
         });
-    const size_t frame_limit =
-        (max_frames == 0) ? frames.size() : std::min(max_frames, frames.size());
+    const size_t frame_limit = frames.size();
     BlockingDatasetSync sync;
 
     std::atomic_bool imu_done{false};
@@ -727,19 +646,20 @@ int main(int argc, char** argv) {
 
     size_t processed = 0;
     while (rclcpp::ok()) {
+        const auto packet_start = std::chrono::steady_clock::now();
         SyncedPacket packet;
         if (!sync.waitPop(packet, state->delay_time)) {
             break;
         }
+        const auto after_sync = std::chrono::steady_clock::now();
         if (!packet.mono) {
             continue;
         }
 
         std::unordered_map<int, FeaturePerFrame> feature_frame;
-        {
-            tassel_utils::Timer t("euroc_mono_tracking");
-            feature_frame = tracker.monoTracking(packet.mono->left_img);
-        }
+        const auto tracking_start = std::chrono::steady_clock::now();
+        feature_frame = tracker.monoTracking(packet.mono->left_img);
+        const auto after_tracking = std::chrono::steady_clock::now();
         for (auto& [id, feature] : feature_frame) {
             (void)id;
             feature.sync_delay = packet.sync_delay;
@@ -751,10 +671,22 @@ int main(int argc, char** argv) {
             std::lock_guard<std::mutex> lock(latest_image_mutex);
             latest_image.image = std::move(left_tracking);
         }
+        const auto after_visualization = std::chrono::steady_clock::now();
 
-        estimator.submitFrameImage(packet.mono->timestamp, packet.mono->left_img);
         estimator.processMeasurement(
             packet.mono->timestamp, feature_frame, packet.imu_slice, packet.sync_delay);
+        const auto after_estimator = std::chrono::steady_clock::now();
+
+        const auto milliseconds = [](auto begin, auto end) {
+            return std::chrono::duration<double, std::milli>(end - begin).count();
+        };
+        spdlog::info(
+            "Timing pipeline: total={:.3f} ms sync_wait={:.3f} tracking={:.3f} "
+            "visualization={:.3f} estimator={:.3f}",
+            milliseconds(packet_start, after_estimator), milliseconds(packet_start, after_sync),
+            milliseconds(tracking_start, after_tracking),
+            milliseconds(after_tracking, after_visualization),
+            milliseconds(after_visualization, after_estimator));
 
         ++processed;
 
@@ -781,10 +713,6 @@ int main(int argc, char** argv) {
     if (image_publish_thread.joinable()) {
         image_publish_thread.join();
     }
-    if (loop_closure) {
-        loop_closure->finish();
-    }
-
     stop_executor = true;
     executor.cancel();
     if (spin_thread.joinable()) {
@@ -795,10 +723,6 @@ int main(int argc, char** argv) {
 
     std::cout << "\n[EuRoC] done. processed=" << processed
               << ", newest frame_index=" << state->latest_frame_index << "\n";
-    std::cout << "[pose_graph] nodes=" << final_graph_stats.node_count
-              << " odometry_factors=" << final_graph_stats.odometry_factor_count
-              << " pose_loop_factors=" << final_graph_stats.loop_factor_count
-              << " optimized=" << final_graph_stats.optimized << " writeback=global_output\n";
     if (state->latest_frame_index > 0) {
         int idx = state->latest_frame_index;
         std::cout << "Final pose:\n"

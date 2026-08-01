@@ -38,8 +38,12 @@ def load_config(path: Path) -> tuple[dict, Path, dict]:
 def apply_viewer_config(config: dict, layout: dict) -> None:
     viewer = config.get("viewer", {})
     config_by_id = layout["configById"]
-    scene = config_by_id["3D!tasselmain"]
-    path = scene["topics"]["/vio/path"]
+    scene = config_by_id.get("3D!tasselmain")
+    if scene is None:
+        return
+    path = scene.get("topics", {}).get("/vio/path")
+    if path is None:
+        return
 
     path["color"] = str(viewer.get("path_color", path.get("color", "#ef4444")))
     path["lineWidth"] = float(viewer.get("path_line_width", path.get("lineWidth", 0.005)))

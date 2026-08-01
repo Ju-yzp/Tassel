@@ -10,6 +10,8 @@
 #include <rclcpp/publisher.hpp>
 #include <rclcpp/qos.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <tf2_ros/static_transform_broadcaster.hpp>
 #include <tf2_ros/transform_broadcaster.hpp>
 
 // Eigen
@@ -31,19 +33,30 @@ public:
     void createCompressedImagePublisher(
         const std::string& topic_name, const rclcpp::QoS qos = rclcpp::QoS(10));
 
+    void createImagePublisher(
+        const std::string& topic_name, const rclcpp::QoS qos = rclcpp::QoS(10));
+
     void publishCompressedImage(
         const std::string& topic, const std::string& frame_id, const cv::Mat& image,
         const std::string& format = "jpeg", double timestamp = -1.0);
 
+    void publishImage(
+        const std::string& topic, const std::string& frame_id, const cv::Mat& image,
+        double timestamp = -1.0);
+
     void createOdometryPublisher(
         const std::string& child_frame_id, const std::string& topic_name,
-        const rclcpp::QoS& qos = rclcpp::QoS(10));
+        const rclcpp::QoS& qos = rclcpp::QoS(10), bool broadcast_tf = true);
 
     void publishOdometry(
         const std::string& topic, const Eigen::Vector3d& position,
         const Eigen::Quaterniond& orientation,
         const Eigen::Vector3d& linear_velocity = Eigen::Vector3d::Zero(),
         const Eigen::Vector3d& angular_velocity = Eigen::Vector3d::Zero(), double timestamp = -1.0);
+
+    void publishStaticTransform(
+        const std::string& parent_frame_id, const std::string& child_frame_id,
+        const Eigen::Vector3d& translation, const Eigen::Quaterniond& rotation);
 
     void createPathPublisher(
         const std::string& topic_name, const rclcpp::QoS& qos = rclcpp::QoS(10),
@@ -64,11 +77,14 @@ private:
     // 压缩图像
     std::unordered_map<std::string, rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr>
         compressed_image_publishers_;
+    std::unordered_map<std::string, rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr>
+        image_publishers_;
 
     // 里程计
     std::unordered_map<std::string, rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr>
         odometry_publishers_;
     std::unordered_map<std::string, nav_msgs::msg::Odometry> odometry_;
+    std::unordered_map<std::string, bool> odometry_broadcast_tf_;
 
     // 轨迹
     std::unordered_map<std::string, rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr>
@@ -78,6 +94,7 @@ private:
 
     std::string frame_id_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+    std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_;
     rclcpp::Time messageStamp(double timestamp) const;
 };
 }  // namespace tassel_tools

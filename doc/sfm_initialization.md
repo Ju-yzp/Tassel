@@ -43,7 +43,7 @@ SFM 输出：
   -> 分解 E 并用正深度消除四解歧义
   -> 两视图三角化
   -> PnP 注册其余帧并继续三角化
-  -> 全窗口 Sampson 对极优化
+  -> 全窗口重投影 BA
   -> 多视图重新三角化和正深度检查
   -> 对齐到第 0 帧参考系
 ```
@@ -208,54 +208,25 @@ e_{lk}=\left\|
 平均误差超阈值或坏点比例过高时，整帧注册失败。成功注册后，使用新帧与两端种子帧
 继续三角化尚未初始化的轨迹。
 
-## 7. 全窗口 Sampson 对极优化
+## 7. 全窗口 Bundle Adjustment
 
-当前优化不是传统 Bundle Adjustment。优化变量只有每帧世界到相机的旋转和平移：
+PnP 和 DLT 只生成初值。全窗口 BA 联合优化每帧世界到相机的位姿和已三角化路标：
 
 ```math
 \mathcal X=
-\left\{\mathbf R_{C_kv},\mathbf t_{C_kv}\right\}_{k=0}^{N-1}.
+\left\{\mathbf R_{C_kv},\mathbf t_{C_kv}\right\}_{k=0}^{N-1}
+\cup\left\{\mathbf X_l^v\right\}.
 ```
 
-三维路标不参与该非线性优化。对同一轨迹的任意两次观测 $i,j$，定义
+每次归一化观测使用二维重投影残差：
 
 ```math
-\mathbf A_{ji}=\mathbf R_{C_jv}\mathbf R_{C_iv}^T,
-\qquad
-\mathbf t_{ji}=\mathbf t_{C_jv}-\mathbf A_{ji}\mathbf t_{C_iv}.
+\mathbf r_{lk}=\pi\left(\mathbf R_{C_kv}\mathbf X_l^v+\mathbf t_{C_kv}\right)-\mathbf u_{lk}.
 ```
 
-于是
-
-```math
-\mathbf E_{ji}=[\mathbf t_{ji}]_\times\mathbf A_{ji}.
-```
-
-令
-
-```math
-\mathbf e=\mathbf E_{ji}\mathbf x_i,
-\qquad
-\mathbf h=\mathbf E_{ji}^T\mathbf x_j,
-\qquad
-n=\mathbf x_j^T\mathbf E_{ji}\mathbf x_i,
-```
-
-代码使用一阶 Sampson 残差
-
-```math
-\boxed{
-r_{ij}=
-\frac{n}
-{\sqrt{e_x^2+e_y^2+h_x^2+h_y^2+\epsilon}}
-}.
-```
-
-所有有效轨迹的观测对构成稀疏对极边，并使用 Huber 损失抑制残余错误匹配。种子帧和
-候选帧的旋转、平移都固定，以同时固定全局位姿规范和单目尺度规范。
-
-优化完成后，轨迹长度不少于三帧的路标使用全部观测重新执行多视图 DLT，而不是继续
-使用优化前的两视图深度。
+种子帧旋转和种子帧平移固定全局位姿规范，基线帧平移固定 Essential 给出的单目尺度；
+基线帧旋转和其他帧位姿允许由 BA 修正。所有观测使用 Huber 损失抑制残余错误匹配。
+优化后的路标直接保留，不再用 DLT 覆盖，并再次检查其在全部观测帧中的正深度。
 
 ## 8. 参考系对齐
 
@@ -297,5 +268,5 @@ IMU 偏置已经正确。这些量必须通过惯性对齐继续验证。
 | Essential RANSAC | `InitialSFM::computeEssential()` |
 | 四解分解与正深度评分 | `decomposeEssentialMat()`、`scoreByCheirality()` |
 | PnP 与 DLT | `registerFramePnP()`、`triangulateTwoFrames()` |
-| Sampson 对极优化 | `EpipolarSampsonFactor`、`reconstructScene()` |
+| 全窗口重投影 BA | `SfmReprojectionFactor`、`reconstructScene()` |
 | 第 0 帧规范对齐 | `alignToReference()` |

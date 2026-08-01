@@ -64,7 +64,30 @@ void FeatureTracker::setCamera(
     int height = ctc.camera->get_height();
     int width = ctc.camera->get_width();
     ctc.grad = cv::Mat::zeros(height, width, CV_32F);
+    ctc.valid_mask = cv::Mat(height, width, CV_8UC1, cv::Scalar(255));
     ctc_ = std::move(ctc);
+}
+
+void FeatureTracker::setValidMask(const cv::Mat& mask, int margin) {
+    if (!ctc_.camera) {
+        throw std::logic_error("FeatureTracker camera has not been configured");
+    }
+    if (mask.empty() || mask.type() != CV_8UC1 ||
+        mask.rows != ctc_.camera->get_height() || mask.cols != ctc_.camera->get_width()) {
+        throw std::invalid_argument("FeatureTracker valid mask does not match the camera image");
+    }
+    if (margin < 0) {
+        throw std::invalid_argument("FeatureTracker valid mask margin must not be negative");
+    }
+    if (margin == 0) {
+        ctc_.valid_mask = mask.clone();
+        return;
+    }
+    // 特征中心必须离无效区至少 margin 像素，避免 LK patch 和梯度窗口跨越硬掩码边界。
+    const int kernel_size = 2 * margin + 1;
+    const cv::Mat kernel = cv::getStructuringElement(
+        cv::MORPH_ELLIPSE, cv::Size(kernel_size, kernel_size));
+    cv::erode(mask, ctc_.valid_mask, kernel);
 }
 
 std::unordered_map<int, FeaturePerFrame> FeatureTracker::monoTracking(const cv::Mat& img) {
@@ -193,7 +216,10 @@ void FeatureTracker::monoMatching(
     size_t valid_count = 0;
     std::vector<int>& tracked_times = ctc_.tracked_times;
     for (size_t index = 0; index < num; ++index) {
-        if (p2c_status[index] && !isOutOfImage(cur_pts[index], rows, cols)) {
+        const int x = cvRound(cur_pts[index].x);
+        const int y = cvRound(cur_pts[index].y);
+        if (p2c_status[index] && !isOutOfImage(cur_pts[index], rows, cols) && x >= 0 && x < cols &&
+            y >= 0 && y < rows && ctc_.valid_mask.at<uchar>(y, x) != 0) {
             cur_pts[valid_count] = cur_pts[index];
             cur_ids[valid_count] = cur_ids[index];
             tracked_times[valid_count] = tracked_times[index] + 1;
@@ -211,7 +237,7 @@ void FeatureTracker::setMask() {
     cv::Mat& mask = ctc.mask;
     int rows = ctc.camera->get_height();
     int cols = ctc.camera->get_width();
-    mask = cv::Mat(rows, cols, CV_8UC1, cv::Scalar(255));
+    mask = ctc.valid_mask.clone();
     ctc.grid_mask.assign(ctc.grid_rows * ctc.grid_cols, false);
     if (ctc.cur_pts.size() != ctc.cur_ids.size() ||
         ctc.cur_pts.size() != ctc.tracked_times.size()) {

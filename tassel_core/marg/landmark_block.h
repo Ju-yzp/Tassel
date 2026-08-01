@@ -17,7 +17,7 @@ public:
     void allocate(int num_frames, int num_obs, int dim);
 
     void linearize(
-        const MarginalizedFeatureObservation& observation, const State& state,
+        const Feature& feature, int target_frame_index, const State& state,
         const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
     void marginalizeLandmark();
