@@ -36,7 +36,9 @@ void Viewer::createCompressedImagePublisher(const std::string& topic_name, const
 
 void Viewer::createImagePublisher(const std::string& topic_name, const rclcpp::QoS qos) {
     if (image_publishers_.find(topic_name) != image_publishers_.end()) {
-        RCLCPP_WARN(this->get_logger(), "Image topic %s already exists, skipping creation.", topic_name.c_str());
+        RCLCPP_WARN(
+            this->get_logger(), "Image topic %s already exists, skipping creation.",
+            topic_name.c_str());
         return;
     }
     image_publishers_[topic_name] =
@@ -46,14 +48,25 @@ void Viewer::createImagePublisher(const std::string& topic_name, const rclcpp::Q
 void Viewer::publishCompressedImage(
     const std::string& topic, const std::string& frame_id, const cv::Mat& image,
     const std::string& format, double timestamp) {
-    if (compressed_image_publishers_.find(topic) == compressed_image_publishers_.end()) {
-        RCLCPP_ERROR(this->get_logger(), "CompressedImage topic %s not found!", topic.c_str());
+    publishCompressedImageToTopics({topic}, frame_id, image, format, timestamp);
+}
+
+void Viewer::publishCompressedImageToTopics(
+    const std::vector<std::string>& topics, const std::string& frame_id, const cv::Mat& image,
+    const std::string& format, double timestamp) {
+    if (topics.empty()) {
         return;
+    }
+    for (const auto& topic : topics) {
+        if (!compressed_image_publishers_.contains(topic)) {
+            throw std::invalid_argument("CompressedImage topic is not registered: " + topic);
+        }
     }
 
     std::vector<uchar> buf;
     if (format == "jpeg" || format == "jpg") {
-        cv::imencode(".jpg", image, buf);
+        const std::vector<int> options = {cv::IMWRITE_JPEG_QUALITY, 70};
+        cv::imencode(".jpg", image, buf, options);
     } else if (format == "png") {
         cv::imencode(".png", image, buf);
     } else if (format == "webp") {
@@ -71,7 +84,9 @@ void Viewer::publishCompressedImage(
     msg.format = format;
     msg.data = std::move(buf);
 
-    compressed_image_publishers_[topic]->publish(msg);
+    for (const auto& topic : topics) {
+        compressed_image_publishers_.at(topic)->publish(msg);
+    }
 }
 
 void Viewer::publishImage(
@@ -96,7 +111,8 @@ void Viewer::publishImage(
     msg.step = static_cast<uint32_t>(image.cols * image.elemSize());
     msg.data.resize(static_cast<size_t>(msg.step) * msg.height);
     for (int row = 0; row < image.rows; ++row) {
-        std::memcpy(msg.data.data() + static_cast<size_t>(row) * msg.step, image.ptr(row), msg.step);
+        std::memcpy(
+            msg.data.data() + static_cast<size_t>(row) * msg.step, image.ptr(row), msg.step);
     }
     publisher->second->publish(std::move(msg));
 }
@@ -127,8 +143,18 @@ void Viewer::publishOdometry(
         RCLCPP_ERROR(this->get_logger(), "Odometry topic %s not found!", topic.c_str());
         return;
     }
+    const rclcpp::Time stamp = messageStamp(timestamp);
+    const int64_t stamp_ns = stamp.nanoseconds();
+    const auto last_it = odometry_last_stamp_ns_.find(topic);
+    if (last_it != odometry_last_stamp_ns_.end() && stamp_ns <= last_it->second) {
+        RCLCPP_WARN(
+            this->get_logger(), "Drop non-increasing odometry stamp on %s: current=%lld last=%lld",
+            topic.c_str(), static_cast<long long>(stamp_ns),
+            static_cast<long long>(last_it->second));
+        return;
+    }
     auto& odom = odometry_[topic];
-    odom.header.stamp = messageStamp(timestamp);
+    odom.header.stamp = stamp;
     odom.pose.pose.position.x = position.x();
     odom.pose.pose.position.y = position.y();
     odom.pose.pose.position.z = position.z();
@@ -144,6 +170,7 @@ void Viewer::publishOdometry(
     odom.twist.twist.angular.z = angular_velocity.z();
 
     odometry_publishers_[topic]->publish(odom);
+    odometry_last_stamp_ns_[topic] = stamp_ns;
 
     if (!odometry_broadcast_tf_.at(topic)) {
         return;

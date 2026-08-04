@@ -17,7 +17,8 @@ struct NoriFrameTiming {
 
 class NoriDecoder {
 public:
-    // 输入为 UVC MJPEG 解码得到的 top-down 灰度或 BGR 图像，时间戳条带从第 3 行开始，每条向下间隔 8 行。
+    // 输入为 UVC MJPEG 解码得到的 top-down 灰度或 BGR 图像，时间戳条带从第 3 行开始，每条向下间隔 8
+    // 行。
     bool decode(
         const cv::Mat& image, NoriFrameTiming& timing,
         std::vector<tassel_utils::IMUMeasurement>& measurements);

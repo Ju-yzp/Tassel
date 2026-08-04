@@ -41,8 +41,8 @@ FeatureTracker makeTracker() {
     const cv::Mat distortion = cv::Mat::zeros(1, 5, CV_64F);
     FeatureTracker tracker;
     tracker.setCamera(
-        CameraFactory::create("radtan", camera_matrix, distortion, kWidth, kHeight), 40, 50, 0, 0,
-        15.0, 20);
+        CameraFactory::create("radtan", camera_matrix, distortion, kWidth, kHeight), 40, 50, 15.0,
+        20);
     return tracker;
 }
 

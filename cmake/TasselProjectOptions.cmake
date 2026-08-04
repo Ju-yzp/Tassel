@@ -12,12 +12,14 @@ function(tassel_setup_project_options)
   endif()
 
   if(NOT CMAKE_CONFIGURATION_TYPES)
-    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release
+                                                 RelWithDebInfo MinSizeRel)
     message(STATUS "Tassel build type: ${CMAKE_BUILD_TYPE}")
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-      message(WARNING
-              "Debug disables compiler optimization and makes real-time VIO/Ceres runs very slow. "
-              "Use -DCMAKE_BUILD_TYPE=Release for dataset and hardware runs.")
+      message(
+        WARNING
+          "Debug disables compiler optimization and makes real-time VIO/Ceres runs very slow. "
+          "Use -DCMAKE_BUILD_TYPE=Release for dataset and hardware runs.")
     endif()
   endif()
 
@@ -33,6 +35,11 @@ function(tassel_setup_project_options)
   set(CMAKE_EXPORT_COMPILE_COMMANDS
       ON
       PARENT_SCOPE)
+
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options($<$<CONFIG:Release>:-O3>)
+    message(STATUS "Release optimization: -O3")
+  endif()
 
   if(TASSEL_ENABLE_PROFILING)
     message(STATUS "Profiling support: ENABLED  (-fno-omit-frame-pointer -g)")

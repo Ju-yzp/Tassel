@@ -3,31 +3,33 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <unistd.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cmath>
+#include <condition_variable>
 #include <deque>
 #include <exception>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
-#include <unistd.h>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
-#include <rclcpp/rclcpp.hpp>
 #include <rclcpp/executors/single_threaded_executor.hpp>
+#include <rclcpp/rclcpp.hpp>
 
 #include "cam/camera_factory.h"
-#include "nori/nori_decoder.h"
-#include "nori/nori_device.h"
 #include "estimator/estimator.h"
 #include "frond_end/feature_manager.h"
 #include "frond_end/feature_tracker.h"
+#include "nori/nori_decoder.h"
+#include "nori/nori_device.h"
+#include "nori/nori_sync.h"
 #include "parameters/parameters.h"
 #include "state/state.h"
 #include "tassel_utils/types.h"
@@ -39,15 +41,8 @@ constexpr int kCaptureWidth = 4000;
 constexpr int kCaptureHeight = 1200;
 constexpr double kNoriSyncDelay = 0.002671414577930159;
 
-struct MonoFrame {
-    tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
-    cv::Mat image;
-};
-
-struct SyncedFrame {
-    MonoFrame mono;
-    std::vector<tassel_utils::IMUMeasurement> imu;
-};
+using MonoFrame = tassel_hardware::NoriImageFrame;
+using SyncedFrame = tassel_hardware::NoriSyncedFrame;
 
 struct LatestImage {
     cv::Mat image;
@@ -60,73 +55,65 @@ struct TrackedFrame {
     std::unordered_map<int, tassel_core::FeaturePerFrame> features;
 };
 
-class EncodedQueue {
-public:
-    void push(std::vector<uchar> bytes) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (stopped_) {
-            return;
-        }
-        frames_.push_back(std::move(bytes));
-        cv_.notify_all();
-    }
-
-    bool waitPop(std::vector<uchar>& bytes) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [&]() { return stopped_ || !frames_.empty(); });
-        if (frames_.empty()) {
-            return false;
-        }
-        bytes = std::move(frames_.front());
-        frames_.pop_front();
-        return true;
-    }
-
-    size_t size() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return frames_.size();
-    }
-
-    void stop() {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stopped_ = true;
-        }
-        cv_.notify_all();
-    }
-
-private:
-    mutable std::mutex mutex_;
-    std::condition_variable cv_;
-    std::deque<std::vector<uchar>> frames_;
-    bool stopped_ = false;
+enum class MonoHalf {
+    First,
+    Second,
 };
 
-class TrackedQueue {
+MonoHalf parseMonoHalf(const std::string& value) {
+    if (value == "first") {
+        return MonoHalf::First;
+    }
+    if (value == "second") {
+        return MonoHalf::Second;
+    }
+    throw std::invalid_argument("mono_half must be either 'first' or 'second'");
+}
+
+const char* monoHalfName(MonoHalf half) { return half == MonoHalf::First ? "first" : "second"; }
+
+cv::Mat buildValidMask(int rows, int cols) { return cv::Mat(rows, cols, CV_8UC1, cv::Scalar(255)); }
+
+cv::Mat loadValidMask(const std::string& mask_path, int rows, int cols) {
+    if (mask_path.empty() || mask_path == "auto") {
+        return buildValidMask(rows, cols);
+    }
+    cv::Mat mask = cv::imread(mask_path, cv::IMREAD_GRAYSCALE);
+    if (mask.empty()) {
+        throw std::runtime_error("Failed to read valid mask image: " + mask_path);
+    }
+    if (mask.rows != rows || mask.cols != cols) {
+        throw std::invalid_argument("Valid mask image size does not match the tracking image");
+    }
+    return mask;
+}
+
+template <typename T>
+class PipelineQueue {
 public:
-    void push(TrackedFrame frame) {
+    void push(T value) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (stopped_) {
             return;
         }
-        frames_.push_back(std::move(frame));
+        values_.push_back(std::move(value));
         cv_.notify_all();
     }
 
-    bool waitPop(TrackedFrame& frame) {
+    bool waitPop(T& value) {
         std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [&]() { return stopped_ || !frames_.empty(); });
-        if (frames_.empty()) {
+        cv_.wait(lock, [&]() { return stopped_ || !values_.empty(); });
+        if (values_.empty()) {
             return false;
         }
-        frame = std::move(frames_.front());
-        frames_.pop_front();
+        value = std::move(values_.front());
+        values_.pop_front();
         return true;
     }
 
     size_t size() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return frames_.size();
+        return values_.size();
     }
 
     void stop() {
@@ -140,111 +127,7 @@ public:
 private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
-    std::deque<TrackedFrame> frames_;
-    bool stopped_ = false;
-};
-
-class NoriSync {
-public:
-    void push(MonoFrame mono, const std::vector<tassel_utils::IMUMeasurement>& imu) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (stopped_) {
-            return;
-        }
-        for (const auto& sample : imu) {
-            if (imus_.empty() || sample.timestamp > imus_.back().timestamp) {
-                imus_.push_back(sample);
-            }
-        }
-        frames_.push_back(std::move(mono));
-        cv_.notify_all();
-    }
-
-    bool waitPop(SyncedFrame& output) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [&]() {
-            if (frames_.empty()) {
-                return stopped_;
-            }
-            const double end = tassel_utils::frameIdToSeconds(frames_.front().frame_id) +
-                               kNoriSyncDelay;
-            return stopped_ || (!imus_.empty() && imus_.back().timestamp >= end);
-        });
-        if (frames_.empty()) {
-            return false;
-        }
-        const double end =
-            tassel_utils::frameIdToSeconds(frames_.front().frame_id) + kNoriSyncDelay;
-        if (imus_.empty() || imus_.back().timestamp < end) {
-            return false;
-        }
-        output.mono = std::move(frames_.front());
-        frames_.pop_front();
-        output.imu.clear();
-        if (has_boundary_) {
-            output.imu.push_back(boundary_);
-        }
-        for (const auto& sample : imus_) {
-            if (sample.timestamp >= end) {
-                break;
-            }
-            if (!has_boundary_ || sample.timestamp > boundary_.timestamp) {
-                output.imu.push_back(sample);
-            }
-        }
-        boundary_ = interpolate(end);
-        if (output.imu.empty() || output.imu.back().timestamp < boundary_.timestamp) {
-            output.imu.push_back(boundary_);
-        }
-        // 相邻图像包共享该插值样本，保证预积分区间连续且不重复积分。
-        while (!imus_.empty() && imus_.front().timestamp <= end) {
-            imus_.pop_front();
-        }
-        has_boundary_ = true;
-        lock.unlock();
-        cv_.notify_all();
-        return true;
-    }
-
-    void stop() {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stopped_ = true;
-        }
-        cv_.notify_all();
-    }
-
-    size_t size() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return frames_.size();
-    }
-
-private:
-    tassel_utils::IMUMeasurement interpolate(double timestamp) const {
-        auto upper = std::lower_bound(
-            imus_.begin(), imus_.end(), timestamp,
-            [](const auto& sample, double value) { return sample.timestamp < value; });
-        if (upper != imus_.end() && upper->timestamp == timestamp) {
-            return *upper;
-        }
-        const auto* before = upper != imus_.begin() ? &*std::prev(upper)
-                                                    : (has_boundary_ ? &boundary_ : nullptr);
-        const auto* after = upper != imus_.end() ? &*upper : nullptr;
-        if (!before || !after || after->timestamp <= before->timestamp) {
-            throw std::logic_error("Cannot interpolate Nori IMU boundary");
-        }
-        const double alpha =
-            (timestamp - before->timestamp) / (after->timestamp - before->timestamp);
-        return {before->acc + alpha * (after->acc - before->acc),
-                before->gyro + alpha * (after->gyro - before->gyro), timestamp};
-    }
-
-    mutable std::mutex mutex_;
-    std::condition_variable cv_;
-    std::deque<MonoFrame> frames_;
-    std::deque<tassel_utils::IMUMeasurement> imus_;
-    tassel_utils::IMUMeasurement boundary_{};
-    bool has_boundary_ = false;
+    std::deque<T> values_;
     bool stopped_ = false;
 };
 
@@ -272,14 +155,25 @@ void scaleTrackingConfiguration(tassel_tools::Parameters& params, double scale) 
         scale_y * (params.cam_intrinsic.at<double>(1, 2) + 0.5) - 0.5;
     params.per_grid_cols = std::max(1, cvRound(params.per_grid_cols * scale));
     params.per_grid_rows = std::max(1, cvRound(params.per_grid_rows * scale));
-    params.edge_x = std::max(0, cvRound(params.edge_x * scale));
-    params.edge_y = std::max(0, cvRound(params.edge_y * scale));
     params.mask_radius *= scale;
     params.max_square_move_dist *= scale * scale;
     params.reproj_err_thres *= scale;
     params.reproj_huber_thres *= scale;
-    params.parallax_threshold *= scale;
     params.visual_factor_weight /= scale;
+}
+
+cv::Mat resizePreviewImage(const cv::Mat& image, double scale) {
+    if (!std::isfinite(scale) || scale <= 0.0 || scale > 1.0) {
+        throw std::invalid_argument("preview_scale must be finite and in (0, 1]");
+    }
+    if (std::abs(scale - 1.0) < 1e-9) {
+        return image;
+    }
+    const int width = std::max(1, cvRound(image.cols * scale));
+    const int height = std::max(1, cvRound(image.rows * scale));
+    cv::Mat resized;
+    cv::resize(image, resized, cv::Size(width, height), 0.0, 0.0, cv::INTER_AREA);
+    return resized;
 }
 
 }  // namespace
@@ -289,11 +183,26 @@ int main(int argc, char** argv) {
     const std::string device = argc > 2 ? argv[2] : "/dev/video4";
     const int max_frames = argc > 3 ? std::stoi(argv[3]) : 0;
     const double tracking_scale = argc > 4 ? std::stod(argv[4]) : 1.0;
+    const int visualization_stride = argc > 5 ? std::stoi(argv[5]) : 1;
+    const MonoHalf mono_half = argc > 6 ? parseMonoHalf(argv[6]) : MonoHalf::First;
+    const std::string dump_mask_path = argc > 8 ? argv[8] : "";
+    const double preview_scale = argc > 9 ? std::stod(argv[9]) : 0.5;
+    const double preview_hz = argc > 10 ? std::stod(argv[10]) : 10.0;
     if (max_frames < 0) {
         throw std::invalid_argument("max_frames must not be negative");
     }
+    if (visualization_stride < 0) {
+        throw std::invalid_argument("visualization_stride must be non-negative");
+    }
+    if (!std::isfinite(preview_scale) || preview_scale <= 0.0 || preview_scale > 1.0) {
+        throw std::invalid_argument("preview_scale must be finite and in (0, 1]");
+    }
+    if (!std::isfinite(preview_hz) || preview_hz <= 0.0) {
+        throw std::invalid_argument("preview_hz must be positive and finite");
+    }
 
     tassel_tools::Parameters params(config);
+    const std::string mask_path = argc > 7 ? argv[7] : params.valid_mask_path;
     const int source_width = params.cols;
     const int source_height = params.rows;
     scaleTrackingConfiguration(params, tracking_scale);
@@ -303,25 +212,38 @@ int main(int argc, char** argv) {
     auto camera = tassel_core::CameraFactory::create(
         params.camera_model, params.cam_intrinsic, params.cam_distort, params.cols, params.rows);
     const tassel_core::CameraBase* camera_ptr = camera.get();
-    std::cout << "[nori] source=" << source_width << 'x' << source_height << " tracking="
-              << params.cols << 'x' << params.rows << " scale=" << tracking_scale << '\n';
+    std::cout << "[nori] source=" << source_width << 'x' << source_height
+              << " tracking=" << params.cols << 'x' << params.rows << " scale=" << tracking_scale
+              << " visualization_stride=" << visualization_stride
+              << " preview_scale=" << preview_scale << " preview_hz=" << preview_hz
+              << " mono_half=" << monoHalfName(mono_half) << " mask_path=" << mask_path << '\n';
     tassel_core::FeatureTracker tracker(
         params.flow_back, params.max_square_move_dist, false, 5, params.min_gradient);
     // Nori 直接在原始鱼眼图上跟踪；观测点再由 equi 模型转换到归一化坐标。
     tracker.setCamera(
-        std::move(camera), params.per_grid_rows, params.per_grid_cols, params.edge_y, params.edge_x,
-        params.mask_radius, params.min_feature_num);
+        std::move(camera), params.per_grid_rows, params.per_grid_cols, params.mask_radius,
+        params.min_feature_num);
+    cv::Mat valid_mask = loadValidMask(mask_path, params.rows, params.cols);
+    tracker.setValidMask(valid_mask);
+    if (!dump_mask_path.empty()) {
+        if (!cv::imwrite(dump_mask_path, valid_mask)) {
+            throw std::runtime_error("Failed to write valid mask image: " + dump_mask_path);
+        }
+        std::cout << "[nori] mask written to " << dump_mask_path << '\n';
+    }
     auto state = std::make_shared<tassel_core::State>(static_cast<int>(params.max_frame_count) + 1);
     auto feature_manager = std::make_shared<tassel_core::FeatureManager>(
         params.reproj_err_thres, params.min_landmark_observations, params.parallax_threshold,
         params.keyframe_min_connection_ratio, params.min_depth, params.max_depth);
     tassel_core::Estimator estimator(params, state, feature_manager);
     estimator.setCamera(camera_ptr);
+    // ROS must be initialized before constructing the node and its publishers.
     rclcpp::init(argc, argv);
     auto viewer = std::make_shared<tassel_tools::Viewer>("odom");
     rclcpp::QoS image_qos(rclcpp::KeepLast(1));
     image_qos.best_effort().durability_volatile();
     viewer->createImagePublisher("mono/image", image_qos);
+    viewer->createCompressedImagePublisher("mono/image/compressed", image_qos);
     viewer->createOdometryPublisher("imu_link", "vio/odometry");
     viewer->createOdometryPublisher(
         "camera_optical_frame", "vio/camera_odometry", rclcpp::QoS(10), false);
@@ -329,8 +251,7 @@ int main(int argc, char** argv) {
         "imu_link", "camera_optical_frame", params.tic,
         Eigen::Quaterniond(params.ric).normalized());
     viewer->createPathPublisher("vio/path", rclcpp::QoS(10), params.viewer_path_max_poses);
-    viewer->createPathPublisher(
-        "ground_truth/path", rclcpp::QoS(10), params.viewer_path_max_poses);
+    viewer->createPathPublisher("ground_truth/path", rclcpp::QoS(10), params.viewer_path_max_poses);
     viewer->createCompressedImagePublisher("optimization/visual_window", image_qos);
 
     rclcpp::executors::SingleThreadedExecutor executor;
@@ -346,11 +267,23 @@ int main(int argc, char** argv) {
     std::mutex latest_image_mutex;
     LatestImage latest_image;
     std::atomic_bool stop_image_publisher{false};
+    const bool publish_tracking_image = visualization_stride > 0;
     std::thread image_publish_thread([&]() {
-        constexpr auto kPeriod = std::chrono::milliseconds(33);
+        if (!publish_tracking_image) {
+            return;
+        }
+        const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(1.0 / preview_hz));
         auto next_tick = std::chrono::steady_clock::now();
         double last_timestamp = -1.0;
         while (rclcpp::ok() && !stop_image_publisher.load()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now < next_tick) {
+                std::this_thread::sleep_until(next_tick);
+            } else if (now - next_tick > period) {
+                // RViz/传输落后时只保留最新预览，不补发历史周期。
+                next_tick = now;
+            }
             LatestImage image;
             {
                 std::lock_guard<std::mutex> lock(latest_image_mutex);
@@ -358,12 +291,16 @@ int main(int argc, char** argv) {
                 image.timestamp = latest_image.timestamp;
             }
             if (!image.image.empty() && image.timestamp > last_timestamp) {
+                // 预览缩放只降低发布带宽，不改变追踪/估计使用的图像坐标。
+                cv::Mat preview_image = resizePreviewImage(image.image, preview_scale);
                 viewer->publishImage(
-                    "mono/image", "camera_optical_frame", image.image, image.timestamp);
+                    "mono/image", "camera_optical_frame", preview_image, image.timestamp);
+                viewer->publishCompressedImage(
+                    "mono/image/compressed", "camera_optical_frame", preview_image, "jpeg",
+                    image.timestamp);
                 last_timestamp = image.timestamp;
             }
-            next_tick += kPeriod;
-            std::this_thread::sleep_until(next_tick);
+            next_tick += period;
         }
     });
     estimator.setPoseCallback([&viewer, &params](double timestamp, const Sophus::SE3d& pose) {
@@ -391,12 +328,19 @@ int main(int argc, char** argv) {
     const int bytes_per_line = nori.bytesPerLine();
     std::cout << "[nori] capture=4000x1200 YUYV@30 bytes_per_line=" << bytes_per_line << '\n';
 
-    EncodedQueue encoded_queue;
-    NoriSync sync;
+    PipelineQueue<std::vector<uchar>> encoded_queue;
+    tassel_hardware::NoriSync sync(kNoriSyncDelay);
     std::atomic_bool stop_pipeline{false};
+    std::mutex prediction_mutex;
+    std::condition_variable prediction_cv;
+    std::optional<tassel_core::TrackingPredictionSnapshot> prediction_snapshot;
     const auto pipeline_start = std::chrono::steady_clock::now();
     std::atomic_size_t captured_count{0};
     std::atomic_size_t decoded_count{0};
+    std::atomic_size_t decoded_imu_count{0};
+    std::atomic_size_t last_decoded_imu_count{0};
+    std::atomic<double> last_decoded_imu_first{0.0};
+    std::atomic<double> last_decoded_imu_last{0.0};
     std::atomic_size_t tracked_count{0};
     std::atomic_llong decode_time_us{0};
     std::atomic_llong tracking_time_us{0};
@@ -404,9 +348,8 @@ int main(int argc, char** argv) {
     std::exception_ptr capture_error;
     std::thread capture_thread([&]() {
         try {
-            for (int captured = 0;
-                 rclcpp::ok() && !stop_pipeline.load() &&
-                 (max_frames == 0 || captured < max_frames);
+            for (int captured = 0; rclcpp::ok() && !stop_pipeline.load() &&
+                                   (max_frames == 0 || captured < max_frames);
                  ++captured) {
                 tassel_hardware::NoriCapture capture;
                 while (rclcpp::ok() && !stop_pipeline.load() && !nori.tryRead(capture)) {
@@ -433,14 +376,12 @@ int main(int argc, char** argv) {
             tassel_utils::FrameId previous_exposure_end = tassel_utils::kInvalidFrameId;
             while (rclcpp::ok() && !stop_pipeline.load() && encoded_queue.waitPop(bytes)) {
                 const auto decode_start = std::chrono::steady_clock::now();
-                const size_t required_bytes =
-                    static_cast<size_t>(bytes_per_line) * kCaptureHeight;
+                const size_t required_bytes = static_cast<size_t>(bytes_per_line) * kCaptureHeight;
                 if (bytes.size() < required_bytes) {
                     throw std::runtime_error("Incomplete Nori YUYV frame");
                 }
                 const cv::Mat yuyv(
-                    kCaptureHeight, kCaptureWidth, CV_8UC2, bytes.data(),
-                    bytes_per_line);
+                    kCaptureHeight, kCaptureWidth, CV_8UC2, bytes.data(), bytes_per_line);
                 cv::Mat image;
                 cv::extractChannel(yuyv, image, 0);
                 tassel_hardware::NoriFrameTiming timing;
@@ -448,27 +389,30 @@ int main(int argc, char** argv) {
                 if (!decoder.decode(image, timing, measurements)) {
                     continue;
                 }
+                last_decoded_imu_count = measurements.size();
+                decoded_imu_count += measurements.size();
+                if (!measurements.empty()) {
+                    last_decoded_imu_first = measurements.front().timestamp;
+                    last_decoded_imu_last = measurements.back().timestamp;
+                }
                 if (previous_exposure_end != tassel_utils::kInvalidFrameId) {
-                    sensor_interval_us =
-                        (timing.exposure_end - previous_exposure_end) / 1000;
+                    sensor_interval_us = (timing.exposure_end - previous_exposure_end) / 1000;
                 }
                 previous_exposure_end = timing.exposure_end;
-                cv::Mat right_gray = image.colRange(0, image.cols / 2);
-                if (source_width != right_gray.cols || source_height != right_gray.rows) {
+                // 硬件左右目在拼接图中的顺序不由类型表达，运行入口必须显式选择半幅。
+                const int half_cols = image.cols / 2;
+                const int x0 = mono_half == MonoHalf::First ? 0 : half_cols;
+                cv::Mat mono_gray = image.colRange(x0, x0 + half_cols);
+                if (source_width != mono_gray.cols || source_height != mono_gray.rows) {
                     throw std::logic_error("Nori source calibration does not match the mono image");
-                }
-                if (params.edge_x > 0) {
-                    // 左侧为时间戳/IMU 编码条带，不得作为光流纹理参与跟踪。
-                    const int source_edge_x = cvRound(params.edge_x / tracking_scale);
-                    right_gray.colRange(0, std::min(source_edge_x, right_gray.cols)).setTo(0);
                 }
                 cv::Mat tracking_image;
                 if (tracking_scale < 1.0) {
                     cv::resize(
-                        right_gray, tracking_image, cv::Size(params.cols, params.rows), 0.0, 0.0,
+                        mono_gray, tracking_image, cv::Size(params.cols, params.rows), 0.0, 0.0,
                         cv::INTER_AREA);
                 } else {
-                    tracking_image = right_gray.clone();
+                    tracking_image = mono_gray.clone();
                 }
                 sync.push({timing.exposure_end, std::move(tracking_image)}, measurements);
                 decode_time_us += std::chrono::duration_cast<std::chrono::microseconds>(
@@ -484,21 +428,52 @@ int main(int argc, char** argv) {
         sync.stop();
     });
 
-    TrackedQueue tracked_queue;
+    PipelineQueue<TrackedFrame> tracked_queue;
     std::exception_ptr tracking_error;
     std::thread tracking_thread([&]() {
         try {
             SyncedFrame synced;
+            tassel_utils::FrameId previous_frame_id = tassel_utils::kInvalidFrameId;
             while (rclcpp::ok() && sync.waitPop(synced)) {
                 const auto tracking_start = std::chrono::steady_clock::now();
-                auto features = tracker.monoTracking(synced.mono.image);
-                cv::Mat tracking_image = synced.mono.image.clone();
-                tracker.drawTrackingResult(tracking_image);
+                std::optional<tassel_core::TrackingPredictionSnapshot> snapshot;
                 {
-                    std::lock_guard<std::mutex> lock(latest_image_mutex);
-                    latest_image.image = std::move(tracking_image);
-                    latest_image.timestamp =
-                        tassel_utils::frameIdToSeconds(synced.mono.frame_id);
+                    std::unique_lock<std::mutex> lock(prediction_mutex);
+                    if (prediction_snapshot && previous_frame_id != tassel_utils::kInvalidFrameId) {
+                        // 闭环启用后，预测快照必须对应追踪器的上一图像帧；等待期间采集与解码继续运行。
+                        prediction_cv.wait(lock, [&]() {
+                            return stop_pipeline.load() || !rclcpp::ok() ||
+                                   (prediction_snapshot &&
+                                    prediction_snapshot->source_frame_id >= previous_frame_id);
+                        });
+                        if (prediction_snapshot &&
+                            prediction_snapshot->source_frame_id == previous_frame_id) {
+                            snapshot = prediction_snapshot;
+                        }
+                    }
+                }
+                if (stop_pipeline.load() || !rclcpp::ok()) {
+                    break;
+                }
+                std::unordered_map<int, cv::Point2f> predicted_pixels;
+                if (snapshot) {
+                    predicted_pixels = tassel_core::predictLandmarkPixelsFromSnapshot(
+                        *snapshot, synced.mono.frame_id, synced.imu, kNoriSyncDelay, *camera_ptr,
+                        params);
+                }
+                auto features = tracker.monoTracking(synced.mono.image, predicted_pixels);
+                previous_frame_id = synced.mono.frame_id;
+                const size_t tracked_index = tracked_count.load();
+                if (publish_tracking_image &&
+                    tracked_index % static_cast<size_t>(visualization_stride) == 0) {
+                    cv::Mat tracking_image = synced.mono.image.clone();
+                    tracker.drawTrackingResult(tracking_image);
+                    {
+                        std::lock_guard<std::mutex> lock(latest_image_mutex);
+                        latest_image.image = std::move(tracking_image);
+                        latest_image.timestamp =
+                            tassel_utils::frameIdToSeconds(synced.mono.frame_id);
+                    }
                 }
                 for (auto& [id, feature] : features) {
                     (void)id;
@@ -516,41 +491,78 @@ int main(int argc, char** argv) {
             stop_pipeline = true;
             encoded_queue.stop();
             sync.stop();
+            prediction_cv.notify_all();
         }
         tracked_queue.stop();
     });
 
-    int processed = 0;
-    TrackedFrame packet;
-    while (rclcpp::ok() && tracked_queue.waitPop(packet)) {
-        const auto frame_id = packet.mono.frame_id;
-        estimator.processMeasurement(frame_id, packet.features, packet.imu, kNoriSyncDelay);
-        ++processed;
-        if (processed % 10 == 0) {
-            const double elapsed = std::chrono::duration<double>(
-                                       std::chrono::steady_clock::now() - pipeline_start)
-                                       .count();
-            const size_t decoded = decoded_count.load();
-            const size_t tracked = tracked_count.load();
-            const long long interval_us = sensor_interval_us.load();
-            std::cout << "[nori] frames=" << processed << " imu=" << packet.imu.size()
-                      << " features=" << packet.features.size()
-                      << " raw_queue=" << encoded_queue.size() << " sync_queue=" << sync.size()
-                      << " tracking_queue=" << tracked_queue.size() << " rates="
-                      << captured_count.load() / elapsed << '/' << decoded / elapsed << '/'
-                      << tracked / elapsed << '/' << processed / elapsed
-                      << " sensor_fps="
-                      << (interval_us > 0 ? 1e6 / static_cast<double>(interval_us) : 0.0)
-                      << " decode_ms="
-                      << (decoded > 0 ? decode_time_us.load() / (1000.0 * decoded) : 0.0)
-                      << " tracking_ms="
-                      << (tracked > 0 ? tracking_time_us.load() / (1000.0 * tracked) : 0.0)
-                      << '\n';
+    std::exception_ptr estimator_error;
+    std::thread estimator_thread([&]() {
+        try {
+            int processed = 0;
+            TrackedFrame packet;
+            while (rclcpp::ok() && tracked_queue.waitPop(packet)) {
+                const auto frame_id = packet.mono.frame_id;
+                estimator.processMeasurement(frame_id, packet.features, packet.imu, kNoriSyncDelay);
+                if (auto snapshot = estimator.makeTrackingPredictionSnapshot()) {
+                    {
+                        std::lock_guard<std::mutex> lock(prediction_mutex);
+                        prediction_snapshot = std::move(snapshot);
+                    }
+                    prediction_cv.notify_all();
+                }
+                ++processed;
+                if (processed % 10 == 0) {
+                    const double elapsed = std::chrono::duration<double>(
+                                               std::chrono::steady_clock::now() - pipeline_start)
+                                               .count();
+                    const size_t decoded = decoded_count.load();
+                    const size_t tracked = tracked_count.load();
+                    const long long interval_us = sensor_interval_us.load();
+                    const double synced_imu_first =
+                        packet.imu.empty() ? 0.0 : packet.imu.front().timestamp;
+                    const double synced_imu_last =
+                        packet.imu.empty() ? 0.0 : packet.imu.back().timestamp;
+                    std::cout << "[nori] frames=" << processed << " imu=" << packet.imu.size()
+                              << " imu_span=" << synced_imu_first << ':' << synced_imu_last
+                              << " decoded_imu_last=" << last_decoded_imu_count.load()
+                              << " decoded_imu_span=" << last_decoded_imu_first.load() << ':'
+                              << last_decoded_imu_last.load() << " decoded_imu_avg="
+                              << (decoded > 0
+                                      ? static_cast<double>(decoded_imu_count.load()) / decoded
+                                      : 0.0)
+                              << " features=" << packet.features.size()
+                              << " raw_queue=" << encoded_queue.size()
+                              << " sync_queue=" << sync.size()
+                              << " tracking_queue=" << tracked_queue.size()
+                              << " rates=" << captured_count.load() / elapsed << '/'
+                              << decoded / elapsed << '/' << tracked / elapsed << '/'
+                              << processed / elapsed << " sensor_fps="
+                              << (interval_us > 0 ? 1e6 / static_cast<double>(interval_us) : 0.0)
+                              << " decode_ms="
+                              << (decoded > 0 ? decode_time_us.load() / (1000.0 * decoded) : 0.0)
+                              << " tracking_ms="
+                              << (tracked > 0 ? tracking_time_us.load() / (1000.0 * tracked) : 0.0)
+                              << '\n';
+                }
+            }
+        } catch (...) {
+            estimator_error = std::current_exception();
+            stop_pipeline = true;
+            encoded_queue.stop();
+            sync.stop();
+            tracked_queue.stop();
+            prediction_cv.notify_all();
         }
+    });
+    estimator_thread.join();
+    if (estimator_error) {
+        std::rethrow_exception(estimator_error);
     }
     stop_pipeline = true;
     encoded_queue.stop();
     sync.stop();
+    prediction_cv.notify_all();
     capture_thread.join();
     decode_thread.join();
     tracking_thread.join();

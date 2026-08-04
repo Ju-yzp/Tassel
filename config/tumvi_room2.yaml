@@ -17,10 +17,9 @@ rows: 1024
 cols: 1024
 per_grid_rows: 64
 per_grid_cols: 64
-edge_x: 40
-edge_y: 40
+valid_mask_path: config/tumvi_room2_valid_mask.png
 mask_radius: 25.0
-min_feature_num: 180
+min_feature_num: 150
 
 flow_back: true
 max_square_move_dist: 1.0
@@ -60,10 +59,10 @@ imu_repropagate_bg_threshold: 0.006
 
 # 视觉惯性初始化
 gravity_diff_threshold: 0.21
-sfm_min_seed_pts: 10
+init_min_scale: 0.01
+sfm_min_correspondences: 10
 sfm_min_e_inliers: 8
 sfm_e_ransac_threshold: 0.004
-sfm_min_pnp_pts: 10
 sfm_pnp_reproj_threshold: 0.03
 sfm_max_bad_pnp_ratio: 0.3
 sfm_ba_max_iterations: 10

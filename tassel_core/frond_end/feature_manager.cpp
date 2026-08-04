@@ -74,24 +74,13 @@ FeatureManager::FeatureManager(
 
 bool FeatureManager::addFeatureFrame(
     int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
-    const bool has_keyframe = hasLatestKeyframe();
+    const bool is_keyframe = shouldCreateKeyframe(feature_frame);
     std::unordered_map<int, cv::Point2f> current_observations;
     current_observations.reserve(feature_frame.size());
 
-    int connected_to_keyframe_count = 0;
-    double parallax_sum = 0.0;
-    int valid_parallax_count = 0;
     for (const auto& [id, per_frame_feature] : feature_frame) {
         current_observations.emplace(id, per_frame_feature.pt);
         auto it = features_.find(id);
-        const auto keyframe_observation = latest_keyframe_observations_.find(id);
-        if (keyframe_observation != latest_keyframe_observations_.end()) {
-            ++connected_to_keyframe_count;
-            ++valid_parallax_count;
-            const double dx = keyframe_observation->second.x - per_frame_feature.pt.x;
-            const double dy = keyframe_observation->second.y - per_frame_feature.pt.y;
-            parallax_sum += std::sqrt(dx * dx + dy * dy);
-        }
         FeaturePerFrame observation = per_frame_feature;
 
         if (it != features_.end()) {
@@ -108,19 +97,84 @@ bool FeatureManager::addFeatureFrame(
         }
     }
 
-    const double average_parallax =
-        valid_parallax_count > 0 ? parallax_sum / static_cast<double>(valid_parallax_count) : 0.0;
-    const double connection_ratio =
-        latest_keyframe_observations_.empty()
-            ? 0.0
-            : static_cast<double>(connected_to_keyframe_count) /
-                  static_cast<double>(latest_keyframe_observations_.size());
-    const bool is_keyframe = !has_keyframe || connection_ratio < keyframe_min_connection_ratio_ ||
-                             average_parallax >= parallax_threshold_;
     if (is_keyframe) {
         latest_keyframe_observations_.swap(current_observations);
     }
     return is_keyframe;
+}
+
+bool FeatureManager::replaceInitializationCandidate(
+    int accepted_frame_index, int candidate_frame_index,
+    const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
+    if (!hasLatestKeyframe() || candidate_frame_index != accepted_frame_index + 1) {
+        throw std::logic_error("Invalid initialization candidate replacement");
+    }
+
+    const bool accepted = shouldCreateKeyframe(feature_frame);
+
+    // 候选槽始终是窗口尾部；先删除上一张候选图像，再写入当前图像，已接受帧保持不变。
+    for (auto& [_, feature] : features_) {
+        const int last_frame_index =
+            feature.host_frame_index + static_cast<int>(feature.observations.size()) - 1;
+        if (last_frame_index > candidate_frame_index) {
+            throw std::logic_error("Initialization candidate is not the newest observation");
+        }
+        if (last_frame_index == candidate_frame_index) {
+            feature.removeFrameObservation(candidate_frame_index);
+        }
+    }
+    std::erase_if(features_, [](const auto& item) { return item.second.observations.empty(); });
+
+    for (const auto& [id, observation] : feature_frame) {
+        auto feature = features_.find(id);
+        if (feature == features_.end()) {
+            Feature new_feature(candidate_frame_index, 15);
+            new_feature.observations.push_back(observation);
+            features_.emplace(id, std::move(new_feature));
+            continue;
+        }
+        const int expected_frame_index = feature->second.host_frame_index +
+                                         static_cast<int>(feature->second.observations.size());
+        if (expected_frame_index != candidate_frame_index) {
+            throw std::logic_error("Initialization feature observation is not continuous");
+        }
+        feature->second.observations.push_back(observation);
+    }
+
+    if (accepted) {
+        latest_keyframe_observations_.clear();
+        latest_keyframe_observations_.reserve(feature_frame.size());
+        for (const auto& [id, observation] : feature_frame) {
+            latest_keyframe_observations_.emplace(id, observation.pt);
+        }
+    }
+    return accepted;
+}
+
+bool FeatureManager::shouldCreateKeyframe(
+    const std::unordered_map<int, FeaturePerFrame>& feature_frame) const {
+    if (!hasLatestKeyframe()) {
+        return true;
+    }
+
+    int connected_count = 0;
+    double parallax_sum = 0.0;
+    for (const auto& [id, observation] : feature_frame) {
+        const auto keyframe_observation = latest_keyframe_observations_.find(id);
+        if (keyframe_observation == latest_keyframe_observations_.end()) {
+            continue;
+        }
+        ++connected_count;
+        const double dx = keyframe_observation->second.x - observation.pt.x;
+        const double dy = keyframe_observation->second.y - observation.pt.y;
+        parallax_sum += std::sqrt(dx * dx + dy * dy);
+    }
+    const double connection_ratio = static_cast<double>(connected_count) /
+                                    static_cast<double>(latest_keyframe_observations_.size());
+    const double average_parallax =
+        connected_count > 0 ? parallax_sum / static_cast<double>(connected_count) : 0.0;
+    return connection_ratio < keyframe_min_connection_ratio_ ||
+           average_parallax >= parallax_threshold_;
 }
 
 void FeatureManager::triangulate(
@@ -183,21 +237,22 @@ void FeatureManager::removeNewestFrameObservations(int frame_index) {
     std::erase_if(features_, [&](const auto& item) { return item.second.observations.empty(); });
 }
 
-void FeatureManager::removeOutliers(
+std::vector<int> FeatureManager::removeOutliers(
     const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic) {
+    std::vector<int> removed_ids;
     if (!state.camera) {
-        return;
+        return removed_ids;
     }
 
-    std::erase_if(features_, [&](const auto& item) {
-        const Feature& feature = item.second;
+    for (const auto& [feature_id, feature] : features_) {
         if (!canUseFeature(feature, min_landmark_observations_)) {
-            return false;
+            continue;
         }
 
         const int host_frame_index = feature.host_frame_index;
         if (host_frame_index < 0 || host_frame_index > state.latest_frame_index) {
-            return true;
+            removed_ids.push_back(feature_id);
+            continue;
         }
 
         const std::vector<FeaturePerFrame>& observations = feature.observations;
@@ -205,27 +260,34 @@ void FeatureManager::removeOutliers(
         if (!hostPointToWorld(
                 state.frames[host_frame_index], observations.front().uv, feature.estimated_depth,
                 observations.front().sync_delay, state.delay_time, ric, tic, world_point)) {
-            return true;
+            removed_ids.push_back(feature_id);
+            continue;
         }
 
         double error_sum = 0.0;
         for (size_t k = 1; k < observations.size(); ++k) {
             const int target_frame_index = feature.observationFrameIndex(k);
             if (target_frame_index < 0 || target_frame_index > state.latest_frame_index) {
-                return true;
+                removed_ids.push_back(feature_id);
+                break;
             }
             double reprojection_error = 0.0;
             if (!computeReprojectionError(
                     state.frames[target_frame_index], world_point, observations[k],
                     state.delay_time, ric, tic, *state.camera, reprojection_error)) {
-                return true;
+                removed_ids.push_back(feature_id);
+                break;
             }
             error_sum += reprojection_error;
         }
 
         const size_t target_count = observations.size() - 1;
-        return error_sum / static_cast<double>(target_count) > reproj_err_thres_;
-    });
+        const bool is_outlier = error_sum / static_cast<double>(target_count) > reproj_err_thres_;
+        if (is_outlier) {
+            removed_ids.push_back(feature_id);
+        }
+    }
+    return removed_ids;
 }
 
 void FeatureManager::reset() {
@@ -274,6 +336,36 @@ std::vector<HostLandmark> FeatureManager::exportHostLandmarks(
 
         landmarks.push_back(
             {feature_id, host_observation.pt, host_observation.uv, feature.estimated_depth});
+    }
+    return landmarks;
+}
+
+std::unordered_map<int, Eigen::Vector3d> FeatureManager::exportObservedWorldLandmarks(
+    int observed_frame_index, const State& state, const Eigen::Matrix3d& ric,
+    const Eigen::Vector3d& tic) const {
+    if (observed_frame_index < 0 || observed_frame_index > state.latest_frame_index) {
+        throw std::out_of_range("Observed landmark frame is outside the active window");
+    }
+    std::unordered_map<int, Eigen::Vector3d> landmarks;
+    landmarks.reserve(features_.size());
+    for (const auto& [feature_id, feature] : features_) {
+        const int host_index = feature.host_frame_index;
+        const int observation_index = observed_frame_index - host_index;
+        if (host_index < 0 || host_index > state.latest_frame_index || observation_index < 0 ||
+            observation_index >= static_cast<int>(feature.observations.size()) ||
+            feature.observations.empty() || !std::isfinite(feature.estimated_depth) ||
+            feature.estimated_depth < min_depth_ || feature.estimated_depth > max_depth_) {
+            continue;
+        }
+
+        const FeaturePerFrame& host_observation = feature.observations.front();
+        Eigen::Vector3d world_point;
+        if (!hostPointToWorld(
+                state.frames[host_index], host_observation.uv, feature.estimated_depth,
+                host_observation.sync_delay, state.delay_time, ric, tic, world_point)) {
+            continue;
+        }
+        landmarks.emplace(feature_id, world_point);
     }
     return landmarks;
 }

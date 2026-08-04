@@ -18,6 +18,7 @@
 #include <Eigen/Dense>
 
 // 标准库
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -38,6 +39,10 @@ public:
 
     void publishCompressedImage(
         const std::string& topic, const std::string& frame_id, const cv::Mat& image,
+        const std::string& format = "jpeg", double timestamp = -1.0);
+
+    void publishCompressedImageToTopics(
+        const std::vector<std::string>& topics, const std::string& frame_id, const cv::Mat& image,
         const std::string& format = "jpeg", double timestamp = -1.0);
 
     void publishImage(
@@ -85,6 +90,8 @@ private:
         odometry_publishers_;
     std::unordered_map<std::string, nav_msgs::msg::Odometry> odometry_;
     std::unordered_map<std::string, bool> odometry_broadcast_tf_;
+    // 里程计 TF 只接受严格递增时间戳，避免重复/倒退时间触发 TF_OLD_DATA。
+    std::unordered_map<std::string, int64_t> odometry_last_stamp_ns_;
 
     // 轨迹
     std::unordered_map<std::string, rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr>

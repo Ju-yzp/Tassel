@@ -37,7 +37,7 @@ struct Parameters {
     // 图像和特征跟踪器配置：用于 FeatureTracker 和相机创建。
     int rows, cols;
     int per_grid_rows, per_grid_cols;
-    int edge_x, edge_y;
+    std::string valid_mask_path;
     double mask_radius;
     int min_feature_num;
     bool flow_back;
@@ -76,10 +76,10 @@ struct Parameters {
 
     // 视觉惯性初始化和 SFM：用于 Estimator::tryInitialize。
     double gravity_diff_threshold = 0.17;
-    int sfm_min_seed_pts = 10;
+    double init_min_scale = 0.01;
+    int sfm_min_correspondences = 10;
     int sfm_min_e_inliers = 8;
     double sfm_e_ransac_threshold = 0.004;
-    int sfm_min_pnp_pts = 10;
     double sfm_pnp_reproj_threshold = 0.03;
     double sfm_max_bad_pnp_ratio = 0.3;
     int sfm_ba_max_iterations = 30;
@@ -113,6 +113,15 @@ private:
         if (keyframe_min_connection_ratio < 0.0 || keyframe_min_connection_ratio > 1.0) {
             throw std::invalid_argument("keyframe_min_connection_ratio must be in [0, 1]");
         }
+        if (!std::isfinite(parallax_threshold) || parallax_threshold < 0.0) {
+            throw std::invalid_argument("parallax_threshold must be finite and non-negative");
+        }
+        if (min_feature_num < 0) {
+            throw std::invalid_argument("min_feature_num must be non-negative");
+        }
+        if (!std::isfinite(init_min_scale) || init_min_scale <= 0.0) {
+            throw std::invalid_argument("init_min_scale must be finite and positive");
+        }
         if (camera_model != "radtan" && camera_model != "equi") {
             throw std::invalid_argument("Unsupported camera_model: " + camera_model);
         }
@@ -132,8 +141,7 @@ private:
         cols = parser.as<int>("cols");
         per_grid_rows = parser.as<int>("per_grid_rows");
         per_grid_cols = parser.as<int>("per_grid_cols");
-        edge_x = parser.as<int>("edge_x");
-        edge_y = parser.as<int>("edge_y");
+        valid_mask_path = parser.as<std::string>("valid_mask_path");
         mask_radius = parser.as<double>("mask_radius");
         min_feature_num = parser.as<int>("min_feature_num");
         flow_back = parser.as<bool>("flow_back");
@@ -177,10 +185,10 @@ private:
 
     void loadInitialization(ParamsParser& parser) {
         gravity_diff_threshold = parser.as<double>("gravity_diff_threshold");
-        sfm_min_seed_pts = parser.as<int>("sfm_min_seed_pts");
+        init_min_scale = parser.as<double>("init_min_scale");
+        sfm_min_correspondences = parser.as<int>("sfm_min_correspondences");
         sfm_min_e_inliers = parser.as<int>("sfm_min_e_inliers");
         sfm_e_ransac_threshold = parser.as<double>("sfm_e_ransac_threshold");
-        sfm_min_pnp_pts = parser.as<int>("sfm_min_pnp_pts");
         sfm_pnp_reproj_threshold = parser.as<double>("sfm_pnp_reproj_threshold");
         sfm_max_bad_pnp_ratio = parser.as<double>("sfm_max_bad_pnp_ratio");
         sfm_ba_max_iterations = parser.as<int>("sfm_ba_max_iterations");

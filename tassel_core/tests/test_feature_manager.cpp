@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <limits>
 
 #include "cam/camera_rad_tan.h"
@@ -20,6 +21,10 @@ FeaturePerFrame observation(double x = 0.0, double delay = 0.0) {
 }
 
 FeatureManager manager() { return FeatureManager(3.0, 2, 1e9, 0.75, 0.1, 100.0); }
+
+bool containsId(const std::vector<int>& ids, int id) {
+    return std::find(ids.begin(), ids.end(), id) != ids.end();
+}
 
 TEST(ReprojectionTest, SplitTransformMatchesComposedTransform) {
     FrameState host;
@@ -149,12 +154,51 @@ TEST(FeatureManagerTest, RemovingMiddleFrameCompactsFeatureHostIndex) {
     EXPECT_EQ(fm.features().at(1).host_frame_index, 1);
 }
 
-TEST(FeatureManagerTest, UsesLatestKeyframeObservationForAverageParallax) {
-    FeatureManager fm(3.0, 2, 10.0, 0.5, 0.1, 100.0);
+TEST(FeatureManagerTest, KeepsFrameNonKeyframeWhenConnectionsAreSufficient) {
+    FeatureManager fm(3.0, 2, 1e9, 0.5, 0.1, 100.0);
     EXPECT_TRUE(fm.addFeatureFrame(0, {{1, observation(0.0)}}));
-    EXPECT_TRUE(fm.addFeatureFrame(1, {{1, observation(20.0)}}));
+    EXPECT_FALSE(fm.addFeatureFrame(1, {{1, observation(20.0)}}));
 
-    EXPECT_FALSE(fm.addFeatureFrame(2, {{1, observation(21.0)}}));
+    EXPECT_FALSE(fm.addFeatureFrame(2, {{1, observation(40.0)}}));
+}
+
+TEST(FeatureManagerTest, ReplacesInitializationCandidateUntilConnectionsAreInsufficient) {
+    FeatureManager fm(3.0, 2, 1e9, 0.5, 0.1, 100.0);
+    EXPECT_TRUE(fm.addFeatureFrame(
+        1, {{1, observation(0.0)}, {2, observation(0.0)}, {3, observation(0.0)}}));
+
+    EXPECT_FALSE(fm.replaceInitializationCandidate(
+        1, 2,
+        {{1, observation(20.0)},
+         {2, observation(20.0)},
+         {3, observation(20.0)},
+         {4, observation(20.0)}}));
+    ASSERT_EQ(fm.features().at(1).observations.size(), 2u);
+    EXPECT_DOUBLE_EQ(fm.features().at(1).observations.back().pt.x, 20.0);
+
+    EXPECT_TRUE(
+        fm.replaceInitializationCandidate(1, 2, {{1, observation(40.0)}, {5, observation(40.0)}}));
+    ASSERT_EQ(fm.features().at(1).observations.size(), 2u);
+    EXPECT_DOUBLE_EQ(fm.features().at(1).observations.back().pt.x, 40.0);
+    EXPECT_FALSE(fm.features().contains(4));
+    EXPECT_TRUE(fm.features().contains(5));
+}
+
+TEST(FeatureManagerTest, AcceptsInitializationCandidateWhenParallaxIsSufficient) {
+    FeatureManager fm(3.0, 2, 10.0, 0.5, 0.1, 100.0);
+    EXPECT_TRUE(fm.addFeatureFrame(
+        1, {{1, observation(0.0)}, {2, observation(0.0)}, {3, observation(0.0)}}));
+
+    EXPECT_TRUE(fm.replaceInitializationCandidate(
+        1, 2, {{1, observation(12.0)}, {2, observation(12.0)}, {3, observation(12.0)}}));
+}
+
+TEST(FeatureManagerTest, AcceptsInitializationCandidateWhenKeyframeConnectionsAreLost) {
+    FeatureManager fm(3.0, 2, 1e9, 0.75, 0.1, 100.0);
+    EXPECT_TRUE(fm.addFeatureFrame(
+        1, {{1, observation()}, {2, observation()}, {3, observation()}, {4, observation()}}));
+
+    EXPECT_TRUE(fm.replaceInitializationCandidate(1, 2, {{1, observation()}, {2, observation()}}));
 }
 
 TEST(FeatureManagerTest, CreatesKeyframeWhenPreviousKeyframeConnectionsAreLost) {
@@ -283,14 +327,18 @@ TEST(FeatureManagerTest, RemovesLandmarkUsingDirectPixelReprojectionError) {
     fm.features().emplace(1, std::move(good));
     fm.features().emplace(2, std::move(bad));
     fm.features().emplace(3, std::move(invalid));
-    fm.removeOutliers(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+    const std::vector<int> removed_ids =
+        fm.removeOutliers(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
 
     EXPECT_TRUE(fm.features().contains(1));
-    EXPECT_FALSE(fm.features().contains(2));
-    EXPECT_FALSE(fm.features().contains(3));
+    EXPECT_TRUE(fm.features().contains(2));
+    EXPECT_TRUE(fm.features().contains(3));
+    EXPECT_EQ(removed_ids.size(), 2u);
+    EXPECT_TRUE(containsId(removed_ids, 2));
+    EXPECT_TRUE(containsId(removed_ids, 3));
 }
 
-TEST(FeatureManagerTest, RecreatedOutlierKeepsKeyframeSnapshotConnection) {
+TEST(FeatureManagerTest, ReprojectionOutlierRemainsAvailableForLaterObservations) {
     cv::Mat K = (cv::Mat_<double>(3, 3) << 100.0, 0.0, 50.0, 0.0, 100.0, 40.0, 0.0, 0.0, 1.0);
     cv::Mat D = cv::Mat::zeros(1, 5, CV_64F);
     CameraRadTan camera(K, D, 100, 80);
@@ -308,10 +356,15 @@ TEST(FeatureManagerTest, RecreatedOutlierKeepsKeyframeSnapshotConnection) {
     EXPECT_FALSE(fm.addFeatureFrame(1, {{1, matching}, {2, outlier}}));
     fm.features().at(1).estimated_depth = 2.0;
     fm.features().at(2).estimated_depth = 2.0;
-    fm.removeOutliers(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
-    ASSERT_FALSE(fm.features().contains(2));
+    const std::vector<int> removed_ids =
+        fm.removeOutliers(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+    ASSERT_TRUE(fm.features().contains(2));
+    ASSERT_EQ(removed_ids.size(), 1u);
+    EXPECT_EQ(removed_ids.front(), 2);
 
     EXPECT_FALSE(fm.addFeatureFrame(2, {{1, matching}, {2, matching}}));
+    EXPECT_TRUE(fm.features().contains(1));
+    EXPECT_TRUE(fm.features().contains(2));
 }
 
 TEST(FeatureManagerTest, ExportsValidLandmarksForRequestedHostAsIndependentValues) {
@@ -347,6 +400,29 @@ TEST(FeatureManagerTest, ExportsValidLandmarksForRequestedHostAsIndependentValue
     EXPECT_EQ(landmarks.front().feature_id, 7);
     EXPECT_TRUE(landmarks.front().host_uv.isApprox(Eigen::Vector3d(0.25, 0.0, 1.0)));
     EXPECT_DOUBLE_EQ(landmarks.front().host_depth, 2.0);
+}
+
+TEST(FeatureManagerTest, ExportsObservedHostDepthAsWorldLandmark) {
+    auto fm = manager();
+    State state(2);
+    state.latest_frame_index = 1;
+    state.frames[0].R = Eigen::AngleAxisd(M_PI_2, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    state.frames[0].P = Eigen::Vector3d(4.0, 5.0, 6.0);
+    Feature feature(0, 2);
+    feature.estimated_depth = 2.0;
+    feature.observations = {observation(0.25), observation(0.3)};
+    fm.features().emplace(7, std::move(feature));
+
+    Feature not_observed(0, 1);
+    not_observed.estimated_depth = 2.0;
+    not_observed.observations = {observation(0.5)};
+    fm.features().emplace(8, std::move(not_observed));
+
+    const auto landmarks = fm.exportObservedWorldLandmarks(
+        1, state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+
+    ASSERT_EQ(landmarks.size(), 1u);
+    EXPECT_TRUE(landmarks.at(7).isApprox(Eigen::Vector3d(4.0, 5.5, 8.0)));
 }
 
 TEST(FeatureManagerTest, MapsReservedSlotIndicesToCompactSfmIndices) {

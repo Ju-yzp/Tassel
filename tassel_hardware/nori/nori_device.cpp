@@ -1,13 +1,13 @@
 #include "nori/nori_device.h"
 
-#include <cerrno>
-#include <cstring>
 #include <fcntl.h>
 #include <linux/videodev2.h>
-#include <stdexcept>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <cerrno>
+#include <cstring>
+#include <stdexcept>
 #include <utility>
 
 namespace tassel_hardware {
@@ -37,8 +37,7 @@ struct MappedBuffer {
 class NoriDevice::Impl {
 public:
     Impl(const std::string& path, NoriDeviceConfig requested) : config(std::move(requested)) {
-        if (config.width <= 0 || config.height <= 0 || config.fps <= 0 ||
-            config.buffer_count < 2) {
+        if (config.width <= 0 || config.height <= 0 || config.fps <= 0 || config.buffer_count < 2) {
             throw std::invalid_argument("Invalid Nori capture configuration");
         }
         if (config.pixel_format == 0) {

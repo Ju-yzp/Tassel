@@ -103,8 +103,8 @@ bool NoriDecoder::decode(
     }
 
     const PacketHeader header = decodeHeader(packet);
-    const int group_count = 1 + std::accumulate(
-                                    header.group_counts.begin(), header.group_counts.end(), 0);
+    const int group_count =
+        1 + std::accumulate(header.group_counts.begin(), header.group_counts.end(), 0);
     const size_t required_bytes = static_cast<size_t>(group_count) * kBytesPerGroup;
     while (packet.size() < required_bytes) {
         std::vector<uint8_t> line;
@@ -118,7 +118,8 @@ bool NoriDecoder::decode(
     const uint64_t exposure_end_us = unwrapFrameEnd(header.exposure_end_us);
     timing.exposure_end = static_cast<tassel_utils::FrameId>(exposure_end_us * 1000);
     timing.exposure_start = static_cast<tassel_utils::FrameId>(
-        timestampNearFrame(header.exposure_start_us, header.exposure_end_us, exposure_end_us) * 1000);
+        timestampNearFrame(header.exposure_start_us, header.exposure_end_us, exposure_end_us) *
+        1000);
 
     measurements.clear();
     size_t group_index = 1;
@@ -136,14 +137,14 @@ bool NoriDecoder::decode(
             }
             const uint64_t timestamp_us =
                 timestampNearFrame(readU32(record), header.exposure_end_us, exposure_end_us);
-            measurements.push_back({
-                Eigen::Vector3d(
-                    readI16(record + 4) * acc_scale, readI16(record + 6) * acc_scale,
-                    readI16(record + 8) * acc_scale),
-                Eigen::Vector3d(
-                    readI16(record + 10) * gyro_scale, readI16(record + 12) * gyro_scale,
-                    readI16(record + 14) * gyro_scale),
-                static_cast<double>(timestamp_us) * 1e-6});
+            measurements.push_back(
+                {Eigen::Vector3d(
+                     readI16(record + 4) * acc_scale, readI16(record + 6) * acc_scale,
+                     readI16(record + 8) * acc_scale),
+                 Eigen::Vector3d(
+                     readI16(record + 10) * gyro_scale, readI16(record + 12) * gyro_scale,
+                     readI16(record + 14) * gyro_scale),
+                 static_cast<double>(timestamp_us) * 1e-6});
         }
     }
     return true;
@@ -171,8 +172,8 @@ bool NoriDecoder::decodeLine(
     column += kCodeSize / 2;
     std::vector<uint8_t> bits;
     while (column + 1 < image.cols) {
-        const int value = row[column * channels + sample_channel] +
-                          row[(column + 1) * channels + sample_channel];
+        const int value =
+            row[column * channels + sample_channel] + row[(column + 1) * channels + sample_channel];
         if (value < 2 * zero_threshold) {
             bits.push_back(0);
         } else if (value < 2 * kOneThreshold) {
@@ -196,8 +197,9 @@ bool NoriDecoder::decodeLine(
 }
 
 uint64_t NoriDecoder::unwrapFrameEnd(uint32_t timestamp_us) {
-    if (has_frame_timestamp_ && timestamp_us < last_frame_end_us_ &&
-        static_cast<uint64_t>(last_frame_end_us_) - timestamp_us > kTimestampHalfRange) {
+    if (has_frame_timestamp_ &&
+        timestamp_us<last_frame_end_us_&& static_cast<uint64_t>(last_frame_end_us_) - timestamp_us>
+            kTimestampHalfRange) {
         frame_epoch_us_ += kTimestampModulo;
     }
     has_frame_timestamp_ = true;

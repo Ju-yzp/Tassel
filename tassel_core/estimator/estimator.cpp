@@ -30,6 +30,7 @@
 #include "factor/integrator_base.h"
 #include "factor/marginalization_prior_factor.h"
 #include "factor/reprojection_factor.h"
+#include "frond_end/reprojection.h"
 #include "imu_interpolation.h"
 #include "marg/marg_helper.h"
 #include "marg/marginalization_sqrt.h"
@@ -42,7 +43,6 @@
 namespace tassel_core {
 
 namespace {
-
 constexpr int kRetainedFrameIndex = 0;
 constexpr int kFirstActiveFrameIndex = 1;
 constexpr double kGaugeHeadingMinNorm = 1e-8;
@@ -147,14 +147,17 @@ void Estimator::processMeasurement(
         last_imu_gyro_ = imu_measurements.back().gyro;
     }
 
-    auto stage_start = SteadyClock::now();
-    const bool is_keyframe = feature_manager_->addFeatureFrame(frame_count, feature_frame);
-    feature_ms = elapsedMs(stage_start);
-    state_->frames[frame_count].type = is_keyframe ? FrameType::KeyFrame : FrameType::NonKeyFrame;
-    last_measurement_was_keyframe_ = is_keyframe;
     const bool is_first_initial_frame =
         !initialized_ && frame_count == kFirstActiveFrameIndex &&
         state_->frames[kRetainedFrameIndex].timestamp_ns == tassel_utils::kInvalidFrameId;
+    auto stage_start = SteadyClock::now();
+    const bool is_keyframe = initialized_ || is_first_initial_frame
+                                 ? feature_manager_->addFeatureFrame(frame_count, feature_frame)
+                                 : feature_manager_->replaceInitializationCandidate(
+                                       frame_count - 1, frame_count, feature_frame);
+    feature_ms = elapsedMs(stage_start);
+    state_->frames[frame_count].type = is_keyframe ? FrameType::KeyFrame : FrameType::NonKeyFrame;
+    last_measurement_was_keyframe_ = is_keyframe;
     if (!is_first_initial_frame) {
         stage_start = SteadyClock::now();
         predictFrameState(frame_count, imu_measurements);
@@ -166,7 +169,17 @@ void Estimator::processMeasurement(
         imu_measurements, imu_query_timestamp, state_->frames[frame_count].gyro,
         state_->frames[frame_count].acc);
     if (!initialized_) {
-        // 初始化期间将每个相机帧保留为独立的 VIO 状态，避免合并为过长的预积分区间。
+        if (!is_keyframe) {
+            // 低视差图像只更新尾部候选槽，状态和 IMU 预积分持续累计，不占用新的窗口帧。
+            spdlog::info(
+                "Timing estimator: total={:.3f} ms feature={:.3f} imu_predict={:.3f} "
+                "init=0.000 triangulate=0.000 optimize=0.000 outlier=0.000 prior=0.000 "
+                "slide=0.000 phase=accumulate_init_candidate",
+                elapsedMs(total_start), feature_ms, predict_ms);
+            return;
+        }
+
+        // 只有达到初始化视差的候选图像才固定为独立 VIO 状态并推进窗口。
         if (frame_count < state_->max_frame_count - 1) {
             ++frame_count;
             state_->copyFrameState(frame_count - 1, frame_count);
@@ -259,6 +272,16 @@ void Estimator::predictFrameState(
         for (const auto& imu : imu_measurements) {
             tassel_utils::IMUMeasurement calibrated_imu = imu;
             calibrated_imu.acc -= params_.acc_bias;
+            if (!preintegrator.buffer.empty() &&
+                calibrated_imu.timestamp == preintegrator.buffer.back().timestamp) {
+                const auto& boundary = preintegrator.buffer.back();
+                if (!calibrated_imu.acc.isApprox(boundary.acc, 1e-12) ||
+                    !calibrated_imu.gyro.isApprox(boundary.gyro, 1e-12)) {
+                    throw std::runtime_error("Shared IMU boundary has inconsistent measurements");
+                }
+                // 初始化候选槽累计多个同步包时，相邻包会共享同一个边界样本。
+                continue;
+            }
             if (!preintegrator.propagate(calibrated_imu)) {
                 throw std::runtime_error("Invalid or non-monotonic IMU measurement");
             }
@@ -287,14 +310,128 @@ void Estimator::predictFrameState(
     predicted_frame.V = velocity;
 }
 
+std::optional<TrackingPredictionSnapshot> Estimator::makeTrackingPredictionSnapshot() const {
+    if (!initialized_ || last_ts_ < 0.0 || !camera_) {
+        return std::nullopt;
+    }
+
+    int source_index = -1;
+    tassel_utils::FrameId newest_frame_id = tassel_utils::kInvalidFrameId;
+    for (int i = 0; i <= state_->latest_frame_index; ++i) {
+        const tassel_utils::FrameId frame_id = state_->frames[i].timestamp_ns;
+        if (frame_id != tassel_utils::kInvalidFrameId &&
+            (source_index < 0 || frame_id > newest_frame_id)) {
+            source_index = i;
+            newest_frame_id = frame_id;
+        }
+    }
+    if (source_index < 0) {
+        throw std::logic_error("Initialized estimator has no valid frame for tracking prediction");
+    }
+
+    TrackingPredictionSnapshot snapshot;
+    snapshot.source_frame_id = newest_frame_id;
+    snapshot.source_state = state_->frames[source_index];
+    snapshot.imu_timestamp = last_ts_;
+    snapshot.imu_acc = last_imu_acc_;
+    snapshot.imu_gyro = last_imu_gyro_;
+    snapshot.delay_time = state_->delay_time;
+    snapshot.world_landmarks = feature_manager_->exportObservedWorldLandmarks(
+        source_index, *state_, params_.ric, params_.tic);
+    return snapshot;
+}
+
+std::unordered_map<int, cv::Point2f> predictLandmarkPixelsFromSnapshot(
+    const TrackingPredictionSnapshot& snapshot, tassel_utils::FrameId target_frame_id,
+    const std::vector<tassel_utils::IMUMeasurement>& imu_measurements, double sync_delay,
+    const CameraBase& camera, const tassel_tools::Parameters& params) {
+    std::unordered_map<int, cv::Point2f> pixels;
+    if (snapshot.world_landmarks.empty()) {
+        return pixels;
+    }
+    if (target_frame_id <= snapshot.source_frame_id || !std::isfinite(snapshot.imu_timestamp) ||
+        !std::isfinite(sync_delay)) {
+        throw std::invalid_argument("Invalid landmark prediction input");
+    }
+
+    FrameState target = snapshot.source_state;
+    target.timestamp_ns = target_frame_id;
+    target.sync_delay = sync_delay;
+    double last_timestamp = snapshot.imu_timestamp;
+    Eigen::Vector3d last_acc = snapshot.imu_acc;
+    Eigen::Vector3d last_gyro = snapshot.imu_gyro;
+    // 当前包首样本与快照边界重合，后续样本必须连续覆盖到目标图像同步时刻。
+    for (const auto& raw_imu : imu_measurements) {
+        if (raw_imu.timestamp < last_timestamp) {
+            throw std::logic_error("Tracking prediction IMU is not monotonic");
+        }
+        if (raw_imu.timestamp == last_timestamp) {
+            continue;
+        }
+        tassel_utils::IMUMeasurement imu = raw_imu;
+        imu.acc -= params.acc_bias;
+        const double dt = imu.timestamp - last_timestamp;
+        const Eigen::Vector3d previous_acceleration =
+            target.R * (last_acc - target.Ba) - tassel_utils::G;
+        const Eigen::Vector3d angular_velocity = 0.5 * (last_gyro + imu.gyro) - target.Bg;
+        target.R *= Sophus::SO3d::exp(angular_velocity * dt).matrix();
+        target.R = Eigen::Quaterniond(target.R).normalized().toRotationMatrix();
+        const Eigen::Vector3d current_acceleration =
+            target.R * (imu.acc - target.Ba) - tassel_utils::G;
+        const Eigen::Vector3d average_acceleration =
+            0.5 * (previous_acceleration + current_acceleration);
+        target.P += target.V * dt + 0.5 * average_acceleration * dt * dt;
+        target.V += average_acceleration * dt;
+        last_timestamp = imu.timestamp;
+        last_acc = imu.acc;
+        last_gyro = imu.gyro;
+    }
+
+    const double target_time = tassel_utils::frameIdToSeconds(target_frame_id) + sync_delay;
+    if (std::abs(last_timestamp - target_time) > 1e-6) {
+        throw std::logic_error("Tracking prediction IMU does not reach the target image time");
+    }
+    interpolateBodyImu(imu_measurements, target_time, target.gyro, target.acc);
+
+    pixels.reserve(snapshot.world_landmarks.size());
+    for (const auto& [feature_id, world_point] : snapshot.world_landmarks) {
+        Eigen::Vector3d target_point;
+        if (!worldPointToTargetCamera(
+                target, world_point, sync_delay, snapshot.delay_time, params.ric, params.tic,
+                target_point)) {
+            continue;
+        }
+        const Eigen::Vector2d pixel = camera.distort(target_point.head<2>() / target_point.z());
+        if (!pixel.allFinite() || pixel.x() < 0.0 || pixel.x() >= camera.get_width() ||
+            pixel.y() < 0.0 || pixel.y() >= camera.get_height()) {
+            continue;
+        }
+        pixels.emplace(feature_id, cv::Point2f(pixel.x(), pixel.y()));
+    }
+    return pixels;
+}
+
+std::unordered_map<int, cv::Point2f> Estimator::predictLandmarkPixels(
+    const TrackingPredictionSnapshot& snapshot, tassel_utils::FrameId target_frame_id,
+    const std::vector<tassel_utils::IMUMeasurement>& imu_measurements, double sync_delay) const {
+    if (!camera_) {
+        throw std::logic_error("Cannot predict landmarks without a camera");
+    }
+    return predictLandmarkPixelsFromSnapshot(
+        snapshot, target_frame_id, imu_measurements, sync_delay, *camera_, params_);
+}
+
 void Estimator::optimize() {
+    const auto build_start = SteadyClock::now();
     const int latest_id = state_->latest_frame_index;
     const int gauge_frame_index =
         marginalization_prior_ ? kRetainedFrameIndex : kFirstActiveFrameIndex;
     state_->stateToParams();
     auto features = feature_manager_->collectLandmarks();
 
-    ceres::Problem problem;
+    ceres::Problem::Options problem_options;
+    problem_options.context = ceres_context_.get();
+    ceres::Problem problem(problem_options);
     std::vector<int> visual_factors_per_frame(state_->latest_frame_index + 1, 0);
 
     for (int i = 0; i < state_->max_frame_count; ++i) {
@@ -380,8 +517,9 @@ void Estimator::optimize() {
                 state_->frames[target_id].speed_bias.data() + 3, sqrt_info, state_->camera,
                 f->observations[0].sync_delay, f->observations[obs_idx].sync_delay);
             problem.AddResidualBlock(
-                cost, loss, state_->frames[host_id].pose.data(), state_->frames[target_id].pose.data(),
-                &state_->param_delay_time, &inv_depth_params[k]);
+                cost, loss, state_->frames[host_id].pose.data(),
+                state_->frames[target_id].pose.data(), &state_->param_delay_time,
+                &inv_depth_params[k]);
         }
     }
 
@@ -412,7 +550,19 @@ void Estimator::optimize() {
     opts.logging_type = ceres::SILENT;
 
     ceres::Solver::Summary summary;
+    const double build_ms = elapsedMs(build_start);
+    const auto solve_start = SteadyClock::now();
     ceres::Solve(opts, &problem, &summary);
+    const double solve_ms = elapsedMs(solve_start);
+    spdlog::info(
+        "Ceres timing: build={:.3f} ms solve={:.3f} ms minimizer={:.3f} ms "
+        "linear={:.3f} ms residual={:.3f} ms jacobian={:.3f} ms iterations={} "
+        "residual_evals={} jacobian_evals={}",
+        build_ms, solve_ms, summary.minimizer_time_in_seconds * 1000.0,
+        summary.linear_solver_time_in_seconds * 1000.0,
+        summary.residual_evaluation_time_in_seconds * 1000.0,
+        summary.jacobian_evaluation_time_in_seconds * 1000.0, summary.iterations.size(),
+        summary.num_residual_evaluations, summary.num_jacobian_evaluations);
 
     bool finite_solution = std::isfinite(state_->param_delay_time);
     for (int i = 0; i <= latest_id && finite_solution; ++i) {
@@ -516,9 +666,9 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
     }
 
     // 常规边缘化消去 frame1 宿主的所有后续观测；其他动作只消去 frame0 到 frame1 的约束。
-    const int landmark_host_frame_index =
-        action == RetainedHostAction::MarginalizeOldestFrame ? kFirstActiveFrameIndex
-                                                             : kRetainedFrameIndex;
+    const int landmark_host_frame_index = action == RetainedHostAction::MarginalizeOldestFrame
+                                              ? kFirstActiveFrameIndex
+                                              : kRetainedFrameIndex;
     const int landmark_target_frame_index =
         action == RetainedHostAction::MarginalizeOldestFrame ? -1 : kFirstActiveFrameIndex;
     auto retiring_features = feature_manager_->collectMarginalizedFeatures(
@@ -607,9 +757,9 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
         updated_prior->linearization_poses.resize(window_capacity - 1);
         updated_prior->linearization_speed_bias.resize(window_capacity - 1);
         updated_prior->linearization_delay_time = state_->param_delay_time;
-        const int retained_host_source_index =
-            action == RetainedHostAction::MarginalizeOldestFrame ? kRetainedFrameIndex
-                                                                 : kFirstActiveFrameIndex;
+        const int retained_host_source_index = action == RetainedHostAction::MarginalizeOldestFrame
+                                                   ? kRetainedFrameIndex
+                                                   : kFirstActiveFrameIndex;
         updated_prior->linearization_poses[0] = state_->frames[retained_host_source_index].pose;
         updated_prior->linearization_speed_bias[0] =
             state_->frames[retained_host_source_index].speed_bias;
@@ -749,10 +899,12 @@ bool Estimator::tryInitialize() {
     const int n_frames = last_frame_index - kFirstActiveFrameIndex + 1;
 
     InitialSFM sfm(
-        params_.sfm_min_seed_pts, params_.sfm_min_e_inliers, params_.sfm_e_ransac_threshold,
-        params_.sfm_min_pnp_pts, params_.sfm_pnp_reproj_threshold, params_.sfm_max_bad_pnp_ratio,
-        params_.sfm_ba_max_iterations, params_.sfm_ba_num_threads);
-    if (!sfm.construct(*state_, *feature_manager_, params_.ric, Rs_, Ps_, kFirstActiveFrameIndex)) {
+        params_.sfm_min_correspondences, params_.sfm_min_e_inliers, params_.sfm_e_ransac_threshold,
+        params_.sfm_min_correspondences, params_.sfm_pnp_reproj_threshold,
+        params_.sfm_max_bad_pnp_ratio, params_.sfm_ba_max_iterations, params_.sfm_ba_num_threads);
+    const bool sfm_succeeded =
+        sfm.construct(*state_, *feature_manager_, params_.ric, Rs_, Ps_, kFirstActiveFrameIndex);
+    if (!sfm_succeeded) {
         spdlog::info("VIO initialization: SFM failed");
         return false;
     }
@@ -807,8 +959,8 @@ bool Estimator::tryInitialize() {
         spdlog::info("VI initialization: gravity refinement failed");
         return false;
     }
-    if (!std::isfinite(s) || s <= 0.0) {
-        spdlog::info("VI initialization: non-positive or invalid scale {:.6f}", s);
+    if (!std::isfinite(s) || s < params_.init_min_scale) {
+        spdlog::info("VI initialization: degenerate or invalid scale {:.6f}", s);
         return false;
     }
 

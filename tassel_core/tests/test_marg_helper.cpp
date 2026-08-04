@@ -12,8 +12,7 @@ TEST(MargHelperTest, MovesMarginalizedColumnsBeforeRetainedColumns) {
     }
 
     const Eigen::MatrixXd create_order =
-        MargHelper::reorderForMarginalization(
-            columns, RetainedHostAction::InitializeRetainedSlot);
+        MargHelper::reorderForMarginalization(columns, RetainedHostAction::InitializeRetainedSlot);
     for (int i = 0; i < 15; ++i) {
         EXPECT_EQ(create_order(0, i), i);
     }
@@ -25,16 +24,14 @@ TEST(MargHelperTest, MovesMarginalizedColumnsBeforeRetainedColumns) {
     }
 
     const Eigen::MatrixXd keep_order =
-        MargHelper::reorderForMarginalization(
-            columns, RetainedHostAction::MarginalizeOldestFrame);
+        MargHelper::reorderForMarginalization(columns, RetainedHostAction::MarginalizeOldestFrame);
     for (int i = 0; i < 15; ++i) {
         EXPECT_EQ(keep_order(0, i), i + 15);
         EXPECT_EQ(keep_order(0, i + 15), i);
     }
 
     const Eigen::MatrixXd replace_order =
-        MargHelper::reorderForMarginalization(
-            columns, RetainedHostAction::ReplaceRetainedSlot);
+        MargHelper::reorderForMarginalization(columns, RetainedHostAction::ReplaceRetainedSlot);
     for (int i = 0; i < 15; ++i) {
         EXPECT_EQ(replace_order(0, i), i);
     }

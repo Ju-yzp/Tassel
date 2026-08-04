@@ -4,6 +4,7 @@
 #include <Eigen/Core>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -23,6 +24,22 @@
 namespace tassel_core {
 
 class CameraBase;
+
+// 整帧优化和窗口搬迁完成后复制发布；跨线程使用时不得再引用 FeatureManager 内部对象。
+struct TrackingPredictionSnapshot {
+    tassel_utils::FrameId source_frame_id = tassel_utils::kInvalidFrameId;
+    FrameState source_state;
+    double imu_timestamp = -1.0;
+    Eigen::Vector3d imu_acc = Eigen::Vector3d::Zero();
+    Eigen::Vector3d imu_gyro = Eigen::Vector3d::Zero();
+    double delay_time = 0.0;
+    std::unordered_map<int, Eigen::Vector3d> world_landmarks;
+};
+
+std::unordered_map<int, cv::Point2f> predictLandmarkPixelsFromSnapshot(
+    const TrackingPredictionSnapshot& snapshot, tassel_utils::FrameId target_frame_id,
+    const std::vector<tassel_utils::IMUMeasurement>& imu_measurements, double sync_delay,
+    const CameraBase& camera, const tassel_tools::Parameters& params);
 
 class Estimator {
 public:
@@ -50,6 +67,12 @@ public:
     }
 
     bool lastMeasurementWasKeyframe() const { return last_measurement_was_keyframe_; }
+
+    std::optional<TrackingPredictionSnapshot> makeTrackingPredictionSnapshot() const;
+
+    std::unordered_map<int, cv::Point2f> predictLandmarkPixels(
+        const TrackingPredictionSnapshot& snapshot, tassel_utils::FrameId target_frame_id,
+        const std::vector<tassel_utils::IMUMeasurement>& imu_measurements, double sync_delay) const;
 
     void optimize();
 
@@ -94,6 +117,7 @@ private:
     std::shared_ptr<State> state_;
     std::shared_ptr<FeatureManager> feature_manager_;
     const CameraBase* camera_ = nullptr;
+    std::unique_ptr<ceres::Context> ceres_context_{ceres::Context::Create()};
 
     Eigen::Matrix<double, 18, 18> noise_;
 

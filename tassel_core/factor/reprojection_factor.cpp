@@ -92,8 +92,7 @@ bool ReprojectionFactor::Evaluate(
         Eigen::MatrixXd H_dz_dzn;
         camera->get_jacobian_dzn(uv_pred_norm, H_dz_dzn);
         Eigen::Matrix<double, 2, 3> duv_dP;
-        duv_dP << inv_z, 0, -pj_in_C.x() * inv_z * inv_z, 0, inv_z,
-            -pj_in_C.y() * inv_z * inv_z;
+        duv_dP << inv_z, 0, -pj_in_C.x() * inv_z * inv_z, 0, inv_z, -pj_in_C.y() * inv_z * inv_z;
         const Eigen::Matrix<double, 2, 3> reduce = sqrt_info * H_dz_dzn * duv_dP;
 
         if (jacobians[0]) {

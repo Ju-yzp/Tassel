@@ -23,11 +23,11 @@ FisheyeRectifier::FisheyeRectifier(
 
     const cv::Mat identity = cv::Mat::eye(3, 3, CV_64F);
     cv::fisheye::estimateNewCameraMatrixForUndistortRectify(
-        camera_matrix, distortion, image_size, identity, rectified_camera_matrix_, 0.0,
-        image_size, 1.0);
+        camera_matrix, distortion, image_size, identity, rectified_camera_matrix_, 0.0, image_size,
+        1.0);
     cv::fisheye::initUndistortRectifyMap(
-        camera_matrix, distortion, identity, rectified_camera_matrix_, image_size, CV_32FC1,
-        map_x_, map_y_);
+        camera_matrix, distortion, identity, rectified_camera_matrix_, image_size, CV_32FC1, map_x_,
+        map_y_);
 
     cv::Mat full_mask = cv::Mat::zeros(image_size, CV_8UC1);
     const cv::Point center(

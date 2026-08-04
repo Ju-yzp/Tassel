@@ -3,6 +3,7 @@
 
 // OpenCV
 #include <cstddef>
+#include <limits>
 #include <opencv2/core.hpp>
 
 // 标准库
@@ -22,12 +23,13 @@ public:
         int track_age_color_scale = 5, double min_gradient = 50.0);
 
     void setCamera(
-        Camera camera, int per_grid_rows = 4, int per_grid_cols = 4, int grid_edge_rows = 2,
-        int grid_edge_cols = 2, double mask_radius = 15.0, int min_feature_num = 100);
+        Camera camera, int per_grid_rows = 4, int per_grid_cols = 4, double mask_radius = 15.0,
+        int min_feature_num = 150);
 
     void setValidMask(const cv::Mat& mask, int margin = 0);
 
-    std::unordered_map<int, FeaturePerFrame> monoTracking(const cv::Mat& img);
+    std::unordered_map<int, FeaturePerFrame> monoTracking(
+        const cv::Mat& img, const std::unordered_map<int, cv::Point2f>& predicted_pixels = {});
 
     void reset();
 
@@ -52,7 +54,6 @@ private:
         // 网格管理
         int per_grid_rows, per_grid_cols;
         int grid_rows, grid_cols;
-        int grid_edge_rows, grid_edge_cols;
         std::vector<bool> grid_mask;
 
         // 相机模型
@@ -65,6 +66,52 @@ private:
         std::vector<int> tracked_times;
     };
 
+    struct TimingRange {
+        double min_ms = std::numeric_limits<double>::infinity();
+        double max_ms = 0.0;
+        double sum_ms = 0.0;
+
+        void add(double ms);
+        double avg(size_t count) const;
+        void reset();
+    };
+
+    struct TimingStats {
+        size_t count = 0;
+        TimingRange total;
+        TimingRange match;
+        TimingRange mask;
+        TimingRange extract;
+        TimingRange pack;
+        TimingRange lk_forward;
+        TimingRange lk_backward;
+        TimingRange match_filter;
+        TimingRange gradient;
+        TimingRange tensor;
+        TimingRange response;
+        TimingRange grid_search;
+        size_t tracked_sum = 0;
+        size_t new_sum = 0;
+
+        void add(
+            double total_ms, double match_ms, double mask_ms, double extract_ms, double pack_ms,
+            size_t tracked_count, size_t new_count);
+        void reset();
+    };
+
+    struct MatchTiming {
+        double forward_ms = 0.0;
+        double backward_ms = 0.0;
+        double filter_ms = 0.0;
+    };
+
+    struct ExtractTiming {
+        double gradient_ms = 0.0;
+        double tensor_ms = 0.0;
+        double response_ms = 0.0;
+        double grid_search_ms = 0.0;
+    };
+
     inline bool isOutOfImage(cv::Point2f pt, int rows, int cols) {
         return pt.x < 0 || pt.x > cols - 1 || pt.y < 0 || pt.y > rows - 1;
     }
@@ -75,16 +122,19 @@ private:
         return dx * dx + dy * dy;
     }
 
-    void extractNewFeatures(const cv::Mat& img, std::vector<cv::Point2f>& pts);
+    void extractNewFeatures(
+        const cv::Mat& img, std::vector<cv::Point2f>& pts, ExtractTiming& timing);
 
     void monoMatching(
         const cv::Mat& prev_img, const cv::Mat& cur_img, std::vector<cv::Point2f>& prev_pts,
         std::vector<cv::Point2f>& cur_pts, std::vector<size_t>& prev_ids,
-        std::vector<size_t>& cur_ids);
+        std::vector<size_t>& cur_ids, const std::unordered_map<int, cv::Point2f>& predicted_pixels,
+        MatchTiming& timing);
 
     void setMask();
 
     CameraTrackingContext ctc_;
+    TimingStats timing_stats_;
 
     bool flow_back_;
 

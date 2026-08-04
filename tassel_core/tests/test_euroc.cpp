@@ -37,8 +37,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include <rclcpp/executors/single_threaded_executor.hpp>
 #include <spdlog/spdlog.h>
+#include <rclcpp/executors/single_threaded_executor.hpp>
 
 #include "cam/camera_factory.h"
 #include "estimator/estimator.h"
@@ -457,8 +457,8 @@ int main(int argc, char** argv) {
     FeatureTracker tracker(
         params.flow_back, params.max_square_move_dist, false, 5, params.min_gradient);
     tracker.setCamera(
-        std::move(camera), params.per_grid_rows, params.per_grid_cols, params.edge_y, params.edge_x,
-        params.mask_radius, params.min_feature_num);
+        std::move(camera), params.per_grid_rows, params.per_grid_cols, params.mask_radius,
+        params.min_feature_num);
 
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count) + 1);
     auto feature_manager = std::make_shared<FeatureManager>(

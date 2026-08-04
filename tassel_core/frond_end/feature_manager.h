@@ -30,6 +30,10 @@ public:
     bool addFeatureFrame(
         int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
 
+    bool replaceInitializationCandidate(
+        int accepted_frame_index, int candidate_frame_index,
+        const std::unordered_map<int, FeaturePerFrame>& feature_frame);
+
     void triangulate(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
     void removeFrameObservations(
@@ -42,7 +46,8 @@ public:
 
     void removeNewestFrameObservations(int frame_index);
 
-    void removeOutliers(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
+    std::vector<int> removeOutliers(
+        const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
     bool hasLatestKeyframe() const { return !latest_keyframe_observations_.empty(); }
 
@@ -57,16 +62,22 @@ public:
 
     std::vector<HostLandmark> exportHostLandmarks(int host_frame_index, const State& state) const;
 
+    std::unordered_map<int, Eigen::Vector3d> exportObservedWorldLandmarks(
+        int observed_frame_index, const State& state, const Eigen::Matrix3d& ric,
+        const Eigen::Vector3d& tic) const;
+
     std::vector<SFMFeature> collectSFMFeatures(const State& state, int first_frame_index = 0) const;
 
     std::unordered_map<int, Feature>& features() { return features_; }
 
 private:
+    bool shouldCreateKeyframe(const std::unordered_map<int, FeaturePerFrame>& feature_frame) const;
+
     double reproj_err_thres_;
 
     int min_landmark_observations_;
 
-    double parallax_threshold_ = 0.0;
+    double parallax_threshold_;
 
     double keyframe_min_connection_ratio_;
 

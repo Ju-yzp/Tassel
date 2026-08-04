@@ -100,9 +100,13 @@ TEST(NoriDecoderTest, ExtendsTimestampsAcrossThirtyTwoBitWrap) {
 
     ASSERT_TRUE(decoder.decode(packetImage(0xfffffff0U, 0xffffffe0U), timing, measurements));
     ASSERT_TRUE(decoder.decode(packetImage(0x00000030U, 0x00000020U), timing, measurements));
-    ASSERT_EQ(timing.exposure_end, static_cast<tassel_utils::FrameId>((std::uint64_t{1} << 32) * 1000 + 0x30 * 1000));
+    ASSERT_EQ(
+        timing.exposure_end,
+        static_cast<tassel_utils::FrameId>((std::uint64_t{1} << 32) * 1000 + 0x30 * 1000));
     ASSERT_EQ(measurements.size(), 1u);
-    EXPECT_NEAR(measurements[0].timestamp, (static_cast<double>(std::uint64_t{1} << 32) + 0x20) * 1e-6, 1e-9);
+    EXPECT_NEAR(
+        measurements[0].timestamp, (static_cast<double>(std::uint64_t{1} << 32) + 0x20) * 1e-6,
+        1e-9);
 }
 
 }  // namespace
