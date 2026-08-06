@@ -10,6 +10,8 @@
 
 namespace tassel_core {
 
+class VisualFrameCache;
+
 // 参数块依次为 [pose_i(6), pose_j(6), delay_time(1), inverse_depth(1)]。
 // pose 中 R_k 将 IMU 体坐标系向量旋转到世界坐标系，ric/tic 将相机点变换到 IMU 系。
 // 残差定义为 sqrt_info * (project(p_C_j) - pixel_j)。
@@ -21,12 +23,16 @@ public:
         const Eigen::Vector3d& a_i_, const Eigen::Vector3d& a_j_, const double* v_i_,
         const double* v_j_, const double* bg_i_lin_, const double* bg_j_lin_,
         const double* ba_i_lin_, const double* ba_j_lin_, const Eigen::Matrix2d& sqrt_info_,
-        const CameraBase* camera_, double sync_delay_i_ = 0.0, double sync_delay_j_ = 0.0);
+        const CameraBase* camera_, double sync_delay_i_ = 0.0, double sync_delay_j_ = 0.0,
+        const VisualFrameCache* frame_cache_ = nullptr, int host_frame_index_ = -1,
+        int target_frame_index_ = -1);
 
     bool Evaluate(
         double const* const* parameters, double* residuals, double** jacobians) const override;
 
 private:
+    bool evaluateCached(double inverse_depth, double* residuals, double** jacobians) const;
+
     Eigen::Vector3d uv_i;
     Eigen::Vector2d pt_j;
     Eigen::Matrix3d ric;
@@ -39,6 +45,8 @@ private:
     Eigen::Matrix2d sqrt_info;
     const CameraBase* camera;
     double sync_delay_i, sync_delay_j;
+    const VisualFrameCache* frame_cache;
+    int host_frame_index, target_frame_index;
 };
 
 }  // namespace tassel_core

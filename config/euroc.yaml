@@ -41,6 +41,7 @@ max_solver_time: 0.020
 max_frame_count: 9
 visual_factor_weight: 6.7
 num_threads: 1
+trust_region_strategy: levenberg_marquardt
 
 # 时间延迟可观测性
 delay_obs_gyro_threshold: 0.1

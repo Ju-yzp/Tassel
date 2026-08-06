@@ -25,8 +25,13 @@ void Feature::monoTriangulate(
     if (host_index < 0 || host_index > state.latest_frame_index) {
         return;
     }
-    Eigen::Matrix3d reference_r = state.frames[host_index].R * ric;
-    Eigen::Vector3d reference_t = state.frames[host_index].R * tic + state.frames[host_index].P;
+    Eigen::Matrix3d reference_r;
+    Eigen::Vector3d reference_t;
+    if (!compensatedCameraPose(
+            state.frames[host_index], observations.front().sync_delay, state.delay_time, ric, tic,
+            reference_r, reference_t)) {
+        throw std::runtime_error("Feature host camera pose is not finite");
+    }
     std::vector<Eigen::Matrix<double, 3, 4>> poses;
     std::vector<Eigen::Vector2d> uvs;
     poses.reserve(observations.size());
@@ -42,9 +47,13 @@ void Feature::monoTriangulate(
         if (current_frame_index > state.latest_frame_index) {
             throw std::logic_error("Feature observation index is outside the active window");
         }
-        Eigen::Matrix3d cur_r = state.frames[current_frame_index].R * ric;
-        Eigen::Vector3d cur_t =
-            state.frames[current_frame_index].R * tic + state.frames[current_frame_index].P;
+        Eigen::Matrix3d cur_r;
+        Eigen::Vector3d cur_t;
+        if (!compensatedCameraPose(
+                state.frames[current_frame_index], observation.sync_delay, state.delay_time, ric,
+                tic, cur_r, cur_t)) {
+            throw std::runtime_error("Feature target camera pose is not finite");
+        }
         Eigen::Matrix3d dr = cur_r.transpose() * reference_r;
         Eigen::Vector3d dt = cur_r.transpose() * (reference_t - cur_t);
         Eigen::Matrix<double, 3, 4> pose;

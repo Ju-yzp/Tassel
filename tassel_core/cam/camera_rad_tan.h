@@ -58,21 +58,55 @@ public:
         double r2 = x * x + y * y;
         double r4 = r2 * r2;
 
-        double k1 = camera_values(4);
-        double k2 = camera_values(5);
-        double p1 = camera_values(6);
-        double p2 = camera_values(7);
+        const double k1 = camera_values(4);
+        const double k2 = camera_values(5);
+        const double p1 = camera_values(6);
+        const double p2 = camera_values(7);
 
         double radial = 1 + k1 * r2 + k2 * r4;
         double x_dist = x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x);
         double y_dist = y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y;
 
-        double fx = camera_values(0);
-        double fy = camera_values(1);
-        double cx = camera_values(2);
-        double cy = camera_values(3);
+        const double fx = camera_values(0);
+        const double fy = camera_values(1);
+        const double cx = camera_values(2);
+        const double cy = camera_values(3);
 
         return Eigen::Vector2d(fx * x_dist + cx, fy * y_dist + cy);
+    }
+
+    void distortWithJacobian(
+        const Eigen::Vector2d& uv_norm, Eigen::Vector2d& pixel,
+        Eigen::Matrix2d& pixel_jacobian) const override {
+        const double x = uv_norm.x();
+        const double y = uv_norm.y();
+        const double x2 = x * x;
+        const double y2 = y * y;
+        const double xy = x * y;
+        const double r2 = x2 + y2;
+        const double r4 = r2 * r2;
+        const double fx = camera_values(0);
+        const double fy = camera_values(1);
+        const double k1 = camera_values(4);
+        const double k2 = camera_values(5);
+        const double p1 = camera_values(6);
+        const double p2 = camera_values(7);
+        const double radial = 1.0 + k1 * r2 + k2 * r4;
+
+        pixel.x() = fx * (x * radial + 2.0 * p1 * xy + p2 * (r2 + 2.0 * x2)) +
+                    camera_values(2);
+        pixel.y() = fy * (y * radial + p1 * (r2 + 2.0 * y2) + 2.0 * p2 * xy) +
+                    camera_values(3);
+        pixel_jacobian(0, 0) =
+            fx * (radial + 2.0 * k1 * x2 + 4.0 * k2 * x2 * r2 + 2.0 * p1 * y +
+                  6.0 * p2 * x);
+        pixel_jacobian(0, 1) =
+            fx * (2.0 * k1 * xy + 4.0 * k2 * xy * r2 + 2.0 * p1 * x + 2.0 * p2 * y);
+        pixel_jacobian(1, 0) =
+            fy * (2.0 * k1 * xy + 4.0 * k2 * xy * r2 + 2.0 * p1 * x + 2.0 * p2 * y);
+        pixel_jacobian(1, 1) =
+            fy * (radial + 2.0 * k1 * y2 + 4.0 * k2 * y2 * r2 + 6.0 * p1 * y +
+                  2.0 * p2 * x);
     }
 
     std::vector<Eigen::Vector2d> distort(const std::vector<Eigen::Vector2d>& pts) const override {
@@ -84,7 +118,8 @@ public:
         return out;
     }
 
-    void get_jacobian_dzn(Eigen::Vector2d uv_norm, Eigen::MatrixXd& H_dz_dzn) const override {
+    void get_jacobian_dzn(
+        const Eigen::Vector2d& uv_norm, Eigen::Matrix2d& H_dz_dzn) const override {
         double x = uv_norm(0);
         double y = uv_norm(1);
         double x_2 = x * x;
@@ -100,7 +135,7 @@ public:
         double p1 = camera_values(6);
         double p2 = camera_values(7);
 
-        H_dz_dzn = Eigen::MatrixXd::Zero(2, 2);
+        H_dz_dzn.setZero();
         H_dz_dzn(0, 0) = fx * ((1 + k1 * r_2 + k2 * r_4) + (2 * k1 * x_2 + 4 * k2 * x_2 * r_2) +
                                2 * p1 * y + (2 * p2 * x + 4 * p2 * x));
         H_dz_dzn(0, 1) = fx * (2 * k1 * x_y + 4 * k2 * x_y * r_2 + 2 * p1 * x + 2 * p2 * y);
@@ -157,7 +192,7 @@ private:
         k_.convertTo(k_, CV_64F);
         dist_coeffs_.convertTo(dist_coeffs_, CV_64F);
 
-        camera_values = Eigen::MatrixXd::Zero(8, 1);
+        camera_values.setZero();
         camera_values(0) = k_.at<double>(0, 0);         // fx
         camera_values(1) = k_.at<double>(1, 1);         // fy
         camera_values(2) = k_.at<double>(0, 2);         // cx
@@ -168,7 +203,7 @@ private:
         camera_values(7) = dist_coeffs_.at<double>(3);  // p2
     }
 
-    Eigen::MatrixXd camera_values;
+    Eigen::Matrix<double, 8, 1> camera_values;
 };
 
 }  // namespace tassel_core

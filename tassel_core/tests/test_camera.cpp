@@ -148,9 +148,24 @@ void expectDznMatchesFiniteDiff(tassel_core::CameraBase* cam, bool skip_center =
         if (skip_center && uv.norm() < 0.01) {
             continue;
         }
-        Eigen::MatrixXd H_analytic;
+        Eigen::Matrix2d H_analytic;
         cam->get_jacobian_dzn(uv, H_analytic);
         expectMatrixNear(H_analytic, numerical_dzn(cam, uv, kEps), kTol, uv);
+    }
+}
+
+void expectFusedProjectionMatchesSeparateCalls(tassel_core::CameraBase* cam) {
+    std::mt19937 rng(43);
+    std::uniform_real_distribution<double> rnd(-1.2, 1.2);
+    for (int k = 0; k < 20; ++k) {
+        const Eigen::Vector2d uv(rnd(rng), rnd(rng));
+        Eigen::Vector2d fused_pixel;
+        Eigen::Matrix2d fused_jacobian;
+        Eigen::Matrix2d separate_jacobian;
+        cam->distortWithJacobian(uv, fused_pixel, fused_jacobian);
+        cam->get_jacobian_dzn(uv, separate_jacobian);
+        EXPECT_TRUE(fused_pixel.isApprox(cam->distort(uv), 1e-12));
+        EXPECT_TRUE(fused_jacobian.isApprox(separate_jacobian, 1e-12));
     }
 }
 
@@ -222,6 +237,10 @@ TEST_F(CameraRadTanTest, PixelRoundTrip) { expectPixelRoundTrip(cam_.get()); }
 
 TEST_F(CameraRadTanTest, JacobianDZN) { expectDznMatchesFiniteDiff(cam_.get()); }
 
+TEST_F(CameraRadTanTest, FusedProjectionMatchesSeparateCalls) {
+    expectFusedProjectionMatchesSeparateCalls(cam_.get());
+}
+
 TEST_F(CameraRadTanTest, JacobianDZeta) {
     expectDzetaMatchesFiniteDiff<tassel_core::CameraRadTan>(cam_.get(), radtan_K, radtan_D);
 }
@@ -266,8 +285,12 @@ TEST_F(CameraEquiTest, ZeroDistortionRoundTrip) {
 
 TEST_F(CameraEquiTest, JacobianDZN) { expectDznMatchesFiniteDiff(cam_.get(), true); }
 
+TEST_F(CameraEquiTest, FusedProjectionMatchesSeparateCalls) {
+    expectFusedProjectionMatchesSeparateCalls(cam_.get());
+}
+
 TEST_F(CameraEquiTest, JacobianDZNAtOpticalAxis) {
-    Eigen::MatrixXd analytic;
+    Eigen::Matrix2d analytic;
     const Eigen::Vector2d center = Eigen::Vector2d::Zero();
     cam_->get_jacobian_dzn(center, analytic);
     expectMatrixNear(analytic, numerical_dzn(cam_.get(), center), 1e-6, center);

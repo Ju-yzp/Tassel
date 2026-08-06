@@ -27,6 +27,7 @@
 
 #include "cam/camera_rad_tan.h"
 #include "factor/reprojection_factor.h"
+#include "factor/visual_frame_cache.h"
 #include "imu_test_utils.h"
 #include "tassel_utils/se3_right_manifold.h"
 
@@ -140,6 +141,64 @@ protected:
     double pose_i_[6]{}, pose_j_[6]{};
     double v_i_[3]{}, v_j_[3]{}, bg_[3]{}, ba_[3]{};
 };
+
+TEST_F(ReprojectionFactorTest, SharedFrameCachePreservesLinearization) {
+    std::unique_ptr<ReprojectionFactor> uncached(makeFactor(0));
+    double delay = td_;
+    std::vector<VisualFrameCacheInput> inputs(2);
+    inputs[0].pose = pose_i_;
+    inputs[0].velocity = V_i_;
+    inputs[0].gyro = w_i_;
+    inputs[0].acceleration = a_i_;
+    inputs[0].gyro_bias = Bg_;
+    inputs[0].accel_bias = Ba_;
+    inputs[1].pose = pose_j_;
+    inputs[1].velocity = V_j_;
+    inputs[1].gyro = w_j_;
+    inputs[1].acceleration = a_j_;
+    inputs[1].gyro_bias = Bg_;
+    inputs[1].accel_bias = Ba_;
+    VisualFrameCache cache(std::move(inputs), &delay, ric_, tic_);
+    cache.addPair(0, 1);
+    cache.PrepareForEvaluation(true, true);
+    const auto& lm = lms_[0];
+    ReprojectionFactor cached(
+        lm.uv_i, lm.pt_j, ric_, tic_, w_i_, w_j_, a_i_, a_j_, v_i_, v_j_, bg_, bg_, ba_, ba_,
+        sqrt_info_, &camera_, 0.0, 0.0, &cache, 0, 1);
+
+    double inverse_depth = lm.inv_depth;
+    double const* parameters[] = {pose_i_, pose_j_, &delay, &inverse_depth};
+    double uncached_residual[2];
+    double cached_residual[2];
+    double uncached_jacobian[12 + 12 + 2 + 2];
+    double cached_jacobian[12 + 12 + 2 + 2];
+    double* uncached_blocks[] = {
+        uncached_jacobian, uncached_jacobian + 12, uncached_jacobian + 24, uncached_jacobian + 26};
+    double* cached_blocks[] = {
+        cached_jacobian, cached_jacobian + 12, cached_jacobian + 24, cached_jacobian + 26};
+
+    ASSERT_TRUE(uncached->Evaluate(parameters, uncached_residual, uncached_blocks));
+    ASSERT_TRUE(cached.Evaluate(parameters, cached_residual, cached_blocks));
+    const Eigen::Map<const Eigen::Vector2d> uncached_residual_map(uncached_residual);
+    const Eigen::Map<const Eigen::Vector2d> cached_residual_map(cached_residual);
+    EXPECT_LT((uncached_residual_map - cached_residual_map).norm(), 1e-12)
+        << "uncached=" << uncached_residual_map.transpose()
+        << " cached=" << cached_residual_map.transpose();
+    const Eigen::Map<const Eigen::Matrix<double, 28, 1>> uncached_jacobian_map(uncached_jacobian);
+    const Eigen::Map<const Eigen::Matrix<double, 28, 1>> cached_jacobian_map(cached_jacobian);
+    EXPECT_TRUE(uncached_jacobian_map.isApprox(cached_jacobian_map, 1e-12));
+
+    pose_i_[0] += 0.02;
+    pose_j_[4] -= 0.01;
+    delay = 0.013;
+    cache.PrepareForEvaluation(true, true);
+    ASSERT_TRUE(uncached->Evaluate(parameters, uncached_residual, uncached_blocks));
+    ASSERT_TRUE(cached.Evaluate(parameters, cached_residual, cached_blocks));
+    EXPECT_LT((uncached_residual_map - cached_residual_map).norm(), 1e-12)
+        << "uncached=" << uncached_residual_map.transpose()
+        << " cached=" << cached_residual_map.transpose();
+    EXPECT_TRUE(uncached_jacobian_map.isApprox(cached_jacobian_map, 1e-12));
+}
 
 // =============================================================================
 // 测试 1: 数值微分逐块验证雅各比

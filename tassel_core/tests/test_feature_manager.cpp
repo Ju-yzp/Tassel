@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <sophus/so3.hpp>
 
 #include "cam/camera_rad_tan.h"
 #include "frond_end/feature_manager.h"
@@ -245,6 +246,47 @@ TEST(FeatureManagerTest, TriangulatesDepthBeyondExportLimit) {
     fm.triangulate(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
 
     EXPECT_NEAR(fm.features().at(1).estimated_depth, 20.0, 0.1);
+}
+
+TEST(FeatureManagerTest, TriangulationUsesThirdOrderFrameCompensation) {
+    State state(3);
+    state.latest_frame_index = 2;
+    state.delay_time = 0.12;
+    state.frames[0].P = Eigen::Vector3d(0.0, 0.0, 0.0);
+    state.frames[1].P = Eigen::Vector3d(0.35, 0.02, -0.01);
+    state.frames[2].P = Eigen::Vector3d(0.72, -0.01, 0.03);
+    for (int i = 0; i < 3; ++i) {
+        auto& frame = state.frames[i];
+        frame.V = Eigen::Vector3d(0.4 + 0.1 * i, -0.15, 0.08);
+        frame.gyro = Eigen::Vector3d(0.7, -0.4 + 0.1 * i, 0.5);
+        frame.acc = Eigen::Vector3d(1.2, -0.6, 9.3);
+        frame.Bg = Eigen::Vector3d(0.02, -0.01, 0.03);
+        frame.Ba = Eigen::Vector3d(0.08, -0.04, 0.05);
+        frame.sync_delay = 0.01 + 0.02 * i;
+    }
+
+    const Eigen::Matrix3d ric = Sophus::SO3d::exp(Eigen::Vector3d(0.03, -0.02, 0.01)).matrix();
+    const Eigen::Vector3d tic(0.06, -0.01, 0.02);
+    const Eigen::Vector3d host_uv(0.1, -0.06, 1.0);
+    constexpr double depth = 3.5;
+    Feature feature(0, 3);
+    feature.observations.push_back(observation(host_uv.x(), state.frames[0].sync_delay));
+    feature.observations.back().uv = host_uv;
+    for (int target_index = 1; target_index <= 2; ++target_index) {
+        Eigen::Vector3d target_point;
+        ASSERT_TRUE(reprojectToTargetCamera(
+            state.frames[0], state.frames[target_index], host_uv, depth, state.frames[0].sync_delay,
+            state.frames[target_index].sync_delay, state.delay_time, ric, tic, target_point));
+        FeaturePerFrame target_observation;
+        const Eigen::Vector2d target_uv = target_point.head<2>() / target_point.z();
+        target_observation.setObservation(target_uv, cv::Point2f(target_uv.x(), target_uv.y()));
+        target_observation.sync_delay = state.frames[target_index].sync_delay;
+        feature.observations.push_back(target_observation);
+    }
+
+    feature.monoTriangulate(state, ric, tic, 0.1);
+
+    EXPECT_NEAR(feature.estimated_depth, depth, 1e-9);
 }
 
 TEST(FeatureManagerTest, RejectsTriangulatedDepthBelowThreshold) {

@@ -9,6 +9,10 @@ struct FrameState;
 
 // 以下几何辅助函数与 ReprojectionFactor 使用同一时间延迟运动模型，供三角化、
 // 离群点剔除和宿主转移复用，避免这些路径采用不同的路标传播公式。
+bool compensatedCameraPose(
+    const FrameState& frame, double sync_delay, double delay_time, const Eigen::Matrix3d& ric,
+    const Eigen::Vector3d& tic, Eigen::Matrix3d& rotation, Eigen::Vector3d& position);
+
 bool hostPointToWorld(
     const FrameState& host, const Eigen::Vector3d& host_uv, double host_depth,
     double host_sync_delay, double delay_time, const Eigen::Matrix3d& ric,

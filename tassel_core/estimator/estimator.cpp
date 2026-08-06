@@ -30,6 +30,7 @@
 #include "factor/integrator_base.h"
 #include "factor/marginalization_prior_factor.h"
 #include "factor/reprojection_factor.h"
+#include "factor/visual_frame_cache.h"
 #include "frond_end/reprojection.h"
 #include "imu_interpolation.h"
 #include "marg/marg_helper.h"
@@ -48,6 +49,17 @@ namespace tassel_core {
 namespace {
 constexpr int kRetainedFrameIndex = 0;
 constexpr int kFirstActiveFrameIndex = 1;
+
+ceres::TrustRegionStrategyType ceresTrustRegionStrategy(
+    tassel_tools::TrustRegionStrategy strategy) {
+    switch (strategy) {
+        case tassel_tools::TrustRegionStrategy::LevenbergMarquardt:
+            return ceres::LEVENBERG_MARQUARDT;
+        case tassel_tools::TrustRegionStrategy::Dogleg:
+            return ceres::DOGLEG;
+    }
+    throw std::logic_error("Unknown trust-region strategy");
+}
 constexpr double kGaugeHeadingMinNorm = 1e-8;
 constexpr double kRotationTolerance = 1e-8;
 
@@ -392,8 +404,25 @@ void Estimator::optimize() {
     }
     auto features = feature_manager_->collectLandmarks();
 
+    std::vector<VisualFrameCacheInput> visual_cache_inputs;
+    visual_cache_inputs.reserve(static_cast<size_t>(latest_id + 1));
+    for (int i = 0; i <= latest_id; ++i) {
+        const auto& frame = state_->frames[i];
+        VisualFrameCacheInput input;
+        input.pose = frame.pose.data();
+        input.velocity = Eigen::Map<const Eigen::Vector3d>(frame.speed_bias.data());
+        input.accel_bias = Eigen::Map<const Eigen::Vector3d>(frame.speed_bias.data() + 3);
+        input.gyro_bias = Eigen::Map<const Eigen::Vector3d>(frame.speed_bias.data() + 6);
+        input.gyro = frame.gyro;
+        input.acceleration = frame.acc;
+        input.sync_delay = frame.sync_delay;
+        visual_cache_inputs.push_back(input);
+    }
+    VisualFrameCache visual_frame_cache(
+        std::move(visual_cache_inputs), &state_->param_delay_time, params_.ric, params_.tic);
     ceres::Problem::Options problem_options;
     problem_options.context = ceres_context_.get();
+    problem_options.evaluation_callback = &visual_frame_cache;
     ceres::Problem problem(problem_options);
     std::vector<int> visual_factors_per_frame(state_->latest_frame_index + 1, 0);
 
@@ -470,6 +499,12 @@ void Estimator::optimize() {
             if (target_id > latest_id) {
                 throw std::logic_error("Feature target index is outside the active window");
             }
+            // sync_delay 是帧级采样属性；若同帧观测不一致，按帧复用时间补偿将不再成立。
+            if (f->observations[0].sync_delay != state_->frames[host_id].sync_delay ||
+                f->observations[obs_idx].sync_delay != state_->frames[target_id].sync_delay) {
+                throw std::logic_error("Feature sync delay does not match its frame state");
+            }
+            visual_frame_cache.addPair(host_id, target_id);
             Eigen::Vector2d pt_j(f->observations[obs_idx].pt.x, f->observations[obs_idx].pt.y);
             auto* cost = new ReprojectionFactor(
                 f->observations[0].uv, pt_j, params_.ric, params_.tic, state_->frames[host_id].gyro,
@@ -480,7 +515,8 @@ void Estimator::optimize() {
                 state_->frames[target_id].speed_bias.data() + 6,
                 state_->frames[host_id].speed_bias.data() + 3,
                 state_->frames[target_id].speed_bias.data() + 3, sqrt_info, state_->camera,
-                f->observations[0].sync_delay, f->observations[obs_idx].sync_delay);
+                f->observations[0].sync_delay, f->observations[obs_idx].sync_delay,
+                &visual_frame_cache, host_id, target_id);
             problem.AddResidualBlock(
                 cost, loss, state_->frames[host_id].pose.data(),
                 state_->frames[target_id].pose.data(), &state_->param_delay_time,
@@ -506,6 +542,7 @@ void Estimator::optimize() {
 
     ceres::Solver::Options opts;
     opts.linear_solver_type = ceres::DENSE_SCHUR;
+    opts.trust_region_strategy_type = ceresTrustRegionStrategy(params_.trust_region_strategy);
     auto ordering = std::make_shared<ceres::ParameterBlockOrdering>();
     // 每个视觉因子只包含一个逆深度，组0路标必须保持为 Hessian 图的独立集。
     for (double& inverse_depth : inv_depth_params) {
@@ -537,6 +574,19 @@ void Estimator::optimize() {
 
     ceres::Solver::Summary summary;
     ceres::Solve(opts, &problem, &summary);
+    spdlog::info(
+        "Ceres summary: threads={}/{} parameter_blocks={}/{} residual_blocks={}/{} "
+        "residuals={}/{} iterations={} "
+        "successful={} rejected={} residual={:.3f}ms jacobian={:.3f}ms "
+        "linear_solver={:.3f}ms preprocessor={:.3f}ms total={:.3f}ms",
+        summary.num_threads_used, summary.num_threads_given, summary.num_parameter_blocks,
+        summary.num_parameter_blocks_reduced, summary.num_residual_blocks,
+        summary.num_residual_blocks_reduced, summary.num_residuals, summary.num_residuals_reduced,
+        summary.iterations.size(), summary.num_successful_steps, summary.num_unsuccessful_steps,
+        1000.0 * summary.residual_evaluation_time_in_seconds,
+        1000.0 * summary.jacobian_evaluation_time_in_seconds,
+        1000.0 * summary.linear_solver_time_in_seconds,
+        1000.0 * summary.preprocessor_time_in_seconds, 1000.0 * summary.total_time_in_seconds);
     if (restore_schmidt_ba) {
         restore_schmidt_ba->restore();
     }

@@ -1,11 +1,25 @@
 #include "reprojection.h"
 
 #include <cmath>
-#include <sophus/so3.hpp>
 
+#include "state/frame_kinematics.h"
 #include "state/state.h"
 
 namespace tassel_core {
+
+bool compensatedCameraPose(
+    const FrameState& frame, double sync_delay, double delay_time, const Eigen::Matrix3d& ric,
+    const Eigen::Vector3d& tic, Eigen::Matrix3d& rotation, Eigen::Vector3d& position) {
+    const double dt = delay_time - sync_delay;
+    if (!std::isfinite(dt)) {
+        return false;
+    }
+    const FrameKinematics kinematics = propagateFrameKinematics(
+        frame.R, frame.P, frame.V, frame.gyro, frame.acc, frame.Bg, frame.Ba, dt);
+    rotation = kinematics.rotation * ric;
+    position = kinematics.rotation * tic + kinematics.position;
+    return rotation.allFinite() && position.allFinite();
+}
 
 bool hostPointToWorld(
     const FrameState& host, const Eigen::Vector3d& host_uv, double host_depth,
@@ -15,19 +29,13 @@ bool hostPointToWorld(
         return false;
     }
 
-    const double dt_i = delay_time - host_sync_delay;
-    if (!std::isfinite(dt_i)) {
+    Eigen::Matrix3d camera_rotation;
+    Eigen::Vector3d camera_position;
+    if (!compensatedCameraPose(
+            host, host_sync_delay, delay_time, ric, tic, camera_rotation, camera_position)) {
         return false;
     }
-
-    const Eigen::Matrix3d A_i = Sophus::SO3d::exp((host.gyro - host.Bg) * dt_i).matrix();
-    const Eigen::Vector3d host_omega = host.gyro - host.Bg;
-    const Eigen::Vector3d host_acc = host.acc - host.Ba;
-    const Eigen::Vector3d host_rot_acc = host.R * Sophus::SO3d::hat(host_omega) * host_acc;
-    const Eigen::Vector3d point_i = ric * (host_uv * host_depth) + tic;
-    world_point = host.R * A_i * point_i + host.P + host.V * dt_i +
-                  0.5 * (host.R * host_acc - tassel_utils::G) * dt_i * dt_i +
-                  (1.0 / 6.0) * host_rot_acc * dt_i * dt_i * dt_i;
+    world_point = camera_rotation * (host_uv * host_depth) + camera_position;
     return world_point.allFinite();
 }
 
@@ -35,21 +43,16 @@ bool worldPointToTargetCamera(
     const FrameState& target, const Eigen::Vector3d& world_point, double target_sync_delay,
     double delay_time, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
     Eigen::Vector3d& target_point) {
-    const double dt_j = delay_time - target_sync_delay;
-    if (!world_point.allFinite() || !std::isfinite(dt_j)) {
+    if (!world_point.allFinite()) {
         return false;
     }
-
-    const Eigen::Matrix3d A_j = Sophus::SO3d::exp((target.Bg - target.gyro) * dt_j).matrix();
-    const Eigen::Vector3d target_omega = target.gyro - target.Bg;
-    const Eigen::Vector3d target_acc = target.acc - target.Ba;
-    const Eigen::Vector3d target_rot_acc = target.R * Sophus::SO3d::hat(target_omega) * target_acc;
-    const Eigen::Vector3d point_j =
-        A_j * target.R.transpose() *
-        (world_point - (target.P + target.V * dt_j +
-                        0.5 * (target.R * target_acc - tassel_utils::G) * dt_j * dt_j +
-                        (1.0 / 6.0) * target_rot_acc * dt_j * dt_j * dt_j));
-    target_point = ric.transpose() * (point_j - tic);
+    Eigen::Matrix3d camera_rotation;
+    Eigen::Vector3d camera_position;
+    if (!compensatedCameraPose(
+            target, target_sync_delay, delay_time, ric, tic, camera_rotation, camera_position)) {
+        return false;
+    }
+    target_point = camera_rotation.transpose() * (world_point - camera_position);
     return target_point.allFinite() && target_point.z() > 1e-12;
 }
 

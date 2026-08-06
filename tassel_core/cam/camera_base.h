@@ -36,6 +36,13 @@ public:
 
     virtual Eigen::Vector2d distort(const Eigen::Vector2d& uv_norm) const = 0;
 
+    virtual void distortWithJacobian(
+        const Eigen::Vector2d& uv_norm, Eigen::Vector2d& pixel,
+        Eigen::Matrix2d& pixel_jacobian) const {
+        pixel = distort(uv_norm);
+        get_jacobian_dzn(uv_norm, pixel_jacobian);
+    }
+
     virtual std::vector<Eigen::Vector2d> undistort(const std::vector<Eigen::Vector2d>& pts) const {
         std::vector<Eigen::Vector2d> out;
         out.reserve(pts.size());
@@ -55,7 +62,8 @@ public:
         return out;
     }
 
-    virtual void get_jacobian_dzn(Eigen::Vector2d uv_norm, Eigen::MatrixXd& H_dz_dzn) const = 0;
+    virtual void get_jacobian_dzn(
+        const Eigen::Vector2d& uv_norm, Eigen::Matrix2d& H_dz_dzn) const = 0;
 
     virtual void get_jacobian_dzeta(Eigen::Vector2d uv_norm, Eigen::MatrixXd& H_dz_dzeta) const = 0;
 

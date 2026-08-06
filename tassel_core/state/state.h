@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "state/frame_kinematics.h"
 #include "tassel_utils/types.h"
 
 namespace tassel_core {
@@ -92,18 +93,14 @@ struct State {
         for (int frame_index = 0; frame_index <= latest_frame_index; ++frame_index) {
             const auto& frame = frames[frame_index];
             auto& output = compensated.frames[frame_index];
-            const double dt = delay_time - frame.sync_delay;
-            const Eigen::Vector3d omega = frame.gyro - frame.Bg;
-            const Eigen::Vector3d acc_body = frame.acc - frame.Ba;
-            const Eigen::Vector3d acc_world = frame.R * acc_body - tassel_utils::G;
-            const Eigen::Vector3d rotational_acceleration =
-                frame.R * Sophus::SO3d::hat(omega) * acc_body;
+            const FrameKinematics kinematics = propagateFrameKinematics(
+                frame.R, frame.P, frame.V, frame.gyro, frame.acc, frame.Bg, frame.Ba,
+                delay_time - frame.sync_delay);
 
             // 从该帧实际采用的同步延迟传播到当前全局延迟，运动量均在世界系更新。
-            output.R = frame.R * Sophus::SO3d::exp(omega * dt).matrix();
-            output.V = frame.V + acc_world * dt + 0.5 * rotational_acceleration * dt * dt;
-            output.P = frame.P + frame.V * dt + 0.5 * acc_world * dt * dt +
-                       (1.0 / 6.0) * rotational_acceleration * dt * dt * dt;
+            output.R = kinematics.rotation;
+            output.V = kinematics.velocity;
+            output.P = kinematics.position;
         }
         return compensated;
     }

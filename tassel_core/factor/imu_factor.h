@@ -14,7 +14,14 @@ template <typename Derived>
 class IMUFactor : public ceres::SizedCostFunction<15, 6, 9, 6, 9> {
 public:
     explicit IMUFactor(std::shared_ptr<IntegratorBase<Derived>> integrator_)
-        : integrator(std::move(integrator_)) {}
+        : integrator(std::move(integrator_)) {
+        Eigen::LLT<Eigen::Matrix<double, 15, 15>> covariance_llt(integrator->covariance);
+        if (covariance_llt.info() == Eigen::Success) {
+            sqrt_info = covariance_llt.matrixL().solve(
+                Eigen::Matrix<double, 15, 15>::Identity());
+            sqrt_info_valid = sqrt_info.allFinite();
+        }
+    }
 
     bool Evaluate(
         double const* const* parameters, double* residuals, double** jacobians) const override {
@@ -65,20 +72,13 @@ public:
         res.template block<3, 1>(9, 0) = Ba_j - Ba_i;
         res.template block<3, 1>(12, 0) = Bg_j - Bg_i;
 
-        // 信息矩阵
-        Eigen::LLT<Eigen::Matrix<double, 15, 15>> covariance_llt(integrator->covariance);
-        if (covariance_llt.info() != Eigen::Success) {
-            return false;
-        }
-        Eigen::Matrix<double, 15, 15> sqrt_info =
-            covariance_llt.matrixL().solve(Eigen::Matrix<double, 15, 15>::Identity());
-        if (!sqrt_info.allFinite()) {
+        if (!sqrt_info_valid) {
             return false;
         }
 
-        Eigen::Matrix3d Jr_inv =
-            Sophus::SO3d::leftJacobianInverse(res.block<3, 1>(3, 0)).transpose();
         if (jacobians) {
+            const Eigen::Matrix3d Jr_inv =
+                Sophus::SO3d::leftJacobianInverse(res.block<3, 1>(3, 0)).transpose();
             if (jacobians[0]) {
                 Eigen::Map<Eigen::Matrix<double, 15, 6, Eigen::RowMajor>> jacobian_pose_i(
                     jacobians[0]);
@@ -135,6 +135,8 @@ public:
         return true;
     }
     std::shared_ptr<IntegratorBase<Derived>> integrator;
+    Eigen::Matrix<double, 15, 15> sqrt_info = Eigen::Matrix<double, 15, 15>::Zero();
+    bool sqrt_info_valid = false;
 };
 }  // namespace tassel_core
 #endif  // TASSEL_CORE_FACTOR_IMU_FACTOR_H_

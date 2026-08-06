@@ -14,6 +14,36 @@
 
 namespace tassel_tools {
 
+enum class TrustRegionStrategy {
+    LevenbergMarquardt,
+    Dogleg,
+};
+
+inline TrustRegionStrategy parseTrustRegionStrategy(const std::string& strategy_raw) {
+    std::string strategy = strategy_raw;
+    const auto first = std::find_if_not(
+        strategy.begin(), strategy.end(), [](unsigned char ch) { return std::isspace(ch); });
+    const auto last = std::find_if_not(strategy.rbegin(), strategy.rend(), [](unsigned char ch) {
+                          return std::isspace(ch);
+                      }).base();
+    if (first >= last) {
+        throw std::runtime_error("trust_region_strategy must not be empty");
+    }
+    strategy = std::string(first, last);
+    std::transform(strategy.begin(), strategy.end(), strategy.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (strategy == "levenberg_marquardt") {
+        return TrustRegionStrategy::LevenbergMarquardt;
+    }
+    if (strategy == "dogleg") {
+        return TrustRegionStrategy::Dogleg;
+    }
+    throw std::runtime_error(
+        "Invalid trust_region_strategy: \"" + strategy_raw +
+        "\". Supported values: levenberg_marquardt, dogleg");
+}
+
 struct Parameters {
     explicit Parameters(const std::string& config_file) {
         ParamsParser parser(config_file);
@@ -61,6 +91,7 @@ struct Parameters {
     size_t max_frame_count;
     double visual_factor_weight;
     int num_threads = 1;
+    TrustRegionStrategy trust_region_strategy = TrustRegionStrategy::LevenbergMarquardt;
     double delay_obs_gyro_threshold = 0.7;
     double delay_obs_speed_threshold = 0.2;
     int delay_obs_min_frames = 3;
@@ -166,6 +197,8 @@ private:
         max_frame_count = parser.as<size_t>("max_frame_count");
         visual_factor_weight = parser.as<double>("visual_factor_weight");
         num_threads = parser.as<int>("num_threads");
+        trust_region_strategy =
+            parseTrustRegionStrategy(parser.as<std::string>("trust_region_strategy"));
         delay_obs_gyro_threshold = parser.as<double>("delay_obs_gyro_threshold");
         delay_obs_speed_threshold = parser.as<double>("delay_obs_speed_threshold");
         delay_obs_min_frames = parser.as<int>("delay_obs_min_frames");
