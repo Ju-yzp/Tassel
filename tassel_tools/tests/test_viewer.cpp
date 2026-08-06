@@ -65,6 +65,7 @@ int main(int argc, char** argv) {
     viewer->createOdometryPublisher("camera", "vio/odometry");
     viewer->createPathPublisher("path/camera");
     viewer->createCompressedImagePublisher("image/camera");
+    viewer->createVector3Publisher("vio/ba");
 
     const double a = 5.0;
     const double b = 3.0;
@@ -111,6 +112,7 @@ int main(int argc, char** argv) {
         viewer->publishOdometry("vio/odometry", pos, ori, vel, ang_vel);
         viewer->publishPath("path/camera", pos, ori);
         viewer->publishCompressedImage("image/camera", "camera", canvas);
+        viewer->publishVector3("vio/ba", Eigen::Vector3d(0.01, -0.02, 0.03));
 
         rclcpp::spin_some(viewer);
         rate.sleep();

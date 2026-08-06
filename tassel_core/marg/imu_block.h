@@ -68,6 +68,10 @@ public:
         b.template block<15, 1>(start_row, 0) = b_;
     }
 
+    // 线性化后保持 [state_i(15), state_j(15)] 列布局，供协方差传播使用。
+    const Eigen::Matrix<double, 15, 30>& jacobian() const { return Jp_; }
+    const Eigen::Matrix<double, 15, 1>& residual() const { return b_; }
+
 private:
     std::unique_ptr<IMUFactor<Derived>> imu_factor_;
     Eigen::Matrix<double, 15, 30> Jp_;

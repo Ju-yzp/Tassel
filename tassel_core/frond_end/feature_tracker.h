@@ -3,7 +3,6 @@
 
 // OpenCV
 #include <cstddef>
-#include <limits>
 #include <opencv2/core.hpp>
 
 // 标准库
@@ -66,52 +65,6 @@ private:
         std::vector<int> tracked_times;
     };
 
-    struct TimingRange {
-        double min_ms = std::numeric_limits<double>::infinity();
-        double max_ms = 0.0;
-        double sum_ms = 0.0;
-
-        void add(double ms);
-        double avg(size_t count) const;
-        void reset();
-    };
-
-    struct TimingStats {
-        size_t count = 0;
-        TimingRange total;
-        TimingRange match;
-        TimingRange mask;
-        TimingRange extract;
-        TimingRange pack;
-        TimingRange lk_forward;
-        TimingRange lk_backward;
-        TimingRange match_filter;
-        TimingRange gradient;
-        TimingRange tensor;
-        TimingRange response;
-        TimingRange grid_search;
-        size_t tracked_sum = 0;
-        size_t new_sum = 0;
-
-        void add(
-            double total_ms, double match_ms, double mask_ms, double extract_ms, double pack_ms,
-            size_t tracked_count, size_t new_count);
-        void reset();
-    };
-
-    struct MatchTiming {
-        double forward_ms = 0.0;
-        double backward_ms = 0.0;
-        double filter_ms = 0.0;
-    };
-
-    struct ExtractTiming {
-        double gradient_ms = 0.0;
-        double tensor_ms = 0.0;
-        double response_ms = 0.0;
-        double grid_search_ms = 0.0;
-    };
-
     inline bool isOutOfImage(cv::Point2f pt, int rows, int cols) {
         return pt.x < 0 || pt.x > cols - 1 || pt.y < 0 || pt.y > rows - 1;
     }
@@ -122,19 +75,17 @@ private:
         return dx * dx + dy * dy;
     }
 
-    void extractNewFeatures(
-        const cv::Mat& img, std::vector<cv::Point2f>& pts, ExtractTiming& timing);
+    void extractNewFeatures(const cv::Mat& img, std::vector<cv::Point2f>& pts);
 
     void monoMatching(
         const cv::Mat& prev_img, const cv::Mat& cur_img, std::vector<cv::Point2f>& prev_pts,
         std::vector<cv::Point2f>& cur_pts, std::vector<size_t>& prev_ids,
-        std::vector<size_t>& cur_ids, const std::unordered_map<int, cv::Point2f>& predicted_pixels,
-        MatchTiming& timing);
+        std::vector<size_t>& cur_ids,
+        const std::unordered_map<int, cv::Point2f>& predicted_pixels);
 
     void setMask();
 
     CameraTrackingContext ctc_;
-    TimingStats timing_stats_;
 
     bool flow_back_;
 

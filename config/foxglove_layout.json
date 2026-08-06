@@ -50,6 +50,24 @@
         "imageTopic": "/optimization/visual_window",
         "synchronize": false
       }
+    },
+    "Plot!tasselba": {
+      "paths": [
+        { "value": "/vio/ba.vector.x", "enabled": true, "color": "#ef4444" },
+        { "value": "/vio/ba.vector.y", "enabled": true, "color": "#22c55e" },
+        { "value": "/vio/ba.vector.z", "enabled": true, "color": "#3b82f6" }
+      ],
+      "showLegend": true,
+      "xAxisMode": "timestamp"
+    },
+    "Plot!tasselbg": {
+      "paths": [
+        { "value": "/vio/bg.vector.x", "enabled": true, "color": "#ef4444" },
+        { "value": "/vio/bg.vector.y", "enabled": true, "color": "#22c55e" },
+        { "value": "/vio/bg.vector.z", "enabled": true, "color": "#3b82f6" }
+      ],
+      "showLegend": true,
+      "xAxisMode": "timestamp"
     }
   },
   "globalVariables": {},
@@ -67,7 +85,17 @@
       "direction": "column",
       "splitPercentage": 82
     },
-    "second": "Image!tasselmono",
+    "second": {
+      "first": "Image!tasselmono",
+      "second": {
+        "first": "Plot!tasselba",
+        "second": "Plot!tasselbg",
+        "direction": "column",
+        "splitPercentage": 50
+      },
+      "direction": "column",
+      "splitPercentage": 55
+    },
     "direction": "row",
     "splitPercentage": 68
   }

@@ -15,7 +15,6 @@
 #include <ceres/rotation.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <opencv2/calib3d.hpp>
@@ -24,6 +23,7 @@
 #include <sophus/se3.hpp>
 #include <sophus/so3.hpp>
 #include <stdexcept>
+#include <unordered_set>
 #include <vector>
 
 #include "factor/imu_factor.h"
@@ -34,6 +34,9 @@
 #include "imu_interpolation.h"
 #include "marg/marg_helper.h"
 #include "marg/marginalization_sqrt.h"
+#include "marg/schmidt/schmidt_prior_covariance.h"
+#include "marg/schmidt/schmidt_window_update.h"
+#include "solver/parameter_block_hold_callback.h"
 #include "tassel_utils/macros.h"
 #include "tassel_utils/se3_right_manifold.h"
 
@@ -47,12 +50,6 @@ constexpr int kRetainedFrameIndex = 0;
 constexpr int kFirstActiveFrameIndex = 1;
 constexpr double kGaugeHeadingMinNorm = 1e-8;
 constexpr double kRotationTolerance = 1e-8;
-
-using SteadyClock = std::chrono::steady_clock;
-
-double elapsedMs(SteadyClock::time_point start) {
-    return std::chrono::duration<double, std::milli>(SteadyClock::now() - start).count();
-}
 
 double rotationYaw(const Eigen::Matrix3d& rotation) {
     if (!rotation.allFinite() ||
@@ -98,6 +95,7 @@ Estimator::Estimator(
 
 void Estimator::reset() {
     initialized_ = false;
+    low_speed_ba_behavior_.reset();
     last_ts_ = -1;
     last_imu_acc_ = Eigen::Vector3d::Zero();
     last_imu_gyro_ = Eigen::Vector3d::Zero();
@@ -115,6 +113,8 @@ void Estimator::reset() {
     Ps_.resize(state_->max_frame_count, Eigen::Vector3d::Zero());
     Vs_.resize(state_->max_frame_count, Eigen::Vector3d::Zero());
     marginalization_prior_.reset();
+    schmidt_prior_covariance_.reset();
+    schmidt_absorbed_feature_ids_.clear();
     last_measurement_was_keyframe_ = false;
     retained_rotation_.setIdentity();
     retained_position_.setZero();
@@ -128,15 +128,6 @@ void Estimator::reset() {
 void Estimator::processMeasurement(
     tassel_utils::FrameId frame_id, const std::unordered_map<int, FeaturePerFrame>& feature_frame,
     const std::vector<tassel_utils::IMUMeasurement>& imu_measurements, double sync_delay) {
-    const auto total_start = SteadyClock::now();
-    double feature_ms = 0.0;
-    double predict_ms = 0.0;
-    double initialize_ms = 0.0;
-    double triangulate_ms = 0.0;
-    double optimize_ms = 0.0;
-    double outlier_ms = 0.0;
-    double prior_ms = 0.0;
-    double slide_ms = 0.0;
     int& frame_count = state_->latest_frame_index;
     state_->frames[frame_count].timestamp_ns = frame_id;
     const double ts = tassel_utils::frameIdToSeconds(frame_id);
@@ -150,18 +141,14 @@ void Estimator::processMeasurement(
     const bool is_first_initial_frame =
         !initialized_ && frame_count == kFirstActiveFrameIndex &&
         state_->frames[kRetainedFrameIndex].timestamp_ns == tassel_utils::kInvalidFrameId;
-    auto stage_start = SteadyClock::now();
     const bool is_keyframe = initialized_ || is_first_initial_frame
                                  ? feature_manager_->addFeatureFrame(frame_count, feature_frame)
                                  : feature_manager_->replaceInitializationCandidate(
                                        frame_count - 1, frame_count, feature_frame);
-    feature_ms = elapsedMs(stage_start);
     state_->frames[frame_count].type = is_keyframe ? FrameType::KeyFrame : FrameType::NonKeyFrame;
     last_measurement_was_keyframe_ = is_keyframe;
     if (!is_first_initial_frame) {
-        stage_start = SteadyClock::now();
         predictFrameState(frame_count, imu_measurements);
-        predict_ms = elapsedMs(stage_start);
     }
 
     const double imu_query_timestamp = ts + sync_delay;
@@ -171,11 +158,6 @@ void Estimator::processMeasurement(
     if (!initialized_) {
         if (!is_keyframe) {
             // 低视差图像只更新尾部候选槽，状态和 IMU 预积分持续累计，不占用新的窗口帧。
-            spdlog::info(
-                "Timing estimator: total={:.3f} ms feature={:.3f} imu_predict={:.3f} "
-                "init=0.000 triangulate=0.000 optimize=0.000 outlier=0.000 prior=0.000 "
-                "slide=0.000 phase=accumulate_init_candidate",
-                elapsedMs(total_start), feature_ms, predict_ms);
             return;
         }
 
@@ -192,60 +174,29 @@ void Estimator::processMeasurement(
                         noise_);
                 }
             });
-            spdlog::info(
-                "Timing estimator: total={:.3f} ms feature={:.3f} imu_predict={:.3f} "
-                "init=0.000 triangulate=0.000 optimize=0.000 outlier=0.000 prior=0.000 "
-                "slide=0.000 phase=fill_init_window",
-                elapsedMs(total_start), feature_ms, predict_ms);
             return;
         }
 
-        stage_start = SteadyClock::now();
         if (!tryInitialize()) {
-            initialize_ms = elapsedMs(stage_start);
             spdlog::info("VI initialization not ready; sliding initialization window");
-            const auto slide_start = SteadyClock::now();
             feature_manager_->removeFrameObservations(
                 kFirstActiveFrameIndex, *state_, params_.ric, params_.tic);
             slideInitializationWindow();
-            slide_ms = elapsedMs(slide_start);
-            spdlog::info(
-                "Timing estimator: total={:.3f} ms feature={:.3f} imu_predict={:.3f} "
-                "init={:.3f} triangulate=0.000 optimize=0.000 outlier=0.000 prior=0.000 "
-                "slide={:.3f} phase=initializing",
-                elapsedMs(total_start), feature_ms, predict_ms, initialize_ms, slide_ms);
             return;
         }
-        initialize_ms = elapsedMs(stage_start);
     }
 
     // 初始化成功后，同一状态机动作驱动优化、先验更新和窗口搬迁。
     const RetainedHostAction host_action = selectMarginalizationAction();
-    stage_start = SteadyClock::now();
     feature_manager_->triangulate(*state_, params_.ric, params_.tic);
-    triangulate_ms = elapsedMs(stage_start);
-    stage_start = SteadyClock::now();
     optimize();
-    optimize_ms = elapsedMs(stage_start);
     const Sophus::SE3d optimized_pose(state_->frames[frame_count].R, state_->frames[frame_count].P);
     if (pose_callback_) {
         pose_callback_(ts, optimized_pose);
     }
-    stage_start = SteadyClock::now();
     feature_manager_->removeOutliers(*state_, params_.ric, params_.tic);
-    outlier_ms = elapsedMs(stage_start);
-    stage_start = SteadyClock::now();
     updateMarginalizationPrior(host_action);
-    prior_ms = elapsedMs(stage_start);
-    stage_start = SteadyClock::now();
     migrateMarginalizedData(host_action);
-    slide_ms = elapsedMs(stage_start);
-    spdlog::info(
-        "Timing estimator: total={:.3f} ms feature={:.3f} imu_predict={:.3f} init={:.3f} "
-        "triangulate={:.3f} optimize={:.3f} outlier={:.3f} prior={:.3f} slide={:.3f} "
-        "phase=running",
-        elapsedMs(total_start), feature_ms, predict_ms, initialize_ms, triangulate_ms, optimize_ms,
-        outlier_ms, prior_ms, slide_ms);
 }
 
 void Estimator::predictFrameState(
@@ -422,11 +373,23 @@ std::unordered_map<int, cv::Point2f> Estimator::predictLandmarkPixels(
 }
 
 void Estimator::optimize() {
-    const auto build_start = SteadyClock::now();
     const int latest_id = state_->latest_frame_index;
     const int gauge_frame_index =
         marginalization_prior_ ? kRetainedFrameIndex : kFirstActiveFrameIndex;
     state_->stateToParams();
+    std::vector<Eigen::Vector3d> active_velocities;
+    active_velocities.reserve(static_cast<size_t>(latest_id));
+    for (int i = kFirstActiveFrameIndex; i <= latest_id; ++i) {
+        active_velocities.push_back(state_->frames[i].V);
+    }
+    low_speed_ba_behavior_.update(active_velocities);
+    std::vector<HeldParameterBlock> held_ba_blocks;
+    if (low_speed_ba_behavior_.holdsBa()) {
+        held_ba_blocks.reserve(static_cast<size_t>(latest_id + 1));
+        for (int i = 0; i <= latest_id; ++i) {
+            held_ba_blocks.push_back({state_->frames[i].speed_bias.data() + 3, 3});
+        }
+    }
     auto features = feature_manager_->collectLandmarks();
 
     ceres::Problem::Options problem_options;
@@ -438,6 +401,8 @@ void Estimator::optimize() {
         auto se3_manifold = new SE3RightManifold();
         problem.AddParameterBlock(state_->frames[i].pose.data(), 6, se3_manifold);
         if (i != kRetainedFrameIndex || !marginalization_prior_) {
+            // 低速保持由迭代回调恢复 dba 均值；临时 dba 增量仍参与线性步，
+            // 使 active 状态能够使用 bias 不确定性带来的耦合信息。
             problem.AddParameterBlock(state_->frames[i].speed_bias.data(), 9);
         }
     }
@@ -541,6 +506,19 @@ void Estimator::optimize() {
 
     ceres::Solver::Options opts;
     opts.linear_solver_type = ceres::DENSE_SCHUR;
+    auto ordering = std::make_shared<ceres::ParameterBlockOrdering>();
+    // 每个视觉因子只包含一个逆深度，组0路标必须保持为 Hessian 图的独立集。
+    for (double& inverse_depth : inv_depth_params) {
+        ordering->AddElementToGroup(&inverse_depth, 0);
+    }
+    for (int i = 0; i < state_->max_frame_count; ++i) {
+        ordering->AddElementToGroup(state_->frames[i].pose.data(), 1);
+        if (i != kRetainedFrameIndex || !marginalization_prior_) {
+            ordering->AddElementToGroup(state_->frames[i].speed_bias.data(), 1);
+        }
+    }
+    ordering->AddElementToGroup(&state_->param_delay_time, 1);
+    opts.linear_solver_ordering = std::move(ordering);
     opts.max_num_iterations = params_.num_iterations;
     if (params_.max_solver_time > 0.0) {
         opts.max_solver_time_in_seconds = params_.max_solver_time;
@@ -549,20 +527,19 @@ void Estimator::optimize() {
     opts.minimizer_progress_to_stdout = false;
     opts.logging_type = ceres::SILENT;
 
+    std::unique_ptr<ParameterBlockHoldCallback> restore_schmidt_ba;
+    if (low_speed_ba_behavior_.holdsBa()) {
+        restore_schmidt_ba =
+            std::make_unique<ParameterBlockHoldCallback>(std::move(held_ba_blocks));
+        opts.update_state_every_iteration = true;
+        opts.callbacks.push_back(restore_schmidt_ba.get());
+    }
+
     ceres::Solver::Summary summary;
-    const double build_ms = elapsedMs(build_start);
-    const auto solve_start = SteadyClock::now();
     ceres::Solve(opts, &problem, &summary);
-    const double solve_ms = elapsedMs(solve_start);
-    spdlog::info(
-        "Ceres timing: build={:.3f} ms solve={:.3f} ms minimizer={:.3f} ms "
-        "linear={:.3f} ms residual={:.3f} ms jacobian={:.3f} ms iterations={} "
-        "residual_evals={} jacobian_evals={}",
-        build_ms, solve_ms, summary.minimizer_time_in_seconds * 1000.0,
-        summary.linear_solver_time_in_seconds * 1000.0,
-        summary.residual_evaluation_time_in_seconds * 1000.0,
-        summary.jacobian_evaluation_time_in_seconds * 1000.0, summary.iterations.size(),
-        summary.num_residual_evaluations, summary.num_jacobian_evaluations);
+    if (restore_schmidt_ba) {
+        restore_schmidt_ba->restore();
+    }
 
     bool finite_solution = std::isfinite(state_->param_delay_time);
     for (int i = 0; i <= latest_id && finite_solution; ++i) {
@@ -590,6 +567,10 @@ void Estimator::optimize() {
         for (int i = 0; i < num_kept; ++i) {
             current_poses[i] = state_->frames[i].pose;
             current_speed_bias[i] = state_->frames[i].speed_bias;
+        }
+        if (schmidt_prior_covariance_) {
+            recenterPriorCovariance(
+                *schmidt_prior_covariance_, *marginalization_prior_, current_poses);
         }
         MargHelper::recenterPrior(
             *marginalization_prior_, current_poses, current_speed_bias, state_->param_delay_time);
@@ -673,6 +654,35 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
         action == RetainedHostAction::MarginalizeOldestFrame ? -1 : kFirstActiveFrameIndex;
     auto retiring_features = feature_manager_->collectMarginalizedFeatures(
         landmark_host_frame_index, landmark_target_frame_index);
+    std::vector<Feature*> schmidt_visual_features;
+    std::vector<int> schmidt_visual_feature_ids;
+    if (low_speed_ba_behavior_.holdsBa() && schmidt_prior_covariance_) {
+        auto& all_features = feature_manager_->features();
+        for (auto it = schmidt_absorbed_feature_ids_.begin();
+             it != schmidt_absorbed_feature_ids_.end();) {
+            if (all_features.find(*it) == all_features.end()) {
+                it = schmidt_absorbed_feature_ids_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        std::unordered_map<const Feature*, int> feature_ids;
+        feature_ids.reserve(all_features.size());
+        for (auto& [feature_id, feature] : all_features) {
+            feature_ids.emplace(&feature, feature_id);
+        }
+        for (Feature* feature : retiring_features) {
+            const auto id = feature_ids.find(feature);
+            if (id == feature_ids.end()) {
+                throw std::logic_error("Retiring feature ID mapping is incomplete");
+            }
+            if (schmidt_absorbed_feature_ids_.find(id->second) ==
+                schmidt_absorbed_feature_ids_.end()) {
+                schmidt_visual_features.push_back(feature);
+                schmidt_visual_feature_ids.push_back(id->second);
+            }
+        }
+    }
     visitPreintegrators([&](auto& preintegrators) {
         using Integrator = typename std::decay_t<decltype(preintegrators)>::value_type;
         std::vector<IntegratorBase<Integrator>*> imu_preintegrators;
@@ -699,6 +709,29 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
         Eigen::MatrixXd reduced_jacobian;
         Eigen::VectorXd reduced_residual;
         linearizer.buildReducedSystem(reduced_jacobian, reduced_residual);
+
+        std::unique_ptr<SchmidtPriorCovariance> updated_schmidt_covariance;
+        if (low_speed_ba_behavior_.holdsBa() && schmidt_prior_covariance_) {
+            if (action == RetainedHostAction::InitializeRetainedSlot) {
+                throw std::logic_error(
+                    "Initialized retained slot cannot have an old Schmidt prior");
+            }
+            Eigen::MatrixXd visual_jacobian;
+            Eigen::VectorXd visual_residual;
+            linearizer.buildReducedVisualSystem(
+                schmidt_visual_features, visual_jacobian, visual_residual);
+
+            const int latest_imu_index = window_capacity - 2;
+            const int parent_index = latest_imu_index;
+            const int child_index = parent_index + 1;
+            updated_schmidt_covariance =
+                std::make_unique<SchmidtPriorCovariance>(propagateAndUpdateSchmidtWindow(
+                    *schmidt_prior_covariance_, &preintegrators[latest_imu_index],
+                    state_->frames[parent_index], state_->frames[child_index], visual_jacobian,
+                    visual_residual, window_capacity, action));
+            schmidt_absorbed_feature_ids_.insert(
+                schmidt_visual_feature_ids.begin(), schmidt_visual_feature_ids.end());
+        }
 
         // QR 前的列顺序为 [state0(15), state1(15), ..., delay]。
         // Initialize 消去空 state0 和首帧运动状态；其他动作按状态机重排列。
@@ -767,7 +800,38 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
             updated_prior->linearization_poses[i - 1] = state_->frames[i].pose;
             updated_prior->linearization_speed_bias[i - 1] = state_->frames[i].speed_bias;
         }
+        if (!updated_schmidt_covariance && low_speed_ba_behavior_.needsSchmidtCovariance()) {
+            std::vector<Feature*> full_features = feature_manager_->collectLandmarks();
+            const std::optional<SchmidtPriorCovariance> current_covariance =
+                tryBuildGaugeFixedWindowPosteriorCovariance(
+                    full_features, state_, preintegrators, 1, prior_to_linearize, params_.ric,
+                    params_.tic, visual_huber_delta);
+            if (current_covariance) {
+                updated_schmidt_covariance = std::make_unique<SchmidtPriorCovariance>(
+                    retainMarginalizedPriorCovariance(*current_covariance, action));
+                schmidt_absorbed_feature_ids_.clear();
+                const std::unordered_set<const Feature*> full_feature_set(
+                    full_features.begin(), full_features.end());
+                for (const auto& [feature_id, feature] : feature_manager_->features()) {
+                    if (full_feature_set.find(&feature) != full_feature_set.end()) {
+                        schmidt_absorbed_feature_ids_.insert(feature_id);
+                    }
+                }
+                spdlog::info(
+                    "Schmidt covariance initialized from full posterior: states={} features={}",
+                    current_covariance->state_count, full_features.size());
+            } else {
+                spdlog::warn(
+                    "Schmidt covariance unavailable: full window remains deficient after gauge "
+                    "fixing");
+            }
+        }
+        if (!low_speed_ba_behavior_.needsSchmidtCovariance()) {
+            updated_schmidt_covariance.reset();
+            schmidt_absorbed_feature_ids_.clear();
+        }
         marginalization_prior_ = std::move(updated_prior);
+        schmidt_prior_covariance_ = std::move(updated_schmidt_covariance);
     });
 }
 
@@ -880,6 +944,9 @@ void Estimator::restoreGauge(int reference_frame_index) {
     if (marginalization_prior_) {
         MargHelper::transformPriorGauge(
             *marginalization_prior_, rotation_correction, gauge_translation);
+        if (schmidt_prior_covariance_) {
+            transformPriorCovarianceGauge(*schmidt_prior_covariance_, rotation_correction);
+        }
     }
 }
 

@@ -7,7 +7,6 @@
 // OpenCV
 #include <opencv2/core/hal/interface.h>
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <opencv2/imgproc.hpp>
@@ -16,62 +15,6 @@
 #include <utility>
 
 namespace tassel_core {
-
-namespace {
-using SteadyClock = std::chrono::steady_clock;
-constexpr size_t kTimingReportPeriod = 30;
-
-double elapsedMs(SteadyClock::time_point start) {
-    return std::chrono::duration<double, std::milli>(SteadyClock::now() - start).count();
-}
-}  // namespace
-
-void FeatureTracker::TimingRange::add(double ms) {
-    min_ms = std::min(min_ms, ms);
-    max_ms = std::max(max_ms, ms);
-    sum_ms += ms;
-}
-
-double FeatureTracker::TimingRange::avg(size_t count) const {
-    return count > 0 ? sum_ms / static_cast<double>(count) : 0.0;
-}
-
-void FeatureTracker::TimingRange::reset() {
-    min_ms = std::numeric_limits<double>::infinity();
-    max_ms = 0.0;
-    sum_ms = 0.0;
-}
-
-void FeatureTracker::TimingStats::add(
-    double total_ms, double match_ms, double mask_ms, double extract_ms, double pack_ms,
-    size_t tracked_count, size_t new_count) {
-    ++count;
-    total.add(total_ms);
-    match.add(match_ms);
-    mask.add(mask_ms);
-    extract.add(extract_ms);
-    pack.add(pack_ms);
-    tracked_sum += tracked_count;
-    new_sum += new_count;
-}
-
-void FeatureTracker::TimingStats::reset() {
-    count = 0;
-    total.reset();
-    match.reset();
-    mask.reset();
-    extract.reset();
-    pack.reset();
-    lk_forward.reset();
-    lk_backward.reset();
-    match_filter.reset();
-    gradient.reset();
-    tensor.reset();
-    response.reset();
-    grid_search.reset();
-    tracked_sum = 0;
-    new_sum = 0;
-}
 
 FeatureTracker::FeatureTracker(
     bool flow_back, double max_square_move_dist, bool enable_statistics, int track_age_color_scale,
@@ -141,7 +84,6 @@ void FeatureTracker::setValidMask(const cv::Mat& mask, int margin) {
 
 std::unordered_map<int, FeaturePerFrame> FeatureTracker::monoTracking(
     const cv::Mat& img, const std::unordered_map<int, cv::Point2f>& predicted_pixels) {
-    const auto total_start = SteadyClock::now();
     if (!ctc_.camera) {
         throw std::logic_error("FeatureTracker camera has not been configured");
     }
@@ -160,27 +102,14 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::monoTracking(
     cur_ids = prev_ids;
     cur_pts = prev_pts;
 
-    double match_ms = 0.0;
-    MatchTiming match_timing;
     if (!prev_pts.empty()) {
-        const auto match_start = SteadyClock::now();
-        monoMatching(
-            prev_img, img, prev_pts, cur_pts, prev_ids, cur_ids, predicted_pixels, match_timing);
-        match_ms = elapsedMs(match_start);
+        monoMatching(prev_img, img, prev_pts, cur_pts, prev_ids, cur_ids, predicted_pixels);
     }
 
-    auto stage_start = SteadyClock::now();
     setMask();
-    const double mask_ms = elapsedMs(stage_start);
-    size_t new_count = 0;
-    double extract_ms = 0.0;
-    ExtractTiming extract_timing;
     if (prev_pts.empty() || static_cast<int>(cur_pts.size()) < ctc.min_feature_num) {
         std::vector<cv::Point2f> new_pts;
-        stage_start = SteadyClock::now();
-        extractNewFeatures(img, new_pts, extract_timing);
-        extract_ms = elapsedMs(stage_start);
-        new_count = new_pts.size();
+        extractNewFeatures(img, new_pts);
         for (size_t i = 0; i < new_pts.size(); ++i) {
             cur_pts.emplace_back(new_pts[i]);
             cur_ids.emplace_back(ctc.feature_count++);
@@ -188,7 +117,6 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::monoTracking(
         }
     }
 
-    stage_start = SteadyClock::now();
     std::unordered_map<int, FeaturePerFrame> feature_frame;
     auto* camera = ctc.camera.get();
     for (size_t i = 0; i < cur_ids.size(); ++i) {
@@ -198,51 +126,11 @@ std::unordered_map<int, FeaturePerFrame> FeatureTracker::monoTracking(
         fpf.setObservation(uv, cur_pts[i]);
         feature_frame[cur_ids[i]] = fpf;
     }
-    const double pack_ms = elapsedMs(stage_start);
-    const size_t tracked_count = cur_pts.size();
     prev_img = img;
     std::swap(prev_pts, cur_pts);
     std::swap(prev_ids, cur_ids);
     cur_ids.clear();
     cur_pts.clear();
-    timing_stats_.add(
-        elapsedMs(total_start), match_ms, mask_ms, extract_ms, pack_ms, tracked_count, new_count);
-    timing_stats_.lk_forward.add(match_timing.forward_ms);
-    timing_stats_.lk_backward.add(match_timing.backward_ms);
-    timing_stats_.match_filter.add(match_timing.filter_ms);
-    timing_stats_.gradient.add(extract_timing.gradient_ms);
-    timing_stats_.tensor.add(extract_timing.tensor_ms);
-    timing_stats_.response.add(extract_timing.response_ms);
-    timing_stats_.grid_search.add(extract_timing.grid_search_ms);
-    if (timing_stats_.count >= kTimingReportPeriod) {
-        const auto& stats = timing_stats_;
-        spdlog::info(
-            "FeatureTracker timing range frames={} total={:.3f}/{:.3f}/{:.3f} "
-            "match={:.3f}/{:.3f}/{:.3f} mask={:.3f}/{:.3f}/{:.3f} "
-            "extract={:.3f}/{:.3f}/{:.3f} pack={:.3f}/{:.3f}/{:.3f} "
-            "tracked_avg={:.1f} new_avg={:.1f}",
-            stats.count, stats.total.min_ms, stats.total.avg(stats.count), stats.total.max_ms,
-            stats.match.min_ms, stats.match.avg(stats.count), stats.match.max_ms, stats.mask.min_ms,
-            stats.mask.avg(stats.count), stats.mask.max_ms, stats.extract.min_ms,
-            stats.extract.avg(stats.count), stats.extract.max_ms, stats.pack.min_ms,
-            stats.pack.avg(stats.count), stats.pack.max_ms,
-            static_cast<double>(stats.tracked_sum) / static_cast<double>(stats.count),
-            static_cast<double>(stats.new_sum) / static_cast<double>(stats.count));
-        spdlog::info(
-            "OpenCV timing range frames={} lk_fwd={:.3f}/{:.3f}/{:.3f} "
-            "lk_back={:.3f}/{:.3f}/{:.3f} filter={:.3f}/{:.3f}/{:.3f} "
-            "gradient={:.3f}/{:.3f}/{:.3f} tensor={:.3f}/{:.3f}/{:.3f} "
-            "response={:.3f}/{:.3f}/{:.3f} grid={:.3f}/{:.3f}/{:.3f}",
-            stats.count, stats.lk_forward.min_ms, stats.lk_forward.avg(stats.count),
-            stats.lk_forward.max_ms, stats.lk_backward.min_ms, stats.lk_backward.avg(stats.count),
-            stats.lk_backward.max_ms, stats.match_filter.min_ms,
-            stats.match_filter.avg(stats.count), stats.match_filter.max_ms, stats.gradient.min_ms,
-            stats.gradient.avg(stats.count), stats.gradient.max_ms, stats.tensor.min_ms,
-            stats.tensor.avg(stats.count), stats.tensor.max_ms, stats.response.min_ms,
-            stats.response.avg(stats.count), stats.response.max_ms, stats.grid_search.min_ms,
-            stats.grid_search.avg(stats.count), stats.grid_search.max_ms);
-        timing_stats_.reset();
-    }
     return feature_frame;
 }
 
@@ -256,7 +144,6 @@ void FeatureTracker::reset() {
     ctc_.grid_mask.assign(ctc_.grid_rows * ctc_.grid_cols, false);
     ctc_.feature_count = 0;
     ctc_.tracked_times.clear();
-    timing_stats_.reset();
 }
 
 void FeatureTracker::drawTrackingResult(cv::Mat& img) {
@@ -286,7 +173,7 @@ void FeatureTracker::drawTrackingResult(cv::Mat& img) {
 void FeatureTracker::monoMatching(
     const cv::Mat& prev_img, const cv::Mat& cur_img, std::vector<cv::Point2f>& prev_pts,
     std::vector<cv::Point2f>& cur_pts, std::vector<size_t>& prev_ids, std::vector<size_t>& cur_ids,
-    const std::unordered_map<int, cv::Point2f>& predicted_pixels, MatchTiming& timing) {
+    const std::unordered_map<int, cv::Point2f>& predicted_pixels) {
     if (prev_pts.empty() || prev_ids.empty()) {
         spdlog::info(
             "FeatureTracker::monoMatching: prev_pts({}) or prev_ids({}) is empty", prev_pts.size(),
@@ -309,24 +196,18 @@ void FeatureTracker::monoMatching(
         cur_pts[i] = prediction->second;
         has_initial_flow = true;
     }
-    auto stage_start = SteadyClock::now();
     cv::calcOpticalFlowPyrLK(
         prev_img, cur_img, prev_pts, cur_pts, p2c_status, p2c_err, cv::Size(21, 21), 3,
         cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01),
         has_initial_flow ? cv::OPTFLOW_USE_INITIAL_FLOW : 0);
-    timing.forward_ms = elapsedMs(stage_start);
-
     if (flow_back_) {
         std::vector<cv::Point2f> copy_pts = prev_pts;
         std::vector<uchar> c2p_status;
         std::vector<float> c2p_err;
-        stage_start = SteadyClock::now();
         cv::calcOpticalFlowPyrLK(
             cur_img, prev_img, cur_pts, copy_pts, c2p_status, c2p_err, cv::Size(21, 21), 3,
             cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01),
             cv::OPTFLOW_USE_INITIAL_FLOW);
-        timing.backward_ms = elapsedMs(stage_start);
-
         for (size_t i = 0; i < num; ++i) {
             p2c_status[i] = p2c_status[i]
                                 ? (c2p_status[i] && (computeSquareDist(prev_pts[i], copy_pts[i]) <
@@ -335,7 +216,6 @@ void FeatureTracker::monoMatching(
         }
     }
 
-    stage_start = SteadyClock::now();
     size_t valid_count = 0;
     std::vector<int>& tracked_times = ctc_.tracked_times;
     for (size_t index = 0; index < num; ++index) {
@@ -353,7 +233,6 @@ void FeatureTracker::monoMatching(
     cur_pts.resize(valid_count);
     cur_ids.resize(valid_count);
     tracked_times.resize(valid_count);
-    timing.filter_ms = elapsedMs(stage_start);
 }
 
 void FeatureTracker::setMask() {
@@ -411,8 +290,7 @@ void FeatureTracker::setMask() {
     ctc.tracked_times = std::move(distributed_ages);
 }
 
-void FeatureTracker::extractNewFeatures(
-    const cv::Mat& img, std::vector<cv::Point2f>& new_pts, ExtractTiming& timing) {
+void FeatureTracker::extractNewFeatures(const cv::Mat& img, std::vector<cv::Point2f>& new_pts) {
     CameraTrackingContext& ctc = ctc_;
     const int rows = ctc.camera->get_height();
     const int cols = ctc.camera->get_width();
@@ -435,8 +313,6 @@ void FeatureTracker::extractNewFeatures(
     constexpr int kBlockSize = 3;
     constexpr int kRoiPadding = 1;
 
-    auto stage_start = SteadyClock::now();
-    const auto grid_start = SteadyClock::now();
     for (int cell_r = 0; cell_r < grid_rows; ++cell_r) {
         const int cell_y0 = y0 + cell_r * cell_h;
         const int cell_y1 = std::min(cell_y0 + cell_h, y1);
@@ -461,13 +337,9 @@ void FeatureTracker::extractNewFeatures(
             const cv::Rect padded_roi(
                 padded_x0, padded_y0, padded_x1 - padded_x0, padded_y1 - padded_y0);
 
-            stage_start = SteadyClock::now();
             cv::Mat grad_x, grad_y;
             cv::Sobel(img(padded_roi), grad_x, CV_32F, 1, 0, 3);
             cv::Sobel(img(padded_roi), grad_y, CV_32F, 0, 1, 3);
-            timing.gradient_ms += elapsedMs(stage_start);
-
-            stage_start = SteadyClock::now();
             cv::Mat ix2, iy2, ixy;
             cv::multiply(grad_x, grad_x, ix2);
             cv::multiply(grad_y, grad_y, iy2);
@@ -475,17 +347,12 @@ void FeatureTracker::extractNewFeatures(
             cv::boxFilter(ix2, ix2, CV_32F, cv::Size(kBlockSize, kBlockSize));
             cv::boxFilter(iy2, iy2, CV_32F, cv::Size(kBlockSize, kBlockSize));
             cv::boxFilter(ixy, ixy, CV_32F, cv::Size(kBlockSize, kBlockSize));
-            timing.tensor_ms += elapsedMs(stage_start);
-
-            stage_start = SteadyClock::now();
             cv::Mat diff_sq, ixy_sq;
             cv::pow(ix2 - iy2, 2, diff_sq);
             cv::pow(ixy * 2, 2, ixy_sq);
             cv::Mat term;
             cv::sqrt(diff_sq + ixy_sq, term);
             cv::Mat response = (ix2 + iy2 - term) * 0.5f;
-            timing.response_ms += elapsedMs(stage_start);
-
             // 网格占用已经表达需要补点的 ROI，响应图只在这些 ROI 内有效。
             const cv::Rect inner_roi(
                 roi.x - padded_roi.x, roi.y - padded_roi.y, roi.width, roi.height);
@@ -523,7 +390,6 @@ void FeatureTracker::extractNewFeatures(
         new_pts.push_back(candidate);
         cv::circle(ctc.mask, candidate, ctc.mask_radius, cv::Scalar(0), -1);
     }
-    timing.grid_search_ms = elapsedMs(grid_start);
 }
 
 }  // namespace tassel_core

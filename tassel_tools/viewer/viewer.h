@@ -3,6 +3,7 @@
 
 // rclcpp
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <opencv2/opencv.hpp>
@@ -78,6 +79,12 @@ public:
     void publishVisualFactorWindow(
         const std::string& topic, const std::vector<int>& counts, double timestamp = -1.0);
 
+    void createVector3Publisher(
+        const std::string& topic_name, const rclcpp::QoS& qos = rclcpp::QoS(10));
+
+    void publishVector3(
+        const std::string& topic, const Eigen::Vector3d& value, double timestamp = -1.0);
+
 private:
     // 压缩图像
     std::unordered_map<std::string, rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr>
@@ -98,6 +105,10 @@ private:
         path_publishers_;
     std::unordered_map<std::string, nav_msgs::msg::Path> paths_;
     std::unordered_map<std::string, size_t> path_max_poses_;
+
+    // Foxglove Plot 直接读取 Vector3Stamped.vector.{x,y,z}。
+    std::unordered_map<std::string, rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr>
+        vector3_publishers_;
 
     std::string frame_id_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;

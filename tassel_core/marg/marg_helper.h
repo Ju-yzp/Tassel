@@ -6,15 +6,10 @@
 #include <cstddef>
 #include <vector>
 
-#include "marg_lin_data.h"
+#include "marg/marg_lin_data.h"
+#include "marg/window_action.h"
 
 namespace tassel_core {
-
-enum class RetainedHostAction {
-    InitializeRetainedSlot,
-    ReplaceRetainedSlot,
-    MarginalizeOldestFrame,
-};
 
 class MargHelper {
 public:

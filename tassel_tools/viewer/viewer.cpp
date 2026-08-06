@@ -251,6 +251,35 @@ void Viewer::publishPath(
     path_publishers_[topic]->publish(path);
 }
 
+void Viewer::createVector3Publisher(const std::string& topic_name, const rclcpp::QoS& qos) {
+    if (vector3_publishers_.contains(topic_name)) {
+        RCLCPP_WARN(
+            this->get_logger(), "Vector3 topic %s already exists, skipping creation.",
+            topic_name.c_str());
+        return;
+    }
+    vector3_publishers_[topic_name] =
+        this->template create_publisher<geometry_msgs::msg::Vector3Stamped>(topic_name, qos);
+}
+
+void Viewer::publishVector3(
+    const std::string& topic, const Eigen::Vector3d& value, double timestamp) {
+    const auto publisher = vector3_publishers_.find(topic);
+    if (publisher == vector3_publishers_.end()) {
+        throw std::invalid_argument("Vector3 topic is not registered: " + topic);
+    }
+    if (!value.allFinite()) {
+        throw std::invalid_argument("Viewer Vector3 value must be finite");
+    }
+    geometry_msgs::msg::Vector3Stamped message;
+    message.header.stamp = messageStamp(timestamp);
+    message.header.frame_id = frame_id_;
+    message.vector.x = value.x();
+    message.vector.y = value.y();
+    message.vector.z = value.z();
+    publisher->second->publish(std::move(message));
+}
+
 void Viewer::publishPathSnapshot(
     const std::string& topic, const std::vector<Eigen::Vector3d>& positions,
     const std::vector<Eigen::Quaterniond>& orientations, double timestamp) {

@@ -7,6 +7,8 @@ bridge:
         - /tf_static
         - /vio/odometry
         - /vio/path
+        - /vio/ba
+        - /vio/bg
         - /ground_truth/path
         - /mono/image
         - /optimization/visual_window

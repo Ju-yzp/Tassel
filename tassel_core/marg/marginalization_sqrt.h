@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <memory>
 #include <sophus/so3.hpp>
+#include <stdexcept>
+#include <unordered_set>
 #include <vector>
 
 #include "factor/integrator_base.h"
@@ -14,6 +16,7 @@
 #include "marg/imu_block.h"
 #include "marg/landmark_block.h"
 #include "marg/marg_lin_data.h"
+#include "marg/state_layout.h"
 #include "state/state.h"
 #include "tassel_utils/macros.h"
 
@@ -124,26 +127,52 @@ public:
 
         if (prior_) {
             // 旧先验使用当前残差和边缘化时冻结的雅各比。
-            int prior_cols = static_cast<int>(prior_->H.cols());
-            const int full_prior_cols = (state_->max_frame_count - 1) * 15;
-            const int mixed_prior_cols = 6 + (state_->max_frame_count - 2) * 15;
-            if (prior_cols == mixed_prior_cols || prior_cols == mixed_prior_cols + 1) {
-                // mixed 布局: [retained_pose(6), active_full_states..., delay]。
-                jacobian.block(rows, 0, prior_rows, 6) = prior_->H.leftCols(6);
-                jacobian.block(rows, 15, prior_rows, mixed_prior_cols - 6) =
-                    prior_->H.middleCols(6, mixed_prior_cols - 6);
-            } else {
-                const int state_cols = std::min(prior_cols, full_prior_cols);
-                if (state_cols > 0) {
-                    jacobian.block(rows, 0, prior_rows, state_cols) =
-                        prior_->H.leftCols(state_cols);
-                }
-            }
-            if (prior_cols == full_prior_cols + 1 || prior_cols == mixed_prior_cols + 1) {
-                jacobian.col(num_cols_ - 1).segment(rows, prior_rows) =
-                    prior_->H.col(prior_cols - 1);
+            const PriorStateLayout layout(
+                static_cast<int>(prior_->linearization_poses.size()),
+                static_cast<int>(prior_->H.cols()));
+            const std::vector<int> mapping = layout.compactToWindowColumns(state_->max_frame_count);
+            for (int compact_column = 0; compact_column < static_cast<int>(mapping.size());
+                 ++compact_column) {
+                jacobian.col(mapping[static_cast<size_t>(compact_column)])
+                    .segment(rows, prior_rows) = prior_->H.col(compact_column);
             }
             residual.segment(rows, prior_rows) = prior_->b;
+        }
+    }
+
+    void buildReducedVisualSystem(
+        const std::vector<Feature*>& selected_features, Eigen::MatrixXd& jacobian,
+        Eigen::VectorXd& residual) const {
+        std::unordered_set<const Feature*> selected;
+        selected.reserve(selected_features.size());
+        for (const Feature* feature : selected_features) {
+            if (!feature || !selected.insert(feature).second) {
+                throw std::invalid_argument("Selected visual feature is null or duplicated");
+            }
+        }
+
+        int selected_rows = 0;
+        size_t matched_features = 0;
+        for (size_t index = 0; index < retiring_features_.size(); ++index) {
+            if (selected.find(retiring_features_[index]) != selected.end()) {
+                selected_rows += landmark_blocks_[index].get_kept_rows();
+                ++matched_features;
+            }
+        }
+        if (matched_features != selected.size()) {
+            throw std::invalid_argument("Selected visual feature is not in the retiring set");
+        }
+
+        jacobian = Eigen::MatrixXd::Zero(selected_rows, num_cols_);
+        residual = Eigen::VectorXd::Zero(selected_rows);
+        // selected_features 的顺序不影响行空间；输出沿 retiring_features 的稳定布局组装。
+        int row = 0;
+        for (size_t index = 0; index < retiring_features_.size(); ++index) {
+            if (selected.find(retiring_features_[index]) == selected.end()) {
+                continue;
+            }
+            landmark_blocks_[index].writeReducedSystem(jacobian, residual, row);
+            row += landmark_blocks_[index].get_kept_rows();
         }
     }
 

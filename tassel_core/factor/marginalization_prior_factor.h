@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "marg/marg_lin_data.h"
+#include "marg/state_layout.h"
 
 namespace tassel_core {
 
@@ -25,9 +26,7 @@ private:
     std::vector<std::array<double, 9>> lin_speed_bias_;
     double lin_delay_time_;
     int num_kept_;
-    bool has_speed_bias_;
-    bool has_pose_only_host_;
-    bool has_delay_;
+    PriorStateLayout layout_;
 };
 
 }  // namespace tassel_core

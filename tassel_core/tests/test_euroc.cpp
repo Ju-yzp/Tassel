@@ -75,6 +75,11 @@ struct GroundTruthPose {
     Sophus::SE3d pose;
 };
 
+struct EvaluatedPose {
+    Sophus::SE3d estimate;
+    Sophus::SE3d truth;
+};
+
 struct LatestDisplayImage {
     cv::Mat image;
 };
@@ -349,6 +354,65 @@ std::optional<Sophus::SE3d> interpolateGroundTruth(
     return Sophus::SE3d(orientation, position);
 }
 
+Sophus::SE3d alignByYawAndTranslation(const std::vector<EvaluatedPose>& poses) {
+    if (poses.empty()) {
+        throw std::invalid_argument("Cannot align an empty trajectory");
+    }
+
+    Eigen::Vector3d estimate_mean = Eigen::Vector3d::Zero();
+    Eigen::Vector3d truth_mean = Eigen::Vector3d::Zero();
+    for (const auto& pose : poses) {
+        estimate_mean += pose.estimate.translation();
+        truth_mean += pose.truth.translation();
+    }
+    estimate_mean /= static_cast<double>(poses.size());
+    truth_mean /= static_cast<double>(poses.size());
+
+    double xx = 0.0;
+    double xy = 0.0;
+    for (const auto& pose : poses) {
+        const Eigen::Vector3d estimate = pose.estimate.translation() - estimate_mean;
+        const Eigen::Vector3d truth = pose.truth.translation() - truth_mean;
+        xx += estimate.x() * truth.x() + estimate.y() * truth.y();
+        xy += estimate.x() * truth.y() - estimate.y() * truth.x();
+    }
+    const double yaw = std::atan2(xy, xx);
+    const Eigen::Matrix3d rotation =
+        Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    const Eigen::Vector3d translation = truth_mean - rotation * estimate_mean;
+    return Sophus::SE3d(rotation, translation);
+}
+
+void reportTrajectoryError(const std::vector<EvaluatedPose>& poses) {
+    if (poses.empty()) {
+        std::cout << "[EuRoC] no synchronized ground-truth poses for evaluation\n";
+        return;
+    }
+
+    const Sophus::SE3d alignment = alignByYawAndTranslation(poses);
+    double squared_position_error = 0.0;
+    double squared_rotation_error = 0.0;
+    double terminal_position_error = 0.0;
+    for (const auto& pose : poses) {
+        const Sophus::SE3d aligned_estimate = alignment * pose.estimate;
+        const Eigen::Vector3d position_error =
+            aligned_estimate.translation() - pose.truth.translation();
+        const Eigen::Vector3d rotation_error =
+            (pose.truth.so3().inverse() * aligned_estimate.so3()).log();
+        squared_position_error += position_error.squaredNorm();
+        squared_rotation_error += rotation_error.squaredNorm();
+        terminal_position_error = position_error.norm();
+    }
+
+    const double count = static_cast<double>(poses.size());
+    std::cout << "[EuRoC] trajectory evaluation (single global yaw+translation alignment): "
+              << "samples=" << poses.size()
+              << " ATE_RMSE=" << std::sqrt(squared_position_error / count) << " m"
+              << " terminal_position_error=" << terminal_position_error << " m"
+              << " rotation_RMSE=" << std::sqrt(squared_rotation_error / count)
+              << " rad\n";
+}
+
 fs::path resolveSequenceDir(const fs::path& sequence_dir) {
     if (fs::exists(sequence_dir / "mav0" / "cam0" / "data.csv")) {
         return sequence_dir;
@@ -442,6 +506,8 @@ int main(int argc, char** argv) {
     viewer->createPathPublisher("vio/path", rclcpp::QoS(10), params.viewer_path_max_poses);
     viewer->createPathPublisher("ground_truth/path", rclcpp::QoS(10), params.viewer_path_max_poses);
     viewer->createCompressedImagePublisher("optimization/visual_window", image_qos);
+    viewer->createVector3Publisher("vio/ba");
+    viewer->createVector3Publisher("vio/bg");
 
     rclcpp::executors::SingleThreadedExecutor executor;
     executor.add_node(viewer);
@@ -468,8 +534,12 @@ int main(int argc, char** argv) {
     Estimator estimator(params, state, feature_manager);
     state->camera = camera_ptr;
     estimator.setCamera(camera_ptr);
+    const size_t frame_limit = frames.size();
     std::optional<Sophus::SE3d> ground_truth_alignment;
-    estimator.setPoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment, &params](
+    std::vector<EvaluatedPose> evaluated_poses;
+    evaluated_poses.reserve(frame_limit);
+    estimator.setPoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment,
+                               &evaluated_poses, &params](
                                   double ts, const Sophus::SE3d& pose) {
         viewer->publishOdometry(
             "vio/odometry", pose.translation(), pose.unit_quaternion(), Eigen::Vector3d::Zero(),
@@ -480,7 +550,9 @@ int main(int argc, char** argv) {
             Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), ts);
         viewer->publishPath("vio/path", pose.translation(), pose.unit_quaternion(), ts);
         if (const auto truth = interpolateGroundTruth(ground_truth, ts)) {
+            evaluated_poses.push_back({pose, *truth});
             if (!ground_truth_alignment) {
+                // 仅用于 Foxglove 叠加显示；正式评估在所有样本收集后统一对齐。
                 ground_truth_alignment = pose * truth->inverse();
             }
             const Sophus::SE3d aligned_truth = *ground_truth_alignment * *truth;
@@ -489,6 +561,8 @@ int main(int argc, char** argv) {
                 ts);
         }
         const Eigen::Vector3d& velocity = state->frames[state->latest_frame_index].V;
+        viewer->publishVector3("vio/ba", state->frames[state->latest_frame_index].Ba, ts);
+        viewer->publishVector3("vio/bg", state->frames[state->latest_frame_index].Bg, ts);
         std::cout << "[pose] t=" << ts << " p=" << pose.translation().transpose()
                   << " |V|=" << velocity.norm() << "\n";
     });
@@ -497,7 +571,6 @@ int main(int argc, char** argv) {
             viewer->publishVisualFactorWindow(
                 "optimization/visual_window", visual_factors_per_frame);
         });
-    const size_t frame_limit = frames.size();
     BlockingDatasetSync sync;
 
     std::atomic_bool imu_done{false};
@@ -723,6 +796,7 @@ int main(int argc, char** argv) {
 
     std::cout << "\n[EuRoC] done. processed=" << processed
               << ", newest frame_index=" << state->latest_frame_index << "\n";
+    reportTrajectoryError(evaluated_poses);
     if (state->latest_frame_index > 0) {
         int idx = state->latest_frame_index;
         std::cout << "Final pose:\n"

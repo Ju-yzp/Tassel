@@ -6,13 +6,16 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
+#include "behavior/low_speed_ba_behavior.h"
 #include "factor/integrator_base.h"
 #include "frond_end/feature_manager.h"
-#include "marg/marg_helper.h"
 #include "marg/marg_lin_data.h"
+#include "marg/schmidt/schmidt_prior_covariance.h"
+#include "marg/window_action.h"
 #include "parameters/parameters.h"
 #include "state/state.h"
 #include "tassel_utils/types.h"
@@ -123,6 +126,7 @@ private:
 
     bool initialized_ = false;
     bool last_measurement_was_keyframe_ = false;
+    LowSpeedBaBehavior low_speed_ba_behavior_{0.05, 0.08, 3, 2};
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
     std::function<void(double, const std::vector<int>&)> visual_factor_callback_;
     PreintegratorStorage preintegrators_;
@@ -131,6 +135,10 @@ private:
     Eigen::Vector3d last_imu_gyro_;
 
     std::unique_ptr<MargLinData> marginalization_prior_;
+    // 仅用于 Schmidt/consider 协方差递推，不替换 Ceres 使用的平方根先验。
+    std::unique_ptr<SchmidtPriorCovariance> schmidt_prior_covariance_;
+    // 完整 posterior 已吸收这些特征；其后续观测保守跳过，避免结构消元后重复计数。
+    std::unordered_set<int> schmidt_absorbed_feature_ids_;
     // VIO 初始化成功后从当前参考帧捕获；仅在保留槽创建或替换后更新。
     Eigen::Matrix3d retained_rotation_ = Eigen::Matrix3d::Identity();
     Eigen::Vector3d retained_position_ = Eigen::Vector3d::Zero();

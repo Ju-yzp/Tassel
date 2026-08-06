@@ -23,7 +23,7 @@ min_feature_num: 95
 
 flow_back: true
 max_square_move_dist: 0.5
-min_gradient: 20.0
+min_gradient: 10.0
 enable_statistics: true
 
 # 特征与关键帧管理
@@ -32,15 +32,15 @@ reproj_huber_thres: 1.3
 min_landmark_observations: 3
 min_depth: 0.3
 max_depth: 10.0
-parallax_threshold: 20.0
+parallax_threshold: 25.0
 keyframe_min_connection_ratio: 0.70
 
 # 滑窗优化
-num_iterations: 6
-max_solver_time: 0.02
+num_iterations: 5
+max_solver_time: 0.020
 max_frame_count: 9
-visual_factor_weight: 8.7
-num_threads: 2
+visual_factor_weight: 6.7
+num_threads: 1
 
 # 时间延迟可观测性
 delay_obs_gyro_threshold: 0.1
@@ -55,8 +55,8 @@ gyr_n: 0.001
 gyr_w: 3.0e-5
 g_norm: 9.81007
 acc_bias: [0.0, 0.0, 0.0]
-imu_repropagate_ba_threshold: 0.08
-imu_repropagate_bg_threshold: 0.03
+imu_repropagate_ba_threshold: 0.05
+imu_repropagate_bg_threshold: 0.01
 
 # 视觉惯性初始化
 gravity_diff_threshold: 0.30

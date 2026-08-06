@@ -2,9 +2,12 @@ file(
   GLOB
   TASSEL_CORE_SRCS
   CONFIGURE_DEPENDS
+  ${CMAKE_CURRENT_SOURCE_DIR}/behavior/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/frond_end/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/factor/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/marg/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/marg/schmidt/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/solver/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/estimator/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/state/*.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cam/*.cpp
