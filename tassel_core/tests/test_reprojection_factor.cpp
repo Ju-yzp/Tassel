@@ -200,6 +200,43 @@ TEST_F(ReprojectionFactorTest, SharedFrameCachePreservesLinearization) {
     EXPECT_TRUE(uncached_jacobian_map.isApprox(cached_jacobian_map, 1e-12));
 }
 
+#if defined(CERES_HAS_EVALUATION_STEP_EVENTS)
+TEST_F(ReprojectionFactorTest, SharedFrameCacheRestoresRejectedTrialPoint) {
+    double delay = td_;
+    std::vector<VisualFrameCacheInput> inputs(2);
+    inputs[0] = {pose_i_, V_i_, w_i_, a_i_, Bg_, Ba_, 0.0};
+    inputs[1] = {pose_j_, V_j_, w_j_, a_j_, Bg_, Ba_, 0.0};
+    VisualFrameCache cache(std::move(inputs), &delay, ric_, tic_);
+    cache.addPair(0, 1);
+
+    cache.PrepareForEvaluation(true, true);
+    const Eigen::Vector3d accepted_translation =
+        cache.pair(0, 1, true).camera_relative_translation;
+
+    pose_i_[0] += 0.5;
+    cache.PrepareForEvaluation(false, true);
+    const Eigen::Vector3d rejected_trial_translation =
+        cache.pair(0, 1).camera_relative_translation;
+    EXPECT_GT((rejected_trial_translation - accepted_translation).norm(), 1e-3);
+    cache.OnEvaluationRejected();
+    EXPECT_TRUE(
+        cache.pair(0, 1, true).camera_relative_translation.isApprox(accepted_translation, 1e-12));
+
+    pose_i_[0] += 0.25;
+    cache.PrepareForEvaluation(false, true);
+    const Eigen::Vector3d committed_translation = cache.pair(0, 1).camera_relative_translation;
+    cache.OnEvaluationAccepted();
+    EXPECT_TRUE(cache.pair(0, 1).camera_relative_translation.isApprox(
+        committed_translation, 1e-12));
+
+    pose_i_[0] -= 1.0;
+    cache.PrepareForEvaluation(false, true);
+    cache.OnEvaluationRejected();
+    EXPECT_TRUE(cache.pair(0, 1).camera_relative_translation.isApprox(
+        committed_translation, 1e-12));
+}
+#endif
+
 TEST_F(ReprojectionFactorTest, FramePairPoseJacobiansMatchFiniteDifferences) {
     double delay = td_;
     auto make_cache = [&]() {

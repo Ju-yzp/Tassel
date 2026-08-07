@@ -2,6 +2,7 @@
 #define TASSEL_CORE_FACTOR_VISUAL_FRAME_CACHE_H_
 
 #include <ceres/evaluation_callback.h>
+#include <ceres/internal/config.h>
 #include <Eigen/Core>
 #include <sophus/so3.hpp>
 
@@ -77,6 +78,10 @@ public:
         const size_t pair_count = inputs_.size() * inputs_.size();
         pair_entries_.resize(pair_count);
         pair_active_.assign(pair_count, false);
+#if defined(CERES_HAS_EVALUATION_STEP_EVENTS)
+        accepted_entries_.resize(inputs_.size());
+        accepted_pair_entries_.resize(pair_count);
+#endif
     }
 
     void addPair(int host_index, int target_index) {
@@ -101,7 +106,18 @@ public:
             updatePairJacobians();
             jacobians_valid_ = true;
         }
+#if defined(CERES_HAS_EVALUATION_STEP_EVENTS)
+        if (!accepted_values_valid_) {
+            commitCurrentEvaluation();
+        }
+#endif
     }
+
+#if defined(CERES_HAS_EVALUATION_STEP_EVENTS)
+    void OnEvaluationAccepted() override { commitCurrentEvaluation(); }
+
+    void OnEvaluationRejected() override { restoreAcceptedEvaluation(); }
+#endif
 
     const VisualFrameCacheEntry& frame(int frame_index, bool require_jacobian = false) const {
         if (frame_index < 0 || frame_index >= static_cast<int>(entries_.size()) || !values_valid_) {
@@ -225,7 +241,33 @@ private:
         }
     }
 
+#if defined(CERES_HAS_EVALUATION_STEP_EVENTS)
+    void commitCurrentEvaluation() {
+        if (!values_valid_) {
+            throw std::logic_error("Visual frame cache cannot commit invalid values");
+        }
+        accepted_entries_ = entries_;
+        accepted_pair_entries_ = pair_entries_;
+        accepted_values_valid_ = values_valid_;
+        accepted_jacobians_valid_ = jacobians_valid_;
+    }
+
+    void restoreAcceptedEvaluation() {
+        if (!accepted_values_valid_) {
+            values_valid_ = false;
+            jacobians_valid_ = false;
+            return;
+        }
+        entries_ = accepted_entries_;
+        pair_entries_ = accepted_pair_entries_;
+        values_valid_ = accepted_values_valid_;
+        jacobians_valid_ = accepted_jacobians_valid_;
+    }
+#endif
+
     // Ceres 保证两次 PrepareForEvaluation 之间参数不变；输入指针覆盖整个 Problem 生命周期。
+    // 自定义 Ceres 的 step event 表达 trial 点是否进入后验；active cache 只服务本次
+    // Evaluate，accepted snapshot 表示上一次被优化器接受的线性化点。
 
     std::vector<VisualFrameCacheInput> inputs_;
     const double* delay_time_;
@@ -237,6 +279,12 @@ private:
     std::vector<std::pair<int, int>> active_pairs_;
     bool values_valid_ = false;
     bool jacobians_valid_ = false;
+#if defined(CERES_HAS_EVALUATION_STEP_EVENTS)
+    std::vector<VisualFrameCacheEntry> accepted_entries_;
+    std::vector<VisualPairCacheEntry> accepted_pair_entries_;
+    bool accepted_values_valid_ = false;
+    bool accepted_jacobians_valid_ = false;
+#endif
 };
 
 }  // namespace tassel_core
