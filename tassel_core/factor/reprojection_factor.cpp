@@ -157,7 +157,7 @@ bool ReprojectionFactor::evaluateCached(
     const bool require_jacobian = jacobians != nullptr;
     const auto& host = frame_cache->frame(host_frame_index, require_jacobian);
     const auto& target = frame_cache->frame(target_frame_index, require_jacobian);
-    const auto& pair = frame_cache->pair(host_frame_index, target_frame_index);
+    const auto& pair = frame_cache->pair(host_frame_index, target_frame_index, require_jacobian);
 
     const Eigen::Vector3d pi_in_C = uv_i / inv_depth;
     const Eigen::Vector3d pj_in_C =
@@ -184,31 +184,22 @@ bool ReprojectionFactor::evaluateCached(
         -pj_in_C.y() * inv_z * inv_z;
     const Eigen::Matrix<double, 2, 3> reduce =
         sqrt_info * distortion_jacobian * normalized_projection_jacobian;
-    const Eigen::Matrix<double, 2, 3> reduced_target_transform =
-        reduce * target.camera_inverse_compensated_rotation;
     const Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
 
-    if (jacobians[0]) {
-        Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_pose_i(jacobians[0]);
-        jacobian_pose_i.block<2, 3>(0, 0) = reduced_target_transform;
-        const double dt2 = host.dt * host.dt;
-        jacobian_pose_i.block<2, 3>(0, 3) =
-            -reduce * pair.host_pose_rotation *
-            (Sophus::SO3d::hat(host.delta_rotation * pi_in_I) +
-             0.5 * Sophus::SO3d::hat(host.acceleration * dt2) +
-             (1.0 / 6.0) * Sophus::SO3d::hat(host.body_rotational_acceleration * dt2 * host.dt)) *
-            host.rotation_parameter_jacobian;
-    }
+    if (jacobians[0] || jacobians[1]) {
+        Eigen::Matrix<double, 2, 6> relative_pose_jacobian;
+        relative_pose_jacobian.leftCols<3>() = reduce;
+        relative_pose_jacobian.rightCols<3>() = -reduce * Sophus::SO3d::hat(pj_in_C);
 
-    if (jacobians[1]) {
-        const Eigen::Vector3d pi_in_G = host.world_rotation * pi_in_I + host.compensated_position;
-        Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_pose_j(jacobians[1]);
-        jacobian_pose_j.block<2, 3>(0, 0) = -reduced_target_transform;
-        jacobian_pose_j.block<2, 3>(0, 3) =
-            reduce * target.camera_inverse_delta_rotation *
-            Sophus::SO3d::hat(
-                target.rotation.transpose() * (pi_in_G - target.target_rotation_origin)) *
-            target.rotation_parameter_jacobian;
+        // 帧对缓存映射到 ambient 参数，Ceres 随后通过 Manifold 转回右扰动切空间。
+        if (jacobians[0]) {
+            Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_pose_i(jacobians[0]);
+            jacobian_pose_i = relative_pose_jacobian * pair.host_pose_jacobian;
+        }
+        if (jacobians[1]) {
+            Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jacobian_pose_j(jacobians[1]);
+            jacobian_pose_j = relative_pose_jacobian * pair.target_pose_jacobian;
+        }
     }
 
     if (jacobians[2]) {

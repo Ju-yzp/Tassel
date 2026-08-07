@@ -12,4 +12,7 @@ datasets
 private_notes/
 dataset
 models/
-third_party/
+!third_party/
+third_party/*
+!third_party/ceres-solver/
+!third_party/ceres-solver/**

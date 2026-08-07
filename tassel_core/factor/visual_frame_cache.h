@@ -32,10 +32,8 @@ struct VisualFrameCacheEntry {
     Eigen::Matrix3d world_rotation = Eigen::Matrix3d::Identity();
     Eigen::Matrix3d inverse_compensated_rotation = Eigen::Matrix3d::Identity();
     Eigen::Matrix3d camera_inverse_compensated_rotation = Eigen::Matrix3d::Identity();
-    Eigen::Matrix3d camera_inverse_delta_rotation = Eigen::Matrix3d::Identity();
     Eigen::Vector3d position = Eigen::Vector3d::Zero();
     Eigen::Vector3d compensated_position = Eigen::Vector3d::Zero();
-    Eigen::Vector3d target_rotation_origin = Eigen::Vector3d::Zero();
     Eigen::Vector3d position_delay_jacobian = Eigen::Vector3d::Zero();
     Eigen::Vector3d omega = Eigen::Vector3d::Zero();
     Eigen::Vector3d acceleration = Eigen::Vector3d::Zero();
@@ -46,9 +44,11 @@ struct VisualFrameCacheEntry {
 struct VisualPairCacheEntry {
     Eigen::Matrix3d relative_rotation = Eigen::Matrix3d::Identity();
     Eigen::Matrix3d camera_relative_rotation = Eigen::Matrix3d::Identity();
-    Eigen::Matrix3d host_pose_rotation = Eigen::Matrix3d::Identity();
     Eigen::Vector3d relative_translation = Eigen::Vector3d::Zero();
     Eigen::Vector3d camera_relative_translation = Eigen::Vector3d::Zero();
+    // 将两端 pose ambient 增量映射为 T_Ct_Ch 的左扰动，列布局均为 [dP, dtheta]。
+    Eigen::Matrix<double, 6, 6> host_pose_jacobian = Eigen::Matrix<double, 6, 6>::Zero();
+    Eigen::Matrix<double, 6, 6> target_pose_jacobian = Eigen::Matrix<double, 6, 6>::Zero();
 };
 
 class VisualFrameCache final : public ceres::EvaluationCallback {
@@ -98,6 +98,7 @@ public:
                 const Eigen::Map<const Eigen::Vector3d> phi(inputs_[i].pose + 3);
                 entries_[i].rotation_parameter_jacobian = Sophus::SO3d::leftJacobian(-phi);
             }
+            updatePairJacobians();
             jacobians_valid_ = true;
         }
     }
@@ -112,10 +113,14 @@ public:
         return entries_[static_cast<size_t>(frame_index)];
     }
 
-    const VisualPairCacheEntry& pair(int host_index, int target_index) const {
+    const VisualPairCacheEntry& pair(
+        int host_index, int target_index, bool require_jacobian = false) const {
         const size_t index = pairIndex(host_index, target_index);
         if (!values_valid_ || !pair_active_[index]) {
             throw std::logic_error("Visual frame-pair cache entry is unavailable");
+        }
+        if (require_jacobian && !jacobians_valid_) {
+            throw std::logic_error("Visual frame-pair cache Jacobian is unavailable");
         }
         return pair_entries_[index];
     }
@@ -157,12 +162,9 @@ private:
             entry.inverse_compensated_rotation = kinematics.inverse_rotation;
             entry.camera_inverse_compensated_rotation =
                 ric_transpose * entry.inverse_compensated_rotation;
-            entry.camera_inverse_delta_rotation = ric_transpose * entry.delta_rotation.transpose();
 
             const double dt2 = entry.dt * entry.dt;
             entry.compensated_position = kinematics.position;
-            entry.target_rotation_origin =
-                entry.position + input.velocity * entry.dt - 0.5 * tassel_utils::G * dt2;
             entry.position_delay_jacobian = kinematics.velocity;
         }
 
@@ -180,12 +182,51 @@ private:
             pair_entry.camera_relative_translation =
                 ric_transpose *
                 (pair_entry.relative_rotation * tic_ + pair_entry.relative_translation - tic_);
-            pair_entry.host_pose_rotation =
+        }
+    }
+
+    void updatePairJacobians() {
+        for (const auto& [host_index, target_index] : active_pairs_) {
+            const auto& host = entries_[static_cast<size_t>(host_index)];
+            const auto& target = entries_[static_cast<size_t>(target_index)];
+            auto& pair_entry = pair_entries_[pairIndex(host_index, target_index)];
+
+            const double host_dt2 = host.dt * host.dt;
+            const double target_dt2 = target.dt * target.dt;
+            const Eigen::Vector3d host_rotation_offset =
+                0.5 * host.acceleration * host_dt2 +
+                (1.0 / 6.0) * host.body_rotational_acceleration * host_dt2 * host.dt +
+                host.delta_rotation * tic_;
+            const Eigen::Vector3d target_rotation_offset =
+                0.5 * target.acceleration * target_dt2 +
+                (1.0 / 6.0) * target.body_rotational_acceleration * target_dt2 * target.dt +
+                target.delta_rotation * tic_;
+            const Eigen::Matrix3d host_rotation =
                 target.camera_inverse_compensated_rotation * host.rotation;
+            const Eigen::Matrix3d target_rotation =
+                target.camera_inverse_compensated_rotation * target.rotation;
+
+            auto& host_jacobian = pair_entry.host_pose_jacobian;
+            host_jacobian.setZero();
+            host_jacobian.topLeftCorner<3, 3>() = target.camera_inverse_compensated_rotation;
+            host_jacobian.topRightCorner<3, 3>() =
+                -host_rotation * Sophus::SO3d::hat(host_rotation_offset) +
+                Sophus::SO3d::hat(pair_entry.camera_relative_translation) * host_rotation;
+            host_jacobian.bottomRightCorner<3, 3>() = host_rotation;
+            host_jacobian.rightCols<3>() *= host.rotation_parameter_jacobian;
+
+            auto& target_jacobian = pair_entry.target_pose_jacobian;
+            target_jacobian.setZero();
+            target_jacobian.topLeftCorner<3, 3>() = -target.camera_inverse_compensated_rotation;
+            target_jacobian.topRightCorner<3, 3>() =
+                target_rotation * Sophus::SO3d::hat(target_rotation_offset);
+            target_jacobian.bottomRightCorner<3, 3>() = -target_rotation;
+            target_jacobian.rightCols<3>() *= target.rotation_parameter_jacobian;
         }
     }
 
     // Ceres 保证两次 PrepareForEvaluation 之间参数不变；输入指针覆盖整个 Problem 生命周期。
+
     std::vector<VisualFrameCacheInput> inputs_;
     const double* delay_time_;
     Eigen::Matrix3d ric_;

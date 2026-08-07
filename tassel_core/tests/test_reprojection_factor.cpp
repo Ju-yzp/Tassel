@@ -23,6 +23,7 @@
 
 #include <ceres/ceres.h>
 #include <ceres/gradient_checker.h>
+#include <sophus/se3.hpp>
 #include <sophus/so3.hpp>
 
 #include "cam/camera_rad_tan.h"
@@ -160,13 +161,12 @@ TEST_F(ReprojectionFactorTest, SharedFrameCachePreservesLinearization) {
     inputs[1].accel_bias = Ba_;
     VisualFrameCache cache(std::move(inputs), &delay, ric_, tic_);
     cache.addPair(0, 1);
+    double inverse_depth = lms_[0].inv_depth;
     cache.PrepareForEvaluation(true, true);
     const auto& lm = lms_[0];
     ReprojectionFactor cached(
         lm.uv_i, lm.pt_j, ric_, tic_, w_i_, w_j_, a_i_, a_j_, v_i_, v_j_, bg_, bg_, ba_, ba_,
         sqrt_info_, &camera_, 0.0, 0.0, &cache, 0, 1);
-
-    double inverse_depth = lm.inv_depth;
     double const* parameters[] = {pose_i_, pose_j_, &delay, &inverse_depth};
     double uncached_residual[2];
     double cached_residual[2];
@@ -198,6 +198,57 @@ TEST_F(ReprojectionFactorTest, SharedFrameCachePreservesLinearization) {
         << "uncached=" << uncached_residual_map.transpose()
         << " cached=" << cached_residual_map.transpose();
     EXPECT_TRUE(uncached_jacobian_map.isApprox(cached_jacobian_map, 1e-12));
+}
+
+TEST_F(ReprojectionFactorTest, FramePairPoseJacobiansMatchFiniteDifferences) {
+    double delay = td_;
+    auto make_cache = [&]() {
+        std::vector<VisualFrameCacheInput> inputs(2);
+        inputs[0] = {pose_i_, V_i_, w_i_, a_i_, Bg_, Ba_, 0.0};
+        inputs[1] = {pose_j_, V_j_, w_j_, a_j_, Bg_, Ba_, 0.0};
+        auto cache = std::make_unique<VisualFrameCache>(std::move(inputs), &delay, ric_, tic_);
+        cache->addPair(0, 1);
+        return cache;
+    };
+
+    auto cache = make_cache();
+    cache->PrepareForEvaluation(true, true);
+    const auto& pair = cache->pair(0, 1, true);
+    const Sophus::SE3d relative_pose(
+        pair.camera_relative_rotation, pair.camera_relative_translation);
+    const Eigen::Matrix<double, 6, 6> host_jacobian = pair.host_pose_jacobian;
+    const Eigen::Matrix<double, 6, 6> target_jacobian = pair.target_pose_jacobian;
+
+    const double epsilon = 1e-7;
+    for (int block = 0; block < 2; ++block) {
+        double* pose = block == 0 ? pose_i_ : pose_j_;
+        const auto& expected = block == 0 ? host_jacobian : target_jacobian;
+        for (int column = 0; column < 6; ++column) {
+            pose[column] += epsilon;
+            auto plus_cache = make_cache();
+            plus_cache->PrepareForEvaluation(false, true);
+            const auto& plus_pair = plus_cache->pair(0, 1);
+            const Sophus::SE3d plus_pose(
+                plus_pair.camera_relative_rotation, plus_pair.camera_relative_translation);
+
+            pose[column] -= 2.0 * epsilon;
+            auto minus_cache = make_cache();
+            minus_cache->PrepareForEvaluation(false, true);
+            const auto& minus_pair = minus_cache->pair(0, 1);
+            const Sophus::SE3d minus_pose(
+                minus_pair.camera_relative_rotation, minus_pair.camera_relative_translation);
+            pose[column] += epsilon;
+
+            const Eigen::Matrix<double, 6, 1> numerical =
+                ((plus_pose * relative_pose.inverse()).log() -
+                 (minus_pose * relative_pose.inverse()).log()) /
+                (2.0 * epsilon);
+            EXPECT_TRUE(numerical.isApprox(expected.col(column), 1e-7))
+                << "block=" << block << " column=" << column
+                << "\nexpected=" << expected.col(column).transpose()
+                << "\nnumerical=" << numerical.transpose();
+        }
+    }
 }
 
 // =============================================================================
