@@ -542,6 +542,12 @@ void Estimator::optimize() {
 
     ceres::Solver::Options opts;
     opts.linear_solver_type = ceres::DENSE_SCHUR;
+#if defined(CERES_HAS_SCHUR_STRUCTURE_HINTS)
+    // VIO视觉残差布局固定为2维像素残差、1维逆深度消元块；其余状态块尺寸可变。
+    opts.schur_structure_row_block_size = 2;
+    opts.schur_structure_e_block_size = 1;
+    opts.schur_structure_f_block_size = -1;
+#endif
     opts.trust_region_strategy_type = ceresTrustRegionStrategy(params_.trust_region_strategy);
     auto ordering = std::make_shared<ceres::ParameterBlockOrdering>();
     // 每个视觉因子只包含一个逆深度，组0路标必须保持为 Hessian 图的独立集。
