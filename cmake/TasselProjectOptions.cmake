@@ -4,6 +4,8 @@ option(TASSEL_ENABLE_ASAN
        "Enable AddressSanitizer (leak / OOB / UAF detection)" OFF)
 option(TASSEL_ENABLE_PROFILING
        "Add frame-pointer + debug symbols for perf / VTune profiling" OFF)
+option(TASSEL_ENABLE_NATIVE_ARCH
+       "Compile local C++ targets for the build host ISA" OFF)
 function(tassel_setup_project_options)
   if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE
@@ -39,6 +41,19 @@ function(tassel_setup_project_options)
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options($<$<CONFIG:Release>:-O3>)
     message(STATUS "Release optimization: -O3")
+  endif()
+
+  if(TASSEL_ENABLE_NATIVE_ARCH)
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-march=native" TASSEL_HAS_MARCH_NATIVE)
+    if(NOT TASSEL_HAS_MARCH_NATIVE)
+      message(
+        FATAL_ERROR
+          "TASSEL_ENABLE_NATIVE_ARCH requires a compiler that supports -march=native"
+      )
+    endif()
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-march=native>)
+    message(STATUS "Native architecture optimization: ENABLED (-march=native)")
   endif()
 
   if(TASSEL_ENABLE_PROFILING)

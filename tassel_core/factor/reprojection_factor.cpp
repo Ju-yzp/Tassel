@@ -21,7 +21,7 @@ ReprojectionFactor::ReprojectionFactor(
     const double* v_j_, const double* bg_i_lin_, const double* bg_j_lin_, const double* ba_i_lin_,
     const double* ba_j_lin_, const Eigen::Matrix2d& sqrt_info_, const CameraBase* camera_,
     double sync_delay_i_, double sync_delay_j_, const VisualFrameCache* frame_cache_,
-    int host_frame_index_, int target_frame_index_)
+    int host_frame_index_, int target_frame_index_, int landmark_index_)
     : uv_i(uv_i_),
       pt_j(pt_j_),
       ric(ric_),
@@ -42,15 +42,24 @@ ReprojectionFactor::ReprojectionFactor(
       sync_delay_j(sync_delay_j_),
       frame_cache(frame_cache_),
       host_frame_index(host_frame_index_),
-      target_frame_index(target_frame_index_) {
+      target_frame_index(target_frame_index_),
+      landmark_index(landmark_index_) {
     if (frame_cache && (host_frame_index < 0 || target_frame_index < 0)) {
         throw std::invalid_argument("Cached reprojection factor requires valid frame indices");
+    }
+    if (frame_cache) {
+        cached_host_frame = frame_cache->framePtr(host_frame_index);
+        cached_target_frame = frame_cache->framePtr(target_frame_index);
+        cached_pair = frame_cache->pairPtr(host_frame_index, target_frame_index);
+        if (landmark_index >= 0) {
+            cached_landmark = frame_cache->landmarkPtr(landmark_index);
+        }
     }
 }
 
 bool ReprojectionFactor::Evaluate(
     double const* const* parameters, double* residuals, double** jacobians) const {
-    if (frame_cache) {
+    if (cached_pair) {
         return evaluateCached(parameters[3][0], residuals, jacobians);
     }
 
@@ -155,11 +164,13 @@ bool ReprojectionFactor::Evaluate(
 bool ReprojectionFactor::evaluateCached(
     double inv_depth, double* residuals, double** jacobians) const {
     const bool require_jacobian = jacobians != nullptr;
-    const auto& host = frame_cache->frame(host_frame_index, require_jacobian);
-    const auto& target = frame_cache->frame(target_frame_index, require_jacobian);
-    const auto& pair = frame_cache->pair(host_frame_index, target_frame_index, require_jacobian);
+    frame_cache->ensureReady(require_jacobian);
+    const auto& host = *cached_host_frame;
+    const auto& target = *cached_target_frame;
+    const auto& pair = *cached_pair;
 
-    const Eigen::Vector3d pi_in_C = uv_i / inv_depth;
+    const Eigen::Vector3d pi_in_C =
+        cached_landmark ? cached_landmark->camera_point : uv_i / inv_depth;
     const Eigen::Vector3d pj_in_C =
         pair.camera_relative_rotation * pi_in_C + pair.camera_relative_translation;
 
@@ -184,7 +195,8 @@ bool ReprojectionFactor::evaluateCached(
         -pj_in_C.y() * inv_z * inv_z;
     const Eigen::Matrix<double, 2, 3> reduce =
         sqrt_info * distortion_jacobian * normalized_projection_jacobian;
-    const Eigen::Vector3d pi_in_I = ric * pi_in_C + tic;
+    const Eigen::Vector3d pi_in_I =
+        cached_landmark ? cached_landmark->imu_point : ric * pi_in_C + tic;
 
     if (jacobians[0] || jacobians[1]) {
         Eigen::Matrix<double, 2, 6> relative_pose_jacobian;
@@ -215,7 +227,10 @@ bool ReprojectionFactor::evaluateCached(
 
     if (jacobians[3]) {
         Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_inv_depth(jacobians[3]);
-        jacobian_inv_depth = -reduce * pair.camera_relative_rotation * (pi_in_C / inv_depth);
+        const Eigen::Vector3d direction = cached_landmark
+            ? cached_landmark->inverse_depth_direction
+            : pi_in_C / inv_depth;
+        jacobian_inv_depth = -reduce * pair.camera_relative_rotation * direction;
     }
     return true;
 }

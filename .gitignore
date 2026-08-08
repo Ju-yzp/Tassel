@@ -12,6 +12,8 @@ datasets
 private_notes/
 dataset
 models/
+artifacts/
+config/log.cfg
 !third_party/
 third_party/*
 !third_party/ceres-solver/

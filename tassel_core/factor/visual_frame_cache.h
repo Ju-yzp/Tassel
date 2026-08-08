@@ -52,6 +52,17 @@ struct VisualPairCacheEntry {
     Eigen::Matrix<double, 6, 6> target_pose_jacobian = Eigen::Matrix<double, 6, 6>::Zero();
 };
 
+struct VisualLandmarkCacheInput {
+    Eigen::Vector3d bearing = Eigen::Vector3d::Zero();
+    const double* inverse_depth = nullptr;
+};
+
+struct VisualLandmarkCacheEntry {
+    Eigen::Vector3d camera_point = Eigen::Vector3d::Zero();
+    Eigen::Vector3d imu_point = Eigen::Vector3d::Zero();
+    Eigen::Vector3d inverse_depth_direction = Eigen::Vector3d::Zero();
+};
+
 class VisualFrameCache final : public ceres::EvaluationCallback {
 public:
     VisualFrameCache(
@@ -90,6 +101,29 @@ public:
             pair_active_[index] = true;
             active_pairs_.emplace_back(host_index, target_index);
         }
+    }
+
+    void reserveLandmarks(size_t count) {
+        if (values_valid_) {
+            throw std::logic_error("Cannot reserve landmarks after cache evaluation");
+        }
+        landmark_inputs_.reserve(count);
+        landmark_entries_.reserve(count);
+#if defined(CERES_HAS_EVALUATION_STEP_EVENTS)
+        accepted_landmark_entries_.reserve(count);
+#endif
+    }
+
+    int addLandmark(const Eigen::Vector3d& bearing, const double* inverse_depth) {
+        if (values_valid_) {
+            throw std::logic_error("Cannot add a landmark after cache evaluation");
+        }
+        if (!bearing.allFinite() || !inverse_depth) {
+            throw std::invalid_argument("Visual landmark cache input is invalid");
+        }
+        landmark_inputs_.push_back({bearing, inverse_depth});
+        landmark_entries_.emplace_back();
+        return static_cast<int>(landmark_entries_.size() - 1);
     }
 
     void PrepareForEvaluation(bool evaluate_jacobians, bool new_evaluation_point) override {
@@ -139,6 +173,39 @@ public:
             throw std::logic_error("Visual frame-pair cache Jacobian is unavailable");
         }
         return pair_entries_[index];
+    }
+
+    void ensureReady(bool require_jacobian) const {
+        if (!values_valid_) {
+            throw std::logic_error("Visual frame cache entry is unavailable");
+        }
+        if (require_jacobian && !jacobians_valid_) {
+            throw std::logic_error("Visual frame cache Jacobian is unavailable");
+        }
+    }
+
+    // 帧、帧对和 landmark 容器在所有因子创建前完成 reserve；优化期间只改元素内容，
+    // 因子持有的缓存指针不会因 vector 扩容失效。
+    const VisualFrameCacheEntry* framePtr(int frame_index) const {
+        if (frame_index < 0 || frame_index >= static_cast<int>(entries_.size())) {
+            throw std::out_of_range("Visual frame cache frame index is outside the active window");
+        }
+        return &entries_[static_cast<size_t>(frame_index)];
+    }
+
+    const VisualPairCacheEntry* pairPtr(int host_index, int target_index) const {
+        const size_t index = pairIndex(host_index, target_index);
+        if (!pair_active_[index]) {
+            throw std::logic_error("Visual frame-pair cache entry is unavailable");
+        }
+        return &pair_entries_[index];
+    }
+
+    const VisualLandmarkCacheEntry* landmarkPtr(int landmark_index) const {
+        if (landmark_index < 0 || landmark_index >= static_cast<int>(landmark_entries_.size())) {
+            throw std::out_of_range("Visual landmark index is outside the active cache");
+        }
+        return &landmark_entries_[static_cast<size_t>(landmark_index)];
     }
 
 private:
@@ -199,6 +266,18 @@ private:
                 ric_transpose *
                 (pair_entry.relative_rotation * tic_ + pair_entry.relative_translation - tic_);
         }
+
+        for (size_t i = 0; i < landmark_inputs_.size(); ++i) {
+            const auto& input = landmark_inputs_[i];
+            const double inverse_depth = *input.inverse_depth;
+            if (!std::isfinite(inverse_depth) || std::abs(inverse_depth) < 1e-12) {
+                throw std::runtime_error("Visual landmark inverse depth is invalid");
+            }
+            auto& entry = landmark_entries_[i];
+            entry.camera_point = input.bearing / inverse_depth;
+            entry.imu_point = ric_ * entry.camera_point + tic_;
+            entry.inverse_depth_direction = entry.camera_point / inverse_depth;
+        }
     }
 
     void updatePairJacobians() {
@@ -248,6 +327,7 @@ private:
         }
         accepted_entries_ = entries_;
         accepted_pair_entries_ = pair_entries_;
+        accepted_landmark_entries_ = landmark_entries_;
         accepted_values_valid_ = values_valid_;
         accepted_jacobians_valid_ = jacobians_valid_;
     }
@@ -260,6 +340,7 @@ private:
         }
         entries_ = accepted_entries_;
         pair_entries_ = accepted_pair_entries_;
+        landmark_entries_ = accepted_landmark_entries_;
         values_valid_ = accepted_values_valid_;
         jacobians_valid_ = accepted_jacobians_valid_;
     }
@@ -277,11 +358,14 @@ private:
     std::vector<VisualPairCacheEntry> pair_entries_;
     std::vector<bool> pair_active_;
     std::vector<std::pair<int, int>> active_pairs_;
+    std::vector<VisualLandmarkCacheInput> landmark_inputs_;
+    std::vector<VisualLandmarkCacheEntry> landmark_entries_;
     bool values_valid_ = false;
     bool jacobians_valid_ = false;
 #if defined(CERES_HAS_EVALUATION_STEP_EVENTS)
     std::vector<VisualFrameCacheEntry> accepted_entries_;
     std::vector<VisualPairCacheEntry> accepted_pair_entries_;
+    std::vector<VisualLandmarkCacheEntry> accepted_landmark_entries_;
     bool accepted_values_valid_ = false;
     bool accepted_jacobians_valid_ = false;
 #endif

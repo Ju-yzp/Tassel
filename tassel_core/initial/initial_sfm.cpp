@@ -375,7 +375,8 @@ bool InitialSFM::reconstructScene(
         ceres::Solver::Options options;
         options.linear_solver_type = ceres::DENSE_SCHUR;
         options.max_num_iterations = ba_max_iterations_;
-        options.num_threads = ba_num_threads_;
+        // 初始化 BA 规模较小，固定单线程避免并行调度成本。
+        options.num_threads = 1;
         options.logging_type = ceres::SILENT;
         ceres::Solver::Summary summary;
         ceres::Solve(options, &problem, &summary);

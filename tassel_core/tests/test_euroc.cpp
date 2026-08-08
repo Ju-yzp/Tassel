@@ -45,6 +45,7 @@
 #include "frond_end/feature_manager.h"
 #include "frond_end/feature_tracker.h"
 #include "parameters/parameters.h"
+#include "profiling/vtune_profile_scope.h"
 #include "state/state.h"
 #include "viewer/viewer.h"
 
@@ -466,6 +467,8 @@ int main(int argc, char** argv) {
     if (!std::isfinite(replay_hz) || replay_hz <= 0.0) {
         throw std::invalid_argument("replay_hz must be finite and positive");
     }
+    tassel_core::profiling::pauseVtuneCollection();
+    constexpr bool kBackendProfileOnly = true;
 
     const fs::path resolved_sequence_dir = resolveSequenceDir(sequence_dir);
     if (!fs::exists(resolved_sequence_dir / "mav0" / "cam0" / "data.csv")) {
@@ -493,31 +496,40 @@ int main(int argc, char** argv) {
     auto camera = initializeCamera(params);
 
     rclcpp::init(argc, argv);
-    auto viewer = std::make_shared<tassel_tools::Viewer>("odom");
-    rclcpp::QoS image_qos(rclcpp::KeepLast(1));
-    image_qos.best_effort().durability_volatile();
-    viewer->createImagePublisher("mono/image", image_qos);
-    viewer->createOdometryPublisher("imu_link", "vio/odometry");
-    viewer->createOdometryPublisher(
-        "camera_optical_frame", "vio/camera_odometry", rclcpp::QoS(10), false);
-    viewer->publishStaticTransform(
-        "imu_link", "camera_optical_frame", params.tic,
-        Eigen::Quaterniond(params.ric).normalized());
-    viewer->createPathPublisher("vio/path", rclcpp::QoS(10), params.viewer_path_max_poses);
-    viewer->createPathPublisher("ground_truth/path", rclcpp::QoS(10), params.viewer_path_max_poses);
-    viewer->createCompressedImagePublisher("optimization/visual_window", image_qos);
-    viewer->createVector3Publisher("vio/ba");
-    viewer->createVector3Publisher("vio/bg");
+    std::shared_ptr<tassel_tools::Viewer> viewer;
+    if (!kBackendProfileOnly) {
+        viewer = std::make_shared<tassel_tools::Viewer>("odom");
+        rclcpp::QoS image_qos(rclcpp::KeepLast(1));
+        image_qos.best_effort().durability_volatile();
+        viewer->createImagePublisher("mono/image", image_qos);
+        viewer->createOdometryPublisher("imu_link", "vio/odometry");
+        viewer->createOdometryPublisher(
+            "camera_optical_frame", "vio/camera_odometry", rclcpp::QoS(10), false);
+        viewer->publishStaticTransform(
+            "imu_link", "camera_optical_frame", params.tic,
+            Eigen::Quaterniond(params.ric).normalized());
+        viewer->createPathPublisher("vio/path", rclcpp::QoS(10), params.viewer_path_max_poses);
+        viewer->createPathPublisher(
+            "ground_truth/path", rclcpp::QoS(10), params.viewer_path_max_poses);
+        viewer->createCompressedImagePublisher("optimization/visual_window", image_qos);
+        viewer->createVector3Publisher("vio/ba");
+        viewer->createVector3Publisher("vio/bg");
+    }
 
     rclcpp::executors::SingleThreadedExecutor executor;
-    executor.add_node(viewer);
+    if (viewer) {
+        executor.add_node(viewer);
+    }
     std::atomic_bool stop_executor{false};
-    std::thread spin_thread([&]() {
-        while (rclcpp::ok() && !stop_executor.load()) {
-            executor.spin_some(std::chrono::milliseconds(5));
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-    });
+    std::thread spin_thread;
+    if (!kBackendProfileOnly) {
+        spin_thread = std::thread([&]() {
+            while (rclcpp::ok() && !stop_executor.load()) {
+                executor.spin_some(std::chrono::milliseconds(5));
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        });
+    }
 
     const CameraBase* camera_ptr = camera.get();
     FeatureTracker tracker(
@@ -541,14 +553,16 @@ int main(int argc, char** argv) {
     estimator.setPoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment,
                                &evaluated_poses, &params](
                                   double ts, const Sophus::SE3d& pose) {
-        viewer->publishOdometry(
-            "vio/odometry", pose.translation(), pose.unit_quaternion(), Eigen::Vector3d::Zero(),
-            Eigen::Vector3d::Zero(), ts);
-        const Sophus::SE3d camera_pose = pose * Sophus::SE3d(params.ric, params.tic);
-        viewer->publishOdometry(
-            "vio/camera_odometry", camera_pose.translation(), camera_pose.unit_quaternion(),
-            Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), ts);
-        viewer->publishPath("vio/path", pose.translation(), pose.unit_quaternion(), ts);
+        if (viewer) {
+            viewer->publishOdometry(
+                "vio/odometry", pose.translation(), pose.unit_quaternion(),
+                Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), ts);
+            const Sophus::SE3d camera_pose = pose * Sophus::SE3d(params.ric, params.tic);
+            viewer->publishOdometry(
+                "vio/camera_odometry", camera_pose.translation(), camera_pose.unit_quaternion(),
+                Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), ts);
+            viewer->publishPath("vio/path", pose.translation(), pose.unit_quaternion(), ts);
+        }
         if (const auto truth = interpolateGroundTruth(ground_truth, ts)) {
             evaluated_poses.push_back({pose, *truth});
             if (!ground_truth_alignment) {
@@ -556,21 +570,27 @@ int main(int argc, char** argv) {
                 ground_truth_alignment = pose * truth->inverse();
             }
             const Sophus::SE3d aligned_truth = *ground_truth_alignment * *truth;
-            viewer->publishPath(
-                "ground_truth/path", aligned_truth.translation(), aligned_truth.unit_quaternion(),
-                ts);
+            if (viewer) {
+                viewer->publishPath(
+                    "ground_truth/path", aligned_truth.translation(),
+                    aligned_truth.unit_quaternion(), ts);
+            }
         }
         const Eigen::Vector3d& velocity = state->frames[state->latest_frame_index].V;
-        viewer->publishVector3("vio/ba", state->frames[state->latest_frame_index].Ba, ts);
-        viewer->publishVector3("vio/bg", state->frames[state->latest_frame_index].Bg, ts);
+        if (viewer) {
+            viewer->publishVector3("vio/ba", state->frames[state->latest_frame_index].Ba, ts);
+            viewer->publishVector3("vio/bg", state->frames[state->latest_frame_index].Bg, ts);
+        }
         std::cout << "[pose] t=" << ts << " p=" << pose.translation().transpose()
                   << " |V|=" << velocity.norm() << "\n";
     });
-    estimator.setVisualFactorCallback(
-        [&viewer](double /*ts*/, const std::vector<int>& visual_factors_per_frame) {
-            viewer->publishVisualFactorWindow(
-                "optimization/visual_window", visual_factors_per_frame);
-        });
+    if (viewer) {
+        estimator.setVisualFactorCallback(
+            [&viewer](double /*ts*/, const std::vector<int>& visual_factors_per_frame) {
+                viewer->publishVisualFactorWindow(
+                    "optimization/visual_window", visual_factors_per_frame);
+            });
+    }
     BlockingDatasetSync sync;
 
     std::atomic_bool imu_done{false};
@@ -586,9 +606,11 @@ int main(int argc, char** argv) {
     bool mono_load_done = false;
     constexpr size_t kMaxLoadedMonoFrames = 30;
     const size_t preload_target = std::min(frame_limit, kMaxLoadedMonoFrames);
-
-    std::thread mono_loader_thread([&]() {
-        for (size_t i = 0; i < frame_limit && rclcpp::ok() && !stop_reader.load(); ++i) {
+    std::vector<std::shared_ptr<MonoObservation>> preloaded_mono;
+    if (kBackendProfileOnly) {
+        // 后端 profiling 先离线预读全部图像，避免 imread 进入优化/边缘化采样窗口。
+        preloaded_mono.reserve(frame_limit);
+        for (size_t i = 0; i < frame_limit; ++i) {
             const auto& frame = frames[i];
             cv::Mat left_img = cv::imread(frame.left_path.string(), cv::IMREAD_GRAYSCALE);
             if (left_img.empty()) {
@@ -600,32 +622,57 @@ int main(int argc, char** argv) {
             auto mono_msg = std::make_shared<MonoObservation>();
             mono_msg->timestamp = frame.frame_id;
             mono_msg->left_img = std::move(left_img);
+            preloaded_mono.push_back(std::move(mono_msg));
+        }
+        if (preloaded_mono.size() != frame_limit) {
+            throw std::runtime_error("Failed to preload the full mono sequence for profiling");
+        }
+    }
 
-            {
-                std::unique_lock<std::mutex> lock(loaded_mono_mutex);
-                loaded_mono_cv.wait(lock, [&]() {
-                    return stop_reader.load() || loaded_mono_queue.size() < kMaxLoadedMonoFrames;
-                });
-                if (stop_reader.load()) {
+    std::thread mono_loader_thread;
+    if (!kBackendProfileOnly) {
+        mono_loader_thread = std::thread([&]() {
+            for (size_t i = 0; i < frame_limit && rclcpp::ok() && !stop_reader.load(); ++i) {
+                const auto& frame = frames[i];
+                cv::Mat left_img = cv::imread(frame.left_path.string(), cv::IMREAD_GRAYSCALE);
+                if (left_img.empty()) {
+                    std::cerr << "[EuRoC] failed to read mono image at t="
+                              << tassel_utils::frameIdToSeconds(frame.frame_id) << "\n";
                     break;
                 }
-                loaded_mono_queue.push_back(std::move(mono_msg));
+
+                auto mono_msg = std::make_shared<MonoObservation>();
+                mono_msg->timestamp = frame.frame_id;
+                mono_msg->left_img = std::move(left_img);
+
+                {
+                    std::unique_lock<std::mutex> lock(loaded_mono_mutex);
+                    loaded_mono_cv.wait(lock, [&]() {
+                        return stop_reader.load() ||
+                               loaded_mono_queue.size() < kMaxLoadedMonoFrames;
+                    });
+                    if (stop_reader.load()) {
+                        break;
+                    }
+                    loaded_mono_queue.push_back(std::move(mono_msg));
+                }
+                loaded_mono_cv.notify_all();
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(loaded_mono_mutex);
+                mono_load_done = true;
             }
             loaded_mono_cv.notify_all();
-        }
+        });
 
         {
-            std::lock_guard<std::mutex> lock(loaded_mono_mutex);
-            mono_load_done = true;
+            std::unique_lock<std::mutex> lock(loaded_mono_mutex);
+            loaded_mono_cv.wait(lock, [&]() {
+                return loaded_mono_queue.size() >= preload_target || mono_load_done ||
+                       !rclcpp::ok();
+            });
         }
-        loaded_mono_cv.notify_all();
-    });
-
-    {
-        std::unique_lock<std::mutex> lock(loaded_mono_mutex);
-        loaded_mono_cv.wait(lock, [&]() {
-            return loaded_mono_queue.size() >= preload_target || mono_load_done || !rclcpp::ok();
-        });
     }
 
     const double first_frame_ts = tassel_utils::frameIdToSeconds(frames.front().frame_id);
@@ -647,75 +694,101 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_until(target_time);
     };
 
-    std::thread image_publish_thread([&]() {
-        const auto period = std::chrono::duration<double>(1.0 / replay_hz);
-        auto next_tick = std::chrono::steady_clock::now();
-        while (rclcpp::ok() && !stop_image_publisher.load()) {
-            LatestDisplayImage image;
-            {
-                std::lock_guard<std::mutex> lock(latest_image_mutex);
-                image.image = latest_image.image.clone();
+    std::thread image_publish_thread;
+    if (!kBackendProfileOnly) {
+        image_publish_thread = std::thread([&]() {
+            const auto period = std::chrono::duration<double>(1.0 / replay_hz);
+            auto next_tick = std::chrono::steady_clock::now();
+            while (rclcpp::ok() && !stop_image_publisher.load()) {
+                LatestDisplayImage image;
+                {
+                    std::lock_guard<std::mutex> lock(latest_image_mutex);
+                    image.image = latest_image.image.clone();
+                }
+                publishMonoImage(viewer, image);
+
+                next_tick +=
+                    std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
+                std::this_thread::sleep_until(next_tick);
             }
-            publishMonoImage(viewer, image);
+        });
+    }
 
-            next_tick += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
-            std::this_thread::sleep_until(next_tick);
-        }
-    });
-
-    std::thread imu_reader_thread([&]() {
+    std::thread imu_reader_thread;
+    std::thread mono_reader_thread;
+    if (kBackendProfileOnly) {
+        // 后端 profiling 采用离线一次性灌入，避免 replay 调度和 sleep_until 污染采样窗口。
         for (const auto& imu : imu_measurements) {
-            if (!rclcpp::ok() || stop_reader.load()) {
-                break;
-            }
             if (imu.timestamp > playback_end_ts) {
                 break;
             }
-            if (imu.timestamp > playback_start_ts) {
-                sleep_until_sensor_time(imu.timestamp);
+            if (imu.timestamp >= playback_start_ts) {
+                sync.pushImu(imu);
+                ++produced_imu;
             }
-            if (!rclcpp::ok() || stop_reader.load()) {
-                break;
-            }
-            sync.pushImu(imu);
-            ++produced_imu;
         }
-        imu_done = true;
         sync.closeImu();
-    });
 
-    std::thread mono_reader_thread([&]() {
-        while (rclcpp::ok() && !stop_reader.load()) {
-            std::shared_ptr<MonoObservation> mono_msg;
-            {
-                std::unique_lock<std::mutex> lock(loaded_mono_mutex);
-                loaded_mono_cv.wait(lock, [&]() {
-                    return stop_reader.load() || !loaded_mono_queue.empty() || mono_load_done;
-                });
-                if (stop_reader.load()) {
-                    break;
-                }
-                if (loaded_mono_queue.empty()) {
-                    if (mono_load_done) {
-                        break;
-                    }
-                    continue;
-                }
-                mono_msg = std::move(loaded_mono_queue.front());
-                loaded_mono_queue.pop_front();
-            }
-            loaded_mono_cv.notify_all();
-
-            sleep_until_sensor_time(mono_msg->get_timestamp());
-            if (!rclcpp::ok() || stop_reader.load()) {
-                break;
-            }
+        for (auto& mono_msg : preloaded_mono) {
             sync.pushMono(mono_msg);
             ++produced;
         }
-
         sync.closeMono();
-    });
+    } else {
+        imu_reader_thread = std::thread([&]() {
+            for (const auto& imu : imu_measurements) {
+                if (!rclcpp::ok() || stop_reader.load()) {
+                    break;
+                }
+                if (imu.timestamp > playback_end_ts) {
+                    break;
+                }
+                if (imu.timestamp > playback_start_ts) {
+                    sleep_until_sensor_time(imu.timestamp);
+                }
+                if (!rclcpp::ok() || stop_reader.load()) {
+                    break;
+                }
+                sync.pushImu(imu);
+                ++produced_imu;
+            }
+            imu_done = true;
+            sync.closeImu();
+        });
+
+        mono_reader_thread = std::thread([&]() {
+            while (rclcpp::ok() && !stop_reader.load()) {
+                std::shared_ptr<MonoObservation> mono_msg;
+                {
+                    std::unique_lock<std::mutex> lock(loaded_mono_mutex);
+                    loaded_mono_cv.wait(lock, [&]() {
+                        return stop_reader.load() || !loaded_mono_queue.empty() || mono_load_done;
+                    });
+                    if (stop_reader.load()) {
+                        break;
+                    }
+                    if (loaded_mono_queue.empty()) {
+                        if (mono_load_done) {
+                            break;
+                        }
+                        continue;
+                    }
+                    mono_msg = std::move(loaded_mono_queue.front());
+                    loaded_mono_queue.pop_front();
+                }
+                loaded_mono_cv.notify_all();
+
+                sleep_until_sensor_time(mono_msg->get_timestamp());
+                if (!rclcpp::ok() || stop_reader.load()) {
+                    break;
+                }
+                sync.pushMono(mono_msg);
+                ++produced;
+            }
+
+            sync.closeMono();
+        });
+    }
 
     size_t processed = 0;
     while (rclcpp::ok()) {
@@ -738,11 +811,13 @@ int main(int argc, char** argv) {
             feature.sync_delay = packet.sync_delay;
         }
 
-        cv::Mat left_tracking = packet.mono->left_img.clone();
-        tracker.drawTrackingResult(left_tracking);
-        {
-            std::lock_guard<std::mutex> lock(latest_image_mutex);
-            latest_image.image = std::move(left_tracking);
+        if (!kBackendProfileOnly) {
+            cv::Mat left_tracking = packet.mono->left_img.clone();
+            tracker.drawTrackingResult(left_tracking);
+            {
+                std::lock_guard<std::mutex> lock(latest_image_mutex);
+                latest_image.image = std::move(left_tracking);
+            }
         }
         const auto after_visualization = std::chrono::steady_clock::now();
 

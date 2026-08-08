@@ -162,11 +162,13 @@ TEST_F(ReprojectionFactorTest, SharedFrameCachePreservesLinearization) {
     VisualFrameCache cache(std::move(inputs), &delay, ric_, tic_);
     cache.addPair(0, 1);
     double inverse_depth = lms_[0].inv_depth;
-    cache.PrepareForEvaluation(true, true);
     const auto& lm = lms_[0];
+    cache.reserveLandmarks(1);
+    const int landmark_index = cache.addLandmark(lm.uv_i, &inverse_depth);
+    cache.PrepareForEvaluation(false, true);
     ReprojectionFactor cached(
         lm.uv_i, lm.pt_j, ric_, tic_, w_i_, w_j_, a_i_, a_j_, v_i_, v_j_, bg_, bg_, ba_, ba_,
-        sqrt_info_, &camera_, 0.0, 0.0, &cache, 0, 1);
+        sqrt_info_, &camera_, 0.0, 0.0, &cache, 0, 1, landmark_index);
     double const* parameters[] = {pose_i_, pose_j_, &delay, &inverse_depth};
     double uncached_residual[2];
     double cached_residual[2];
@@ -178,6 +180,8 @@ TEST_F(ReprojectionFactorTest, SharedFrameCachePreservesLinearization) {
         cached_jacobian, cached_jacobian + 12, cached_jacobian + 24, cached_jacobian + 26};
 
     ASSERT_TRUE(uncached->Evaluate(parameters, uncached_residual, uncached_blocks));
+    ASSERT_TRUE(cached.Evaluate(parameters, cached_residual, nullptr));
+    cache.PrepareForEvaluation(true, false);
     ASSERT_TRUE(cached.Evaluate(parameters, cached_residual, cached_blocks));
     const Eigen::Map<const Eigen::Vector2d> uncached_residual_map(uncached_residual);
     const Eigen::Map<const Eigen::Vector2d> cached_residual_map(cached_residual);
