@@ -10,6 +10,16 @@ install
 build_debug
 datasets
 private_notes/
+private_hardware/
+tassel_hardware/
+tassel_core/tests/test_nori_estimator.cpp
+config/tassel.yaml
+config/nori_valid_mask.png
 dataset
 models/
-third_party/
+artifacts/
+config/log.cfg
+!third_party/
+third_party/*
+!third_party/ceres-solver/
+!third_party/ceres-solver/**

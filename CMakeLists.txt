@@ -3,7 +3,7 @@ project(
   tassel
   VERSION 1.0.0
   DESCRIPTION
-    "Research-oriented visual-inertial odometry with native hardware support"
+    "Research-oriented visual-inertial odometry"
   HOMEPAGE_URL "https://github.com/Ju-yzp/Tassel"
   LANGUAGES CXX)
 
@@ -18,7 +18,9 @@ tassel_configure_dependencies()
 enable_testing()
 
 add_subdirectory(tassel_utils)
-add_subdirectory(tassel_hardware)
+if(EXISTS "${CMAKE_SOURCE_DIR}/tassel_hardware/CMakeLists.txt")
+  add_subdirectory(tassel_hardware)
+endif()
 add_subdirectory(tassel_core)
 add_subdirectory(tassel_tools)
 

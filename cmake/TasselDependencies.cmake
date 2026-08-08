@@ -12,6 +12,10 @@ function(tassel_configure_dependencies)
   set(TASSEL_VISION_PREFIX
       ""
       CACHE PATH "Prefix containing a consistent OpenCV and DBoW3 build")
+  option(TASSEL_USE_VENDORED_CERES
+         "Build Ceres from third_party/ceres-solver" ON)
+  option(TASSEL_VIO_SCHUR_SPECIALIZATION
+         "Build the scalar inverse-depth Schur specialization" ON)
   if(TASSEL_MATH_PREFIX)
     list(PREPEND CMAKE_PREFIX_PATH "${TASSEL_MATH_PREFIX}")
   endif()
@@ -52,19 +56,39 @@ function(tassel_configure_dependencies)
         "${TASSEL_MATH_PREFIX}/share/sophus/cmake"
         CACHE PATH "Sophus package directory" FORCE)
     find_package(Sophus REQUIRED NO_DEFAULT_PATH)
-    set(Ceres_DIR
-        "${TASSEL_MATH_PREFIX}/lib/cmake/Ceres"
-        CACHE PATH "Ceres package directory" FORCE)
-    find_package(Ceres REQUIRED NO_DEFAULT_PATH)
   else()
     find_package(Sophus REQUIRED)
-    find_package(Ceres REQUIRED)
   endif()
-  if(NOT CERES_EIGEN_VERSION VERSION_EQUAL Eigen3_VERSION)
-    message(
-      FATAL_ERROR
-        "Ceres Eigen ${CERES_EIGEN_VERSION} does not match project Eigen ${Eigen3_VERSION}"
-    )
+
+  if(TASSEL_USE_VENDORED_CERES)
+    set(BUILD_TESTING OFF CACHE BOOL "Disable vendored Ceres tests" FORCE)
+    set(BUILD_EXAMPLES OFF CACHE BOOL "Disable vendored Ceres examples" FORCE)
+    set(BUILD_BENCHMARKS OFF CACHE BOOL "Disable vendored Ceres benchmarks" FORCE)
+    set(BUILD_DOCUMENTATION OFF CACHE BOOL "Disable vendored Ceres documentation" FORCE)
+    set(PROVIDE_UNINSTALL_TARGET OFF CACHE BOOL
+        "Disable vendored Ceres uninstall target" FORCE)
+    set(EXPORT_BUILD_DIR OFF CACHE BOOL "Disable vendored Ceres package export" FORCE)
+    set(USE_CUDA OFF CACHE BOOL "Disable vendored Ceres CUDA support" FORCE)
+    set(MINIGLOG ON CACHE BOOL "Use Ceres miniglog" FORCE)
+    set(GFLAGS ON CACHE BOOL "Enable Ceres gflags support" FORCE)
+    add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/ceres-solver"
+                     "${CMAKE_BINARY_DIR}/third_party/ceres-solver"
+                     EXCLUDE_FROM_ALL)
+  else()
+    if(TASSEL_MATH_PREFIX)
+      set(Ceres_DIR
+          "${TASSEL_MATH_PREFIX}/lib/cmake/Ceres"
+          CACHE PATH "Ceres package directory" FORCE)
+      find_package(Ceres REQUIRED NO_DEFAULT_PATH)
+    else()
+      find_package(Ceres REQUIRED)
+    endif()
+    if(NOT CERES_EIGEN_VERSION VERSION_EQUAL Eigen3_VERSION)
+      message(
+        FATAL_ERROR
+          "Ceres Eigen ${CERES_EIGEN_VERSION} does not match project Eigen ${Eigen3_VERSION}"
+      )
+    endif()
   endif()
   find_package(GTSAM REQUIRED)
   find_package(fastcdr REQUIRED)

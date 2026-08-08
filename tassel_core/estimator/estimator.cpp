@@ -37,6 +37,7 @@
 #include "marg/marginalization_sqrt.h"
 #include "marg/schmidt/schmidt_prior_covariance.h"
 #include "marg/schmidt/schmidt_window_update.h"
+#include "profiling/vtune_profile_scope.h"
 #include "solver/parameter_block_hold_callback.h"
 #include "tassel_utils/macros.h"
 #include "tassel_utils/se3_right_manifold.h"
@@ -88,6 +89,60 @@ bool allFinite(const Range& values) {
     return std::all_of(
         values.begin(), values.end(), [](double value) { return std::isfinite(value); });
 }
+
+#if defined(CERES_HAS_SCHUR_LAYOUT_CALLBACK)
+ceres::Solver::Options::SchurLayoutCallback makeSchurLayoutCallback() {
+    return [](int chunk_index,
+              const std::vector<int>& default_block_order,
+              const std::vector<int>& block_sizes,
+              std::vector<int>* block_order) {
+        (void)chunk_index;
+        if (block_order == nullptr) {
+            throw std::invalid_argument("Schur layout callback received a null output");
+        }
+        if (default_block_order.size() != block_sizes.size()) {
+            throw std::invalid_argument("Schur layout callback received mismatched layout data");
+        }
+
+        struct RankedBlock {
+            int priority;
+            int order;
+            int block_id;
+        };
+
+        std::vector<RankedBlock> ranked;
+        ranked.reserve(default_block_order.size());
+        auto blockPriority = [](int size) {
+            if (size == 6) {
+                return 0;
+            }
+            if (size == 9) {
+                return 1;
+            }
+            if (size == 1) {
+                return 2;
+            }
+            return 3;
+        };
+        for (int i = 0; i < static_cast<int>(default_block_order.size()); ++i) {
+            ranked.push_back(
+                {blockPriority(block_sizes[static_cast<size_t>(i)]), i, default_block_order[static_cast<size_t>(i)]});
+        }
+        std::stable_sort(ranked.begin(), ranked.end(), [](const RankedBlock& a, const RankedBlock& b) {
+            if (a.priority != b.priority) {
+                return a.priority < b.priority;
+            }
+            return a.order < b.order;
+        });
+
+        block_order->clear();
+        block_order->reserve(ranked.size());
+        for (const RankedBlock& item : ranked) {
+            block_order->push_back(item.block_id);
+        }
+    };
+}
+#endif
 
 }  // namespace
 
@@ -385,6 +440,7 @@ std::unordered_map<int, cv::Point2f> Estimator::predictLandmarkPixels(
 }
 
 void Estimator::optimize() {
+    profiling::VtuneProfileScope vtune_scope;
     const int latest_id = state_->latest_frame_index;
     const int gauge_frame_index =
         marginalization_prior_ ? kRetainedFrameIndex : kFirstActiveFrameIndex;
@@ -474,11 +530,15 @@ void Estimator::optimize() {
     const double visual_huber_delta = params_.reproj_huber_thres * params_.visual_factor_weight;
     ceres::LossFunction* loss = new ceres::HuberLoss(visual_huber_delta);
     std::vector<double> inv_depth_params(features.size());
+    std::vector<int> visual_landmark_cache_indices(features.size());
+    visual_frame_cache.reserveLandmarks(features.size());
     for (size_t k = 0; k < features.size(); ++k) {
         const double depth = features[k]->estimated_depth;
         TASSEL_ASSERT(std::isfinite(depth) && depth > 1e-12);
         inv_depth_params[k] = 1.0 / depth;
         problem.AddParameterBlock(&inv_depth_params[k], 1);
+        visual_landmark_cache_indices[k] = visual_frame_cache.addLandmark(
+            features[k]->observations[0].uv, &inv_depth_params[k]);
     }
 
     Eigen::Matrix2d sqrt_info = state_->visual_sqrt_info;
@@ -516,7 +576,7 @@ void Estimator::optimize() {
                 state_->frames[host_id].speed_bias.data() + 3,
                 state_->frames[target_id].speed_bias.data() + 3, sqrt_info, state_->camera,
                 f->observations[0].sync_delay, f->observations[obs_idx].sync_delay,
-                &visual_frame_cache, host_id, target_id);
+                &visual_frame_cache, host_id, target_id, visual_landmark_cache_indices[k]);
             problem.AddResidualBlock(
                 cost, loss, state_->frames[host_id].pose.data(),
                 state_->frames[target_id].pose.data(), &state_->param_delay_time,
@@ -542,25 +602,36 @@ void Estimator::optimize() {
 
     ceres::Solver::Options opts;
     opts.linear_solver_type = ceres::DENSE_SCHUR;
+#if defined(CERES_HAS_SCHUR_STRUCTURE_HINTS)
+    // VIO视觉残差布局固定为2维像素残差、1维逆深度消元块；其余状态块尺寸可变。
+    opts.schur_structure_row_block_size = 2;
+    opts.schur_structure_e_block_size = 1;
+    opts.schur_structure_f_block_size = -1;
+#endif
     opts.trust_region_strategy_type = ceresTrustRegionStrategy(params_.trust_region_strategy);
     auto ordering = std::make_shared<ceres::ParameterBlockOrdering>();
     // 每个视觉因子只包含一个逆深度，组0路标必须保持为 Hessian 图的独立集。
     for (double& inverse_depth : inv_depth_params) {
         ordering->AddElementToGroup(&inverse_depth, 0);
     }
+    int layout_group = 1;
     for (int i = 0; i < state_->max_frame_count; ++i) {
-        ordering->AddElementToGroup(state_->frames[i].pose.data(), 1);
+        ordering->AddElementToGroup(state_->frames[i].pose.data(), layout_group++);
         if (i != kRetainedFrameIndex || !marginalization_prior_) {
-            ordering->AddElementToGroup(state_->frames[i].speed_bias.data(), 1);
+            ordering->AddElementToGroup(state_->frames[i].speed_bias.data(), layout_group++);
         }
     }
-    ordering->AddElementToGroup(&state_->param_delay_time, 1);
+    ordering->AddElementToGroup(&state_->param_delay_time, layout_group++);
     opts.linear_solver_ordering = std::move(ordering);
+#if defined(CERES_HAS_SCHUR_LAYOUT_CALLBACK)
+    opts.schur_layout_callback = makeSchurLayoutCallback();
+#endif
     opts.max_num_iterations = params_.num_iterations;
     if (params_.max_solver_time > 0.0) {
         opts.max_solver_time_in_seconds = params_.max_solver_time;
     }
-    opts.num_threads = params_.num_threads;
+    // 滑窗 BA 规模较小，固定单线程避免线程调度和同步成本超过并行收益。
+    opts.num_threads = 1;
     opts.minimizer_progress_to_stdout = false;
     opts.logging_type = ceres::SILENT;
 
@@ -578,7 +649,10 @@ void Estimator::optimize() {
         "Ceres summary: threads={}/{} parameter_blocks={}/{} residual_blocks={}/{} "
         "residuals={}/{} iterations={} "
         "successful={} rejected={} residual={:.3f}ms jacobian={:.3f}ms "
-        "linear_solver={:.3f}ms preprocessor={:.3f}ms total={:.3f}ms",
+        "linear_solver={:.3f}ms schur_setup={:.3f}ms schur_eliminate={:.3f}ms "
+        "schur_reduced={:.3f}ms schur_back_substitute={:.3f}ms "
+        "schur_diagonal={:.3f}ms schur_chunks={:.3f}ms schur_no_e={:.3f}ms "
+        "preprocessor={:.3f}ms total={:.3f}ms",
         summary.num_threads_used, summary.num_threads_given, summary.num_parameter_blocks,
         summary.num_parameter_blocks_reduced, summary.num_residual_blocks,
         summary.num_residual_blocks_reduced, summary.num_residuals, summary.num_residuals_reduced,
@@ -586,6 +660,13 @@ void Estimator::optimize() {
         1000.0 * summary.residual_evaluation_time_in_seconds,
         1000.0 * summary.jacobian_evaluation_time_in_seconds,
         1000.0 * summary.linear_solver_time_in_seconds,
+        1000.0 * summary.schur_setup_time_in_seconds,
+        1000.0 * summary.schur_elimination_time_in_seconds,
+        1000.0 * summary.schur_reduced_solve_time_in_seconds,
+        1000.0 * summary.schur_back_substitution_time_in_seconds,
+        1000.0 * summary.schur_diagonal_time_in_seconds,
+        1000.0 * summary.schur_chunks_time_in_seconds,
+        1000.0 * summary.schur_no_e_time_in_seconds,
         1000.0 * summary.preprocessor_time_in_seconds, 1000.0 * summary.total_time_in_seconds);
     if (restore_schmidt_ba) {
         restore_schmidt_ba->restore();
@@ -676,6 +757,7 @@ RetainedHostAction Estimator::selectMarginalizationAction() const {
 }
 
 void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
+    profiling::VtuneProfileScope vtune_scope;
     const int window_capacity = state_->max_frame_count;
     TASSEL_ASSERT(window_capacity >= 3);
     state_->stateToParams();
