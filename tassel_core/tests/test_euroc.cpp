@@ -46,6 +46,7 @@
 #include "frond_end/feature_tracker.h"
 #include "parameters/parameters.h"
 #include "profiling/vtune_profile_scope.h"
+#include "rtabmap/rtabmap_backend.h"
 #include "state/state.h"
 #include "viewer/viewer.h"
 
@@ -410,8 +411,7 @@ void reportTrajectoryError(const std::vector<EvaluatedPose>& poses) {
               << "samples=" << poses.size()
               << " ATE_RMSE=" << std::sqrt(squared_position_error / count) << " m"
               << " terminal_position_error=" << terminal_position_error << " m"
-              << " rotation_RMSE=" << std::sqrt(squared_rotation_error / count)
-              << " rad\n";
+              << " rotation_RMSE=" << std::sqrt(squared_rotation_error / count) << " rad\n";
 }
 
 fs::path resolveSequenceDir(const fs::path& sequence_dir) {
@@ -464,6 +464,7 @@ int main(int argc, char** argv) {
                                                     "/home/adrewn/Tassel/datasets/"
                                                     "machine_hall/MH_01_easy");
     const double replay_hz = (argc >= 4) ? std::stod(argv[3]) : 20.0;
+    const std::string rtabmap_database = (argc >= 5) ? argv[4] : "";
     if (!std::isfinite(replay_hz) || replay_hz <= 0.0) {
         throw std::invalid_argument("replay_hz must be finite and positive");
     }
@@ -546,17 +547,27 @@ int main(int argc, char** argv) {
     Estimator estimator(params, state, feature_manager);
     state->camera = camera_ptr;
     estimator.setCamera(camera_ptr);
+    std::unique_ptr<tassel_tools::RtabmapBackend> rtabmap_backend;
+    if (!rtabmap_database.empty()) {
+        tassel_tools::RtabmapBackendOptions options;
+        options.database_path = rtabmap_database;
+        rtabmap_backend = std::make_unique<tassel_tools::RtabmapBackend>(
+            params.cam_intrinsic, params.cam_distort, cv::Size(params.cols, params.rows),
+            params.camera_model == "equi", Sophus::SE3d(params.ric, params.tic), options);
+    }
     const size_t frame_limit = frames.size();
     std::optional<Sophus::SE3d> ground_truth_alignment;
     std::vector<EvaluatedPose> evaluated_poses;
     evaluated_poses.reserve(frame_limit);
+    std::optional<Sophus::SE3d> latest_optimized_pose;
     estimator.setPoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment,
-                               &evaluated_poses, &params](
-                                  double ts, const Sophus::SE3d& pose) {
+                               &evaluated_poses, &params,
+                               &latest_optimized_pose](double ts, const Sophus::SE3d& pose) {
+        latest_optimized_pose = pose;
         if (viewer) {
             viewer->publishOdometry(
-                "vio/odometry", pose.translation(), pose.unit_quaternion(),
-                Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), ts);
+                "vio/odometry", pose.translation(), pose.unit_quaternion(), Eigen::Vector3d::Zero(),
+                Eigen::Vector3d::Zero(), ts);
             const Sophus::SE3d camera_pose = pose * Sophus::SE3d(params.ric, params.tic);
             viewer->publishOdometry(
                 "vio/camera_odometry", camera_pose.translation(), camera_pose.unit_quaternion(),
@@ -791,6 +802,7 @@ int main(int argc, char** argv) {
     }
 
     size_t processed = 0;
+    std::map<tassel_utils::FrameId, cv::Mat> rtabmap_images;
     while (rclcpp::ok()) {
         const auto packet_start = std::chrono::steady_clock::now();
         SyncedPacket packet;
@@ -821,8 +833,25 @@ int main(int argc, char** argv) {
         }
         const auto after_visualization = std::chrono::steady_clock::now();
 
+        latest_optimized_pose.reset();
+        if (rtabmap_backend) {
+            rtabmap_images[packet.mono->timestamp] = packet.mono->left_img;
+        }
         estimator.processMeasurement(
             packet.mono->timestamp, feature_frame, packet.imu_slice, packet.sync_delay);
+        if (rtabmap_backend && estimator.lastRetainedKeyframe()) {
+            const auto& keyframe = *estimator.lastRetainedKeyframe();
+            const auto image = rtabmap_images.find(keyframe.frame_id);
+            if (image == rtabmap_images.end()) {
+                throw std::logic_error("Retained keyframe image is missing");
+            }
+            rtabmap_backend->submit(
+                keyframe.frame_id, image->second, keyframe.pose, keyframe.landmarks);
+            rtabmap_images.erase(rtabmap_images.begin(), std::next(image));
+        }
+        if (rtabmap_backend && !estimator.lastMeasurementWasKeyframe()) {
+            rtabmap_images.erase(packet.mono->timestamp);
+        }
         const auto after_estimator = std::chrono::steady_clock::now();
 
         const auto milliseconds = [](auto begin, auto end) {

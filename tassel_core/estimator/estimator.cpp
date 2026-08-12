@@ -15,6 +15,7 @@
 #include <ceres/rotation.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <opencv2/calib3d.hpp>
@@ -38,7 +39,6 @@
 #include "marg/schmidt/schmidt_prior_covariance.h"
 #include "marg/schmidt/schmidt_window_update.h"
 #include "profiling/vtune_profile_scope.h"
-#include "solver/parameter_block_hold_callback.h"
 #include "tassel_utils/macros.h"
 #include "tassel_utils/se3_right_manifold.h"
 
@@ -50,6 +50,14 @@ namespace tassel_core {
 namespace {
 constexpr int kRetainedFrameIndex = 0;
 constexpr int kFirstActiveFrameIndex = 1;
+constexpr double kStationarySpeed = 0.05;
+constexpr size_t kStageTimingLogInterval = 100;
+
+using StageClock = std::chrono::steady_clock;
+
+double elapsedMilliseconds(StageClock::time_point begin, StageClock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - begin).count();
+}
 
 ceres::TrustRegionStrategyType ceresTrustRegionStrategy(
     tassel_tools::TrustRegionStrategy strategy) {
@@ -92,10 +100,8 @@ bool allFinite(const Range& values) {
 
 #if defined(CERES_HAS_SCHUR_LAYOUT_CALLBACK)
 ceres::Solver::Options::SchurLayoutCallback makeSchurLayoutCallback() {
-    return [](int chunk_index,
-              const std::vector<int>& default_block_order,
-              const std::vector<int>& block_sizes,
-              std::vector<int>* block_order) {
+    return [](int chunk_index, const std::vector<int>& default_block_order,
+              const std::vector<int>& block_sizes, std::vector<int>* block_order) {
         (void)chunk_index;
         if (block_order == nullptr) {
             throw std::invalid_argument("Schur layout callback received a null output");
@@ -126,14 +132,16 @@ ceres::Solver::Options::SchurLayoutCallback makeSchurLayoutCallback() {
         };
         for (int i = 0; i < static_cast<int>(default_block_order.size()); ++i) {
             ranked.push_back(
-                {blockPriority(block_sizes[static_cast<size_t>(i)]), i, default_block_order[static_cast<size_t>(i)]});
+                {blockPriority(block_sizes[static_cast<size_t>(i)]), i,
+                 default_block_order[static_cast<size_t>(i)]});
         }
-        std::stable_sort(ranked.begin(), ranked.end(), [](const RankedBlock& a, const RankedBlock& b) {
-            if (a.priority != b.priority) {
-                return a.priority < b.priority;
-            }
-            return a.order < b.order;
-        });
+        std::stable_sort(
+            ranked.begin(), ranked.end(), [](const RankedBlock& a, const RankedBlock& b) {
+                if (a.priority != b.priority) {
+                    return a.priority < b.priority;
+                }
+                return a.order < b.order;
+            });
 
         block_order->clear();
         block_order->reserve(ranked.size());
@@ -162,7 +170,7 @@ Estimator::Estimator(
 
 void Estimator::reset() {
     initialized_ = false;
-    low_speed_ba_behavior_.reset();
+    mode_ = EstimatorMode::Normal;
     last_ts_ = -1;
     last_imu_acc_ = Eigen::Vector3d::Zero();
     last_imu_gyro_ = Eigen::Vector3d::Zero();
@@ -183,8 +191,11 @@ void Estimator::reset() {
     schmidt_prior_covariance_.reset();
     schmidt_absorbed_feature_ids_.clear();
     last_measurement_was_keyframe_ = false;
+    last_retained_keyframe_.reset();
     retained_rotation_.setIdentity();
     retained_position_.setZero();
+    stage_time_totals_ = {};
+    stage_time_samples_ = 0;
     tassel_utils::G = Eigen::Vector3d(0, 0, params_.g_norm);
     state_->reset();
     TASSEL_ASSERT(state_->max_frame_count >= 3);
@@ -195,6 +206,9 @@ void Estimator::reset() {
 void Estimator::processMeasurement(
     tassel_utils::FrameId frame_id, const std::unordered_map<int, FeaturePerFrame>& feature_frame,
     const std::vector<tassel_utils::IMUMeasurement>& imu_measurements, double sync_delay) {
+    last_retained_keyframe_.reset();
+    const bool record_stage_times = initialized_;
+    const auto feature_start = StageClock::now();
     int& frame_count = state_->latest_frame_index;
     state_->frames[frame_count].timestamp_ns = frame_id;
     const double ts = tassel_utils::frameIdToSeconds(frame_id);
@@ -214,6 +228,9 @@ void Estimator::processMeasurement(
                                        frame_count - 1, frame_count, feature_frame);
     state_->frames[frame_count].type = is_keyframe ? FrameType::KeyFrame : FrameType::NonKeyFrame;
     last_measurement_was_keyframe_ = is_keyframe;
+    const auto feature_end = StageClock::now();
+
+    const auto predict_start = feature_end;
     if (!is_first_initial_frame) {
         predictFrameState(frame_count, imu_measurements);
     }
@@ -222,6 +239,7 @@ void Estimator::processMeasurement(
     interpolateBodyImu(
         imu_measurements, imu_query_timestamp, state_->frames[frame_count].gyro,
         state_->frames[frame_count].acc);
+    const auto predict_end = StageClock::now();
     if (!initialized_) {
         if (!is_keyframe) {
             // 低视差图像只更新尾部候选槽，状态和 IMU 预积分持续累计，不占用新的窗口帧。
@@ -255,15 +273,88 @@ void Estimator::processMeasurement(
 
     // 初始化成功后，同一状态机动作驱动优化、先验更新和窗口搬迁。
     const RetainedHostAction host_action = selectMarginalizationAction();
+    const auto triangulation_start = StageClock::now();
     feature_manager_->triangulate(*state_, params_.ric, params_.tic);
+    const auto triangulation_end = StageClock::now();
+
+    const auto optimization_start = triangulation_end;
     optimize();
+    const auto optimization_end = StageClock::now();
     const Sophus::SE3d optimized_pose(state_->frames[frame_count].R, state_->frames[frame_count].P);
     if (pose_callback_) {
         pose_callback_(ts, optimized_pose);
     }
+
+    const auto outlier_start = StageClock::now();
     feature_manager_->removeOutliers(*state_, params_.ric, params_.tic);
+    const auto outlier_end = StageClock::now();
+
+    const auto marginalization_start = outlier_end;
     updateMarginalizationPrior(host_action);
+    const auto marginalization_end = StageClock::now();
+
+    const auto migration_start = marginalization_end;
+    if (host_action != RetainedHostAction::MarginalizeOldestFrame) {
+        const FrameState& retained_source = state_->frames[kFirstActiveFrameIndex];
+        if (retained_source.timestamp_ns == tassel_utils::kInvalidFrameId) {
+            throw std::logic_error("Cannot publish an invalid retained keyframe");
+        }
+        last_retained_keyframe_ = RetainedKeyframe{
+            retained_source.timestamp_ns,
+            Sophus::SE3d(retained_source.R, retained_source.P),
+            feature_manager_->exportObservedLandmarks(
+                kFirstActiveFrameIndex, *state_, params_.ric, params_.tic),
+        };
+    }
     migrateMarginalizedData(host_action);
+    const auto migration_end = StageClock::now();
+
+    if (record_stage_times) {
+        recordStageTimes({
+            elapsedMilliseconds(feature_start, feature_end),
+            elapsedMilliseconds(predict_start, predict_end),
+            elapsedMilliseconds(triangulation_start, triangulation_end),
+            elapsedMilliseconds(optimization_start, optimization_end),
+            elapsedMilliseconds(outlier_start, outlier_end),
+            elapsedMilliseconds(marginalization_start, marginalization_end),
+            elapsedMilliseconds(migration_start, migration_end),
+        });
+    }
+}
+
+void Estimator::recordStageTimes(const StageTimes& times) {
+    stage_time_totals_.feature_ms += times.feature_ms;
+    stage_time_totals_.predict_ms += times.predict_ms;
+    stage_time_totals_.triangulation_ms += times.triangulation_ms;
+    stage_time_totals_.optimization_ms += times.optimization_ms;
+    stage_time_totals_.outlier_ms += times.outlier_ms;
+    stage_time_totals_.marginalization_ms += times.marginalization_ms;
+    stage_time_totals_.migration_ms += times.migration_ms;
+    ++stage_time_samples_;
+    if (stage_time_samples_ < kStageTimingLogInterval) {
+        return;
+    }
+
+    const double scale = 1.0 / static_cast<double>(stage_time_samples_);
+    const double feature_ms = stage_time_totals_.feature_ms * scale;
+    const double predict_ms = stage_time_totals_.predict_ms * scale;
+    const double triangulation_ms = stage_time_totals_.triangulation_ms * scale;
+    const double optimization_ms = stage_time_totals_.optimization_ms * scale;
+    const double outlier_ms = stage_time_totals_.outlier_ms * scale;
+    const double marginalization_ms = stage_time_totals_.marginalization_ms * scale;
+    const double migration_ms = stage_time_totals_.migration_ms * scale;
+    const double non_optimization_ms =
+        feature_ms + predict_ms + triangulation_ms + outlier_ms + marginalization_ms + migration_ms;
+    spdlog::info(
+        "Estimator stages: samples={} feature={:.3f}ms predict={:.3f}ms "
+        "triangulation={:.3f}ms optimization={:.3f}ms outlier={:.3f}ms "
+        "marginalization={:.3f}ms migration={:.3f}ms non_optimization={:.3f}ms "
+        "total={:.3f}ms",
+        stage_time_samples_, feature_ms, predict_ms, triangulation_ms, optimization_ms, outlier_ms,
+        marginalization_ms, migration_ms, non_optimization_ms,
+        non_optimization_ms + optimization_ms);
+    stage_time_totals_ = {};
+    stage_time_samples_ = 0;
 }
 
 void Estimator::predictFrameState(
@@ -450,14 +541,11 @@ void Estimator::optimize() {
     for (int i = kFirstActiveFrameIndex; i <= latest_id; ++i) {
         active_velocities.push_back(state_->frames[i].V);
     }
-    low_speed_ba_behavior_.update(active_velocities);
-    std::vector<HeldParameterBlock> held_ba_blocks;
-    if (low_speed_ba_behavior_.holdsBa()) {
-        held_ba_blocks.reserve(static_cast<size_t>(latest_id + 1));
-        for (int i = 0; i <= latest_id; ++i) {
-            held_ba_blocks.push_back({state_->frames[i].speed_bias.data() + 3, 3});
-        }
+    bool stationary_window = !active_velocities.empty();
+    for (const Eigen::Vector3d& velocity : active_velocities) {
+        stationary_window = stationary_window && velocity.norm() <= kStationarySpeed;
     }
+    mode_ = stationary_window ? EstimatorMode::StationaryBaHold : EstimatorMode::Normal;
     auto features = feature_manager_->collectLandmarks();
 
     std::vector<VisualFrameCacheInput> visual_cache_inputs;
@@ -486,9 +574,12 @@ void Estimator::optimize() {
         auto se3_manifold = new SE3RightManifold();
         problem.AddParameterBlock(state_->frames[i].pose.data(), 6, se3_manifold);
         if (i != kRetainedFrameIndex || !marginalization_prior_) {
-            // 低速保持由迭代回调恢复 dba 均值；临时 dba 增量仍参与线性步，
-            // 使 active 状态能够使用 bias 不确定性带来的耦合信息。
-            problem.AddParameterBlock(state_->frames[i].speed_bias.data(), 9);
+            // 静止窗口只从切空间移除 ba；残差仍使用当前 ba，速度和 bg 继续更新。
+            ceres::Manifold* speed_bias_manifold = nullptr;
+            if (holdsBa()) {
+                speed_bias_manifold = new ceres::SubsetManifold(9, {3, 4, 5});
+            }
+            problem.AddParameterBlock(state_->frames[i].speed_bias.data(), 9, speed_bias_manifold);
         }
     }
     if (!marginalization_prior_) {
@@ -537,8 +628,8 @@ void Estimator::optimize() {
         TASSEL_ASSERT(std::isfinite(depth) && depth > 1e-12);
         inv_depth_params[k] = 1.0 / depth;
         problem.AddParameterBlock(&inv_depth_params[k], 1);
-        visual_landmark_cache_indices[k] = visual_frame_cache.addLandmark(
-            features[k]->observations[0].uv, &inv_depth_params[k]);
+        visual_landmark_cache_indices[k] =
+            visual_frame_cache.addLandmark(features[k]->observations[0].uv, &inv_depth_params[k]);
     }
 
     Eigen::Matrix2d sqrt_info = state_->visual_sqrt_info;
@@ -635,14 +726,6 @@ void Estimator::optimize() {
     opts.minimizer_progress_to_stdout = false;
     opts.logging_type = ceres::SILENT;
 
-    std::unique_ptr<ParameterBlockHoldCallback> restore_schmidt_ba;
-    if (low_speed_ba_behavior_.holdsBa()) {
-        restore_schmidt_ba =
-            std::make_unique<ParameterBlockHoldCallback>(std::move(held_ba_blocks));
-        opts.update_state_every_iteration = true;
-        opts.callbacks.push_back(restore_schmidt_ba.get());
-    }
-
     ceres::Solver::Summary summary;
     ceres::Solve(opts, &problem, &summary);
     spdlog::info(
@@ -665,13 +748,8 @@ void Estimator::optimize() {
         1000.0 * summary.schur_reduced_solve_time_in_seconds,
         1000.0 * summary.schur_back_substitution_time_in_seconds,
         1000.0 * summary.schur_diagonal_time_in_seconds,
-        1000.0 * summary.schur_chunks_time_in_seconds,
-        1000.0 * summary.schur_no_e_time_in_seconds,
+        1000.0 * summary.schur_chunks_time_in_seconds, 1000.0 * summary.schur_no_e_time_in_seconds,
         1000.0 * summary.preprocessor_time_in_seconds, 1000.0 * summary.total_time_in_seconds);
-    if (restore_schmidt_ba) {
-        restore_schmidt_ba->restore();
-    }
-
     bool finite_solution = std::isfinite(state_->param_delay_time);
     for (int i = 0; i <= latest_id && finite_solution; ++i) {
         finite_solution =
@@ -788,7 +866,7 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
         landmark_host_frame_index, landmark_target_frame_index);
     std::vector<Feature*> schmidt_visual_features;
     std::vector<int> schmidt_visual_feature_ids;
-    if (low_speed_ba_behavior_.holdsBa() && schmidt_prior_covariance_) {
+    if (maintainsSchmidtCovariance() && schmidt_prior_covariance_) {
         auto& all_features = feature_manager_->features();
         for (auto it = schmidt_absorbed_feature_ids_.begin();
              it != schmidt_absorbed_feature_ids_.end();) {
@@ -843,7 +921,7 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
         linearizer.buildReducedSystem(reduced_jacobian, reduced_residual);
 
         std::unique_ptr<SchmidtPriorCovariance> updated_schmidt_covariance;
-        if (low_speed_ba_behavior_.holdsBa() && schmidt_prior_covariance_) {
+        if (maintainsSchmidtCovariance() && schmidt_prior_covariance_) {
             if (action == RetainedHostAction::InitializeRetainedSlot) {
                 throw std::logic_error(
                     "Initialized retained slot cannot have an old Schmidt prior");
@@ -932,7 +1010,7 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
             updated_prior->linearization_poses[i - 1] = state_->frames[i].pose;
             updated_prior->linearization_speed_bias[i - 1] = state_->frames[i].speed_bias;
         }
-        if (!updated_schmidt_covariance && low_speed_ba_behavior_.needsSchmidtCovariance()) {
+        if (!updated_schmidt_covariance && maintainsSchmidtCovariance()) {
             std::vector<Feature*> full_features = feature_manager_->collectLandmarks();
             const std::optional<SchmidtPriorCovariance> current_covariance =
                 tryBuildGaugeFixedWindowPosteriorCovariance(
@@ -958,7 +1036,7 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
                     "fixing");
             }
         }
-        if (!low_speed_ba_behavior_.needsSchmidtCovariance()) {
+        if (!maintainsSchmidtCovariance()) {
             updated_schmidt_covariance.reset();
             schmidt_absorbed_feature_ids_.clear();
         }

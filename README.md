@@ -7,8 +7,6 @@ Tassel 是一个研究型单目视觉惯性里程计，重点关注滑动窗口�
 
 [![Tassel VIO 演示](media/bilibili_preview.jpg)](https://www.bilibili.com/video/BV1ukGA6sEuq/?vd_source=db129daae448e5d2371829d459869e86)
 
-[在 Bilibili 查看完整演示](https://www.bilibili.com/video/BV1ukGA6sEuq/?vd_source=db129daae448e5d2371829d459869e86)
-
 ## 项目特色
 
 - **单目视觉惯性估计**：包含 SFM、惯性对齐、预积分、重投影因子和滑动窗口优化。

@@ -112,8 +112,7 @@ public:
             7.0 * camera_values(6) * theta6 + 9.0 * camera_values(7) * theta8;
         const double inv_r = 1.0 / r;
         const double scale = theta_d * inv_r;
-        const double scale_derivative =
-            (dtheta_d_dtheta / (1.0 + r * r) - scale) * inv_r * inv_r;
+        const double scale_derivative = (dtheta_d_dtheta / (1.0 + r * r) - scale) * inv_r * inv_r;
 
         pixel.x() = camera_values(0) * x * scale + camera_values(2);
         pixel.y() = camera_values(1) * y * scale + camera_values(3);
@@ -182,8 +181,7 @@ public:
         const double theta4 = theta2 * theta2;
         const double theta6 = theta4 * theta2;
         const double theta8 = theta6 * theta2;
-        double dthd_dth = 1 + 3 * k1 * theta2 + 5 * k2 * theta4 +
-                          7 * k3 * theta6 + 9 * k4 * theta8;
+        double dthd_dth = 1 + 3 * k1 * theta2 + 5 * k2 * theta4 + 7 * k3 * theta6 + 9 * k4 * theta8;
 
         double dth_dr = 1 / (r * r + 1);
 

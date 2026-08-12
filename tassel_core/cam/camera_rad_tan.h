@@ -93,20 +93,16 @@ public:
         const double p2 = camera_values(7);
         const double radial = 1.0 + k1 * r2 + k2 * r4;
 
-        pixel.x() = fx * (x * radial + 2.0 * p1 * xy + p2 * (r2 + 2.0 * x2)) +
-                    camera_values(2);
-        pixel.y() = fy * (y * radial + p1 * (r2 + 2.0 * y2) + 2.0 * p2 * xy) +
-                    camera_values(3);
+        pixel.x() = fx * (x * radial + 2.0 * p1 * xy + p2 * (r2 + 2.0 * x2)) + camera_values(2);
+        pixel.y() = fy * (y * radial + p1 * (r2 + 2.0 * y2) + 2.0 * p2 * xy) + camera_values(3);
         pixel_jacobian(0, 0) =
-            fx * (radial + 2.0 * k1 * x2 + 4.0 * k2 * x2 * r2 + 2.0 * p1 * y +
-                  6.0 * p2 * x);
+            fx * (radial + 2.0 * k1 * x2 + 4.0 * k2 * x2 * r2 + 2.0 * p1 * y + 6.0 * p2 * x);
         pixel_jacobian(0, 1) =
             fx * (2.0 * k1 * xy + 4.0 * k2 * xy * r2 + 2.0 * p1 * x + 2.0 * p2 * y);
         pixel_jacobian(1, 0) =
             fy * (2.0 * k1 * xy + 4.0 * k2 * xy * r2 + 2.0 * p1 * x + 2.0 * p2 * y);
         pixel_jacobian(1, 1) =
-            fy * (radial + 2.0 * k1 * y2 + 4.0 * k2 * y2 * r2 + 6.0 * p1 * y +
-                  2.0 * p2 * x);
+            fy * (radial + 2.0 * k1 * y2 + 4.0 * k2 * y2 * r2 + 6.0 * p1 * y + 2.0 * p2 * x);
     }
 
     std::vector<Eigen::Vector2d> distort(const std::vector<Eigen::Vector2d>& pts) const override {

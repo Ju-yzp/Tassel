@@ -32,6 +32,9 @@ public:
         MargLinData& prior, const Eigen::Matrix3d& rotation, const Eigen::Vector3d& translation);
 
     // 使用秩揭示 Householder QR 边缘化平方根系统前部的参数列。
+    // 该平方根边缘化形式避免 normal equations；参考 Demmel et al.,
+    // "Square Root Marginalization for Sliding-Window Bundle Adjustment", ICCV 2021.
+    // https://arxiv.org/abs/2109.02182
     // 列顺序为 [待边缘化参数 | 保留参数]。
     static void marginalizeSquareRootSystem(
         size_t marginalized_size, size_t retained_size, Eigen::MatrixXd& jacobian,

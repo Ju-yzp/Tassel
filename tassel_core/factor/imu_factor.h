@@ -17,8 +17,7 @@ public:
         : integrator(std::move(integrator_)) {
         Eigen::LLT<Eigen::Matrix<double, 15, 15>> covariance_llt(integrator->covariance);
         if (covariance_llt.info() == Eigen::Success) {
-            sqrt_info = covariance_llt.matrixL().solve(
-                Eigen::Matrix<double, 15, 15>::Identity());
+            sqrt_info = covariance_llt.matrixL().solve(Eigen::Matrix<double, 15, 15>::Identity());
             sqrt_info_valid = sqrt_info.allFinite();
         }
     }

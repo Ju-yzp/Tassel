@@ -214,13 +214,11 @@ TEST_F(ReprojectionFactorTest, SharedFrameCacheRestoresRejectedTrialPoint) {
     cache.addPair(0, 1);
 
     cache.PrepareForEvaluation(true, true);
-    const Eigen::Vector3d accepted_translation =
-        cache.pair(0, 1, true).camera_relative_translation;
+    const Eigen::Vector3d accepted_translation = cache.pair(0, 1, true).camera_relative_translation;
 
     pose_i_[0] += 0.5;
     cache.PrepareForEvaluation(false, true);
-    const Eigen::Vector3d rejected_trial_translation =
-        cache.pair(0, 1).camera_relative_translation;
+    const Eigen::Vector3d rejected_trial_translation = cache.pair(0, 1).camera_relative_translation;
     EXPECT_GT((rejected_trial_translation - accepted_translation).norm(), 1e-3);
     cache.OnEvaluationRejected();
     EXPECT_TRUE(
@@ -230,14 +228,14 @@ TEST_F(ReprojectionFactorTest, SharedFrameCacheRestoresRejectedTrialPoint) {
     cache.PrepareForEvaluation(false, true);
     const Eigen::Vector3d committed_translation = cache.pair(0, 1).camera_relative_translation;
     cache.OnEvaluationAccepted();
-    EXPECT_TRUE(cache.pair(0, 1).camera_relative_translation.isApprox(
-        committed_translation, 1e-12));
+    EXPECT_TRUE(
+        cache.pair(0, 1).camera_relative_translation.isApprox(committed_translation, 1e-12));
 
     pose_i_[0] -= 1.0;
     cache.PrepareForEvaluation(false, true);
     cache.OnEvaluationRejected();
-    EXPECT_TRUE(cache.pair(0, 1).camera_relative_translation.isApprox(
-        committed_translation, 1e-12));
+    EXPECT_TRUE(
+        cache.pair(0, 1).camera_relative_translation.isApprox(committed_translation, 1e-12));
 }
 #endif
 

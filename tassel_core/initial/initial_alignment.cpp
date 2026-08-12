@@ -57,8 +57,7 @@ bool linearAlignment(
         tmp_A.block<3, 3>(0, 0) = -dt * ric * Rs[i].transpose() * ric.transpose();
         tmp_A.block<3, 3>(0, 6) = 0.5 * dt * dt * ric * Rs[i].transpose() * ric.transpose();
         tmp_A.block<3, 1>(0, 9) = ric * Rs[i].transpose() * (Pj - Pi) / 100.0;
-        tmp_b.block<3, 1>(0, 0) =
-            ric * Ri.transpose() * Rj * ric.transpose() * tic - ric * tic + delta_p;
+        tmp_b.block<3, 1>(0, 0) = ric * Ri.transpose() * Rj * ric.transpose() * tic - tic + delta_p;
 
         tmp_A.block<3, 3>(3, 0) = -ric * Rs[i].transpose() * ric.transpose();
         tmp_A.block<3, 3>(3, 3) = ric * Rs[i].transpose() * ric.transpose();
@@ -160,7 +159,7 @@ bool refineGravitySpeeds(
 
             Eigen::Matrix<double, 6, 1> tmp_b;
             tmp_b.block<3, 1>(0, 0) =
-                delta_ps[i] + R_trans * Rs[j] * ric.transpose() * tic - ric * tic - dt2 * R * g0;
+                delta_ps[i] + R_trans * Rs[j] * ric.transpose() * tic - tic - dt2 * R * g0;
             tmp_b.block<3, 1>(3, 0) = delta_vs[i] - dt * R * g0;
 
             Eigen::Matrix<double, 9, 9> r_A = tmp_A.transpose() * tmp_A;

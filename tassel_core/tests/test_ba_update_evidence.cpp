@@ -11,8 +11,7 @@ namespace {
 TEST(BaUpdateEvidenceTest, RemovesNuisanceExplanationAndRecoversBiasIncrement) {
     Eigen::MatrixXd jacobian = Eigen::MatrixXd::Zero(7, 5);
     jacobian.block<4, 2>(0, 0) << 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, -1.0;
-    jacobian.block<4, 3>(0, 2) << 2.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, -1.0, 2.0, 3.0, 0.0,
-        1.0;
+    jacobian.block<4, 3>(0, 2) << 2.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, -1.0, 2.0, 3.0, 0.0, 1.0;
     jacobian.block<3, 3>(4, 2) = Eigen::Matrix3d::Identity();
     const Eigen::Vector3d expected_increment(0.2, -0.1, 0.05);
     Eigen::VectorXd residual = -jacobian.middleCols<3>(2) * expected_increment;
@@ -50,10 +49,8 @@ TEST(BaUpdateEvidenceTest, RejectsInvalidBiasColumnMapping) {
 
 TEST(BaUpdateEvidenceTest, SupportsCommonBiasWithDifferentialBiasAsNuisance) {
     Eigen::MatrixXd jacobian = Eigen::MatrixXd::Zero(8, 7);
-    jacobian.block<4, 3>(0, 1) << 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0,
-        0.0;
-    jacobian.block<4, 3>(0, 4) << 0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, -0.5,
-        0.5, 0.0;
+    jacobian.block<4, 3>(0, 1) << 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0;
+    jacobian.block<4, 3>(0, 4) << 0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, -0.5, 0.5, 0.0;
     jacobian.block<4, 3>(4, 1) = Eigen::Matrix3d::Identity().replicate<2, 1>().topRows<4>();
     jacobian.block<4, 3>(4, 4) = -jacobian.block<4, 3>(4, 1);
 

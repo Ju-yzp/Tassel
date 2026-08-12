@@ -4,8 +4,8 @@
 #include <limits>
 #include <stdexcept>
 #include "factor/marginalization_prior_factor.h"
-#include "marg/state_layout.h"
 #include "marg/marg_helper.h"
+#include "marg/state_layout.h"
 #include "tassel_utils/macros.h"
 
 #include <sophus/so3.hpp>

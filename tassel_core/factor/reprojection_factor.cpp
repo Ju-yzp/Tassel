@@ -227,9 +227,8 @@ bool ReprojectionFactor::evaluateCached(
 
     if (jacobians[3]) {
         Eigen::Map<Eigen::Matrix<double, 2, 1>> jacobian_inv_depth(jacobians[3]);
-        const Eigen::Vector3d direction = cached_landmark
-            ? cached_landmark->inverse_depth_direction
-            : pi_in_C / inv_depth;
+        const Eigen::Vector3d direction =
+            cached_landmark ? cached_landmark->inverse_depth_direction : pi_in_C / inv_depth;
         jacobian_inv_depth = -reduce * pair.camera_relative_rotation * direction;
     }
     return true;

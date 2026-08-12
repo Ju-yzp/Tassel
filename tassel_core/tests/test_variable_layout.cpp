@@ -31,8 +31,7 @@ TEST(VariableLayoutTest, RejectsInvalidContracts) {
     const VariableKey pose{1, VariableKind::Pose};
     EXPECT_THROW(VariableLayout({{pose, 0, VariableRole::Active}}), std::invalid_argument);
     EXPECT_THROW(
-        VariableLayout(
-            {{pose, 6, VariableRole::Active}, {pose, 6, VariableRole::Schmidt}}),
+        VariableLayout({{pose, 6, VariableRole::Active}, {pose, 6, VariableRole::Schmidt}}),
         std::invalid_argument);
 
     const VariableLayout layout({{pose, 6, VariableRole::Active}});

@@ -5,7 +5,11 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
-add_library(tassel_tools SHARED viewer/viewer.cpp)
+set(TASSEL_TOOLS_SRCS viewer/viewer.cpp)
+if(TASSEL_WITH_RTABMAP)
+  list(APPEND TASSEL_TOOLS_SRCS rtabmap/rtabmap_backend.cpp)
+endif()
+add_library(tassel_tools SHARED ${TASSEL_TOOLS_SRCS})
 
 target_link_libraries(
   tassel_tools
@@ -21,6 +25,11 @@ target_link_libraries(
          tf2::tf2
          tf2_ros::tf2_ros
          tf2_geometry_msgs::tf2_geometry_msgs)
+
+if(TASSEL_WITH_RTABMAP)
+  target_link_libraries(tassel_tools PUBLIC rtabmap::core)
+  target_compile_definitions(tassel_tools PUBLIC TASSEL_WITH_RTABMAP)
+endif()
 
 target_include_directories(
   tassel_tools

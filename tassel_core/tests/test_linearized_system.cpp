@@ -32,8 +32,7 @@ TEST(LinearizedSystemTest, AppliesBasaltStyleRelativeDiagonalDamping) {
     EXPECT_TRUE(step.damping_diagonal.isApprox(Eigen::Vector2d(2.0, 0.5), 1e-12));
     EXPECT_TRUE(step.delta.isApprox(Eigen::Vector2d(2.0 / 3.0, 2.0 / 3.0), 1e-12));
     const double reduction_identity =
-        0.5 * step.delta.dot(
-                  step.damping_diagonal.cwiseProduct(step.delta) - system.gradient());
+        0.5 * step.delta.dot(step.damping_diagonal.cwiseProduct(step.delta) - system.gradient());
     EXPECT_NEAR(step.predicted_reduction, reduction_identity, 1e-12);
 }
 
@@ -45,8 +44,8 @@ TEST(LinearizedSystemTest, RelativeDampingStepIsInvariantToResidualScale) {
         solveDampedNormalStep(LinearizedSystem(jacobian, residual), {0.2, 0.0});
 
     for (double scale : {1e-6, 1e6}) {
-        const LinearStep scaled = solveDampedNormalStep(
-            LinearizedSystem(scale * jacobian, scale * residual), {0.2, 0.0});
+        const LinearStep scaled =
+            solveDampedNormalStep(LinearizedSystem(scale * jacobian, scale * residual), {0.2, 0.0});
         EXPECT_TRUE(scaled.delta.isApprox(reference.delta, 1e-10));
     }
 }

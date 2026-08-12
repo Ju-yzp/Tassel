@@ -11,8 +11,7 @@ namespace tassel_core {
 
 LinearizedSystem::LinearizedSystem(Eigen::MatrixXd jacobian, Eigen::VectorXd residual)
     : jacobian_(std::move(jacobian)), residual_(std::move(residual)) {
-    if (jacobian_.rows() <= 0 || jacobian_.cols() <= 0 ||
-        jacobian_.rows() != residual_.rows()) {
+    if (jacobian_.rows() <= 0 || jacobian_.cols() <= 0 || jacobian_.rows() != residual_.rows()) {
         throw std::invalid_argument("Linearized system dimensions are invalid");
     }
     if (!jacobian_.allFinite() || !residual_.allFinite()) {
@@ -20,9 +19,7 @@ LinearizedSystem::LinearizedSystem(Eigen::MatrixXd jacobian, Eigen::VectorXd res
     }
 }
 
-double LinearizedSystem::cost() const {
-    return 0.5 * residual_.squaredNorm();
-}
+double LinearizedSystem::cost() const { return 0.5 * residual_.squaredNorm(); }
 
 double LinearizedSystem::costAt(const Eigen::VectorXd& delta) const {
     if (delta.size() != jacobian_.cols() || !delta.allFinite()) {
@@ -31,16 +28,11 @@ double LinearizedSystem::costAt(const Eigen::VectorXd& delta) const {
     return 0.5 * (residual_ + jacobian_ * delta).squaredNorm();
 }
 
-Eigen::MatrixXd LinearizedSystem::hessian() const {
-    return jacobian_.transpose() * jacobian_;
-}
+Eigen::MatrixXd LinearizedSystem::hessian() const { return jacobian_.transpose() * jacobian_; }
 
-Eigen::VectorXd LinearizedSystem::gradient() const {
-    return jacobian_.transpose() * residual_;
-}
+Eigen::VectorXd LinearizedSystem::gradient() const { return jacobian_.transpose() * residual_; }
 
-LinearStep solveDampedNormalStep(
-    const LinearizedSystem& system, const DiagonalDamping& damping) {
+LinearStep solveDampedNormalStep(const LinearizedSystem& system, const DiagonalDamping& damping) {
     if (!std::isfinite(damping.lambda) || !std::isfinite(damping.min_diagonal) ||
         damping.lambda < 0.0 || damping.min_diagonal < 0.0) {
         throw std::invalid_argument("Linearized system damping is invalid");
@@ -50,8 +42,7 @@ LinearStep solveDampedNormalStep(
     const Eigen::VectorXd gradient = system.gradient();
     Eigen::VectorXd damping_diagonal(hessian.rows());
     for (Eigen::Index i = 0; i < hessian.rows(); ++i) {
-        damping_diagonal[i] =
-            std::max(damping.lambda * hessian(i, i), damping.min_diagonal);
+        damping_diagonal[i] = std::max(damping.lambda * hessian(i, i), damping.min_diagonal);
     }
 
     Eigen::MatrixXd damped_hessian = hessian;

@@ -18,12 +18,8 @@ void resumeVtuneCollection() {
 #endif
 }
 
-VtuneProfileScope::VtuneProfileScope() {
-    resumeVtuneCollection();
-}
+VtuneProfileScope::VtuneProfileScope() { resumeVtuneCollection(); }
 
-VtuneProfileScope::~VtuneProfileScope() {
-    pauseVtuneCollection();
-}
+VtuneProfileScope::~VtuneProfileScope() { pauseVtuneCollection(); }
 
 }  // namespace tassel_core::profiling

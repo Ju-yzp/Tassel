@@ -12,8 +12,8 @@ function(tassel_configure_dependencies)
   set(TASSEL_VISION_PREFIX
       ""
       CACHE PATH "Prefix containing a consistent OpenCV and DBoW3 build")
-  option(TASSEL_USE_VENDORED_CERES
-         "Build Ceres from third_party/ceres-solver" ON)
+  option(TASSEL_USE_VENDORED_CERES "Build Ceres from third_party/ceres-solver"
+         ON)
   option(TASSEL_VIO_SCHUR_SPECIALIZATION
          "Build the scalar inverse-depth Schur specialization" ON)
   if(TASSEL_MATH_PREFIX)
@@ -61,19 +61,43 @@ function(tassel_configure_dependencies)
   endif()
 
   if(TASSEL_USE_VENDORED_CERES)
-    set(BUILD_TESTING OFF CACHE BOOL "Disable vendored Ceres tests" FORCE)
-    set(BUILD_EXAMPLES OFF CACHE BOOL "Disable vendored Ceres examples" FORCE)
-    set(BUILD_BENCHMARKS OFF CACHE BOOL "Disable vendored Ceres benchmarks" FORCE)
-    set(BUILD_DOCUMENTATION OFF CACHE BOOL "Disable vendored Ceres documentation" FORCE)
-    set(PROVIDE_UNINSTALL_TARGET OFF CACHE BOOL
-        "Disable vendored Ceres uninstall target" FORCE)
-    set(EXPORT_BUILD_DIR OFF CACHE BOOL "Disable vendored Ceres package export" FORCE)
-    set(USE_CUDA OFF CACHE BOOL "Disable vendored Ceres CUDA support" FORCE)
-    set(MINIGLOG ON CACHE BOOL "Use Ceres miniglog" FORCE)
-    set(GFLAGS ON CACHE BOOL "Enable Ceres gflags support" FORCE)
-    add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/ceres-solver"
-                     "${CMAKE_BINARY_DIR}/third_party/ceres-solver"
-                     EXCLUDE_FROM_ALL)
+    set(BUILD_TESTING
+        OFF
+        CACHE BOOL "Disable vendored Ceres tests" FORCE)
+    set(BUILD_EXAMPLES
+        OFF
+        CACHE BOOL "Disable vendored Ceres examples" FORCE)
+    set(BUILD_BENCHMARKS
+        OFF
+        CACHE BOOL "Disable vendored Ceres benchmarks" FORCE)
+    set(BUILD_DOCUMENTATION
+        OFF
+        CACHE BOOL "Disable vendored Ceres documentation" FORCE)
+    set(PROVIDE_UNINSTALL_TARGET
+        OFF
+        CACHE BOOL "Disable vendored Ceres uninstall target" FORCE)
+    set(EXPORT_BUILD_DIR
+        OFF
+        CACHE BOOL "Disable vendored Ceres package export" FORCE)
+    set(USE_CUDA
+        OFF
+        CACHE BOOL "Disable vendored Ceres CUDA support" FORCE)
+    set(MINIGLOG
+        ON
+        CACHE BOOL "Use Ceres miniglog" FORCE)
+    # Ceres 求解过程默认只保留 warning/error/fatal；需要性能诊断时可显式调高。
+    set(TASSEL_CERES_MAX_LOG_LEVEL
+        -1
+        CACHE STRING "Maximum vendored Ceres miniglog severity" FORCE)
+    set(MINIGLOG_MAX_LOG_LEVEL
+        "${TASSEL_CERES_MAX_LOG_LEVEL}"
+        CACHE STRING "Maximum Ceres miniglog severity" FORCE)
+    set(GFLAGS
+        ON
+        CACHE BOOL "Enable Ceres gflags support" FORCE)
+    add_subdirectory(
+      "${CMAKE_SOURCE_DIR}/third_party/ceres-solver"
+      "${CMAKE_BINARY_DIR}/third_party/ceres-solver" EXCLUDE_FROM_ALL)
   else()
     if(TASSEL_MATH_PREFIX)
       set(Ceres_DIR

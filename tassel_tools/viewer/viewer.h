@@ -107,7 +107,8 @@ private:
     std::unordered_map<std::string, size_t> path_max_poses_;
 
     // Foxglove Plot 直接读取 Vector3Stamped.vector.{x,y,z}。
-    std::unordered_map<std::string, rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr>
+    std::unordered_map<
+        std::string, rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr>
         vector3_publishers_;
 
     std::string frame_id_;

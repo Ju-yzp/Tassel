@@ -174,12 +174,7 @@ SchmidtUpdateResult applySchmidtUpdate(
         active_schmidt_cross_covariance.transpose() * active_jacobian.transpose() +
         schmidt_covariance * schmidt_jacobian.transpose();
     const Eigen::MatrixXd innovation_covariance =
-        active_jacobian * active_covariance * active_jacobian.transpose() +
-        active_jacobian * active_schmidt_cross_covariance * schmidt_jacobian.transpose() +
-        schmidt_jacobian * active_schmidt_cross_covariance.transpose() *
-            active_jacobian.transpose() +
-        schmidt_jacobian * schmidt_covariance * schmidt_jacobian.transpose() +
-        measurement_covariance;
+        active_jacobian * active_cross + schmidt_jacobian * schmidt_cross + measurement_covariance;
 
     Eigen::LDLT<Eigen::MatrixXd> factor(innovation_covariance);
     if (factor.info() != Eigen::Success || !factor.isPositive()) {
@@ -218,6 +213,11 @@ SchmidtJointUpdateResult applySchmidtUpdateToJointCovariance(
     if (schmidt_indices.empty() || schmidt_indices.size() == static_cast<size_t>(state_size)) {
         throw std::invalid_argument("Joint Schmidt update requires both variable subsets");
     }
+    requireFiniteMatrix(covariance, "joint covariance");
+    requireFiniteMatrix(jacobian, "joint Jacobian");
+    requireFiniteMatrix(measurement_covariance, "measurement covariance");
+    requireFiniteVector(residual, "residual");
+
     std::vector<int> active_indices;
     active_indices.reserve(static_cast<size_t>(state_size) - schmidt_indices.size());
     for (int index = 0; index < state_size; ++index) {
@@ -226,49 +226,35 @@ SchmidtJointUpdateResult applySchmidtUpdateToJointCovariance(
         }
     }
 
-    Eigen::MatrixXd paa(active_indices.size(), active_indices.size());
-    Eigen::MatrixXd pas(active_indices.size(), schmidt_indices.size());
-    Eigen::MatrixXd pss(schmidt_indices.size(), schmidt_indices.size());
-    Eigen::MatrixXd ha(jacobian.rows(), active_indices.size());
-    Eigen::MatrixXd hs(jacobian.rows(), schmidt_indices.size());
-    for (size_t i = 0; i < active_indices.size(); ++i) {
-        ha.col(static_cast<Eigen::Index>(i)) = jacobian.col(active_indices[i]);
-        for (size_t j = 0; j < active_indices.size(); ++j) {
-            paa(i, j) = covariance(active_indices[i], active_indices[j]);
-        }
-        for (size_t j = 0; j < schmidt_indices.size(); ++j) {
-            pas(i, j) = covariance(active_indices[i], schmidt_indices[j]);
-        }
+    // 只用索引控制 active 行；Schmidt-Schmidt 协方差块保持原值。
+    const Eigen::MatrixXd cross = covariance * jacobian.transpose();
+    const Eigen::MatrixXd innovation_covariance = jacobian * cross + measurement_covariance;
+    Eigen::LDLT<Eigen::MatrixXd> factor(innovation_covariance);
+    if (factor.info() != Eigen::Success || !factor.isPositive()) {
+        throw std::runtime_error("Joint Schmidt innovation covariance factorization failed");
     }
-    for (size_t i = 0; i < schmidt_indices.size(); ++i) {
-        hs.col(static_cast<Eigen::Index>(i)) = jacobian.col(schmidt_indices[i]);
-        for (size_t j = 0; j < schmidt_indices.size(); ++j) {
-            pss(i, j) = covariance(schmidt_indices[i], schmidt_indices[j]);
-        }
-    }
-    const SchmidtUpdateResult update =
-        applySchmidtUpdate(paa, pas, pss, ha, hs, measurement_covariance, residual);
 
     SchmidtJointUpdateResult result;
     result.delta = Eigen::VectorXd::Zero(state_size);
     result.covariance = covariance;
     for (size_t i = 0; i < active_indices.size(); ++i) {
-        result.delta[active_indices[i]] = update.active_delta[static_cast<Eigen::Index>(i)];
-        for (size_t j = 0; j < active_indices.size(); ++j) {
-            result.covariance(active_indices[i], active_indices[j]) =
-                update.active_covariance(i, j);
-        }
-        for (size_t j = 0; j < schmidt_indices.size(); ++j) {
-            result.covariance(active_indices[i], schmidt_indices[j]) =
-                update.active_schmidt_cross_covariance(i, j);
-            result.covariance(schmidt_indices[j], active_indices[i]) =
-                update.active_schmidt_cross_covariance(i, j);
-        }
+        const Eigen::Index index = active_indices[i];
+        const Eigen::RowVectorXd gain = factor.solve(cross.row(index).transpose()).transpose();
+        result.delta[index] = gain * residual;
+        result.covariance.row(index) -= gain * cross.transpose();
     }
-    for (size_t i = 0; i < schmidt_indices.size(); ++i) {
-        for (size_t j = 0; j < schmidt_indices.size(); ++j) {
-            result.covariance(schmidt_indices[i], schmidt_indices[j]) =
-                update.schmidt_covariance(i, j);
+    for (size_t i = 0; i < active_indices.size(); ++i) {
+        for (size_t j = 0; j <= i; ++j) {
+            const Eigen::Index row = active_indices[i];
+            const Eigen::Index column = active_indices[j];
+            const double value =
+                0.5 * (result.covariance(row, column) + result.covariance(column, row));
+            result.covariance(row, column) = value;
+            result.covariance(column, row) = value;
+        }
+        for (const int schmidt : schmidt_indices) {
+            result.covariance(schmidt, active_indices[i]) =
+                result.covariance(active_indices[i], schmidt);
         }
     }
     return result;
@@ -288,82 +274,21 @@ SchmidtSqrtPrior buildSchmidtUpdatedSqrtPrior(
     requireFiniteMatrix(likelihood_sqrt_information, "likelihood square-root information");
     requireFiniteVector(likelihood_residual, "likelihood residual");
 
-    std::vector<bool> is_schmidt(static_cast<size_t>(state_size), false);
-    for (int index : schmidt_indices) {
-        if (index < 0 || index >= state_size || is_schmidt[static_cast<size_t>(index)]) {
-            throw std::invalid_argument("Schmidt index is invalid or duplicated");
-        }
-        is_schmidt[static_cast<size_t>(index)] = true;
-    }
-    if (schmidt_indices.empty() || schmidt_indices.size() == static_cast<size_t>(state_size)) {
-        throw std::invalid_argument("Schmidt update requires active and Schmidt variables");
-    }
-
-    std::vector<int> active_indices;
-    active_indices.reserve(static_cast<size_t>(state_size) - schmidt_indices.size());
-    for (int index = 0; index < state_size; ++index) {
-        if (!is_schmidt[static_cast<size_t>(index)]) {
-            active_indices.push_back(index);
-        }
-    }
-
     const Eigen::MatrixXd prior_covariance =
         covarianceFromFullRankSqrtInformation(prior_sqrt_information);
     const Eigen::VectorXd prior_mean =
         -prior_covariance * prior_sqrt_information.transpose() * prior_residual;
-    Eigen::MatrixXd paa(active_indices.size(), active_indices.size());
-    Eigen::MatrixXd pas(active_indices.size(), schmidt_indices.size());
-    Eigen::MatrixXd pss(schmidt_indices.size(), schmidt_indices.size());
-    Eigen::MatrixXd ha(likelihood_sqrt_information.rows(), active_indices.size());
-    Eigen::MatrixXd hs(likelihood_sqrt_information.rows(), schmidt_indices.size());
-    for (size_t i = 0; i < active_indices.size(); ++i) {
-        ha.col(static_cast<Eigen::Index>(i)) = likelihood_sqrt_information.col(active_indices[i]);
-        for (size_t j = 0; j < active_indices.size(); ++j) {
-            paa(i, j) = prior_covariance(active_indices[i], active_indices[j]);
-        }
-        for (size_t j = 0; j < schmidt_indices.size(); ++j) {
-            pas(i, j) = prior_covariance(active_indices[i], schmidt_indices[j]);
-        }
-    }
-    for (size_t i = 0; i < schmidt_indices.size(); ++i) {
-        hs.col(static_cast<Eigen::Index>(i)) = likelihood_sqrt_information.col(schmidt_indices[i]);
-        for (size_t j = 0; j < schmidt_indices.size(); ++j) {
-            pss(i, j) = prior_covariance(schmidt_indices[i], schmidt_indices[j]);
-        }
-    }
-
     const Eigen::VectorXd innovation =
         -(likelihood_sqrt_information * prior_mean + likelihood_residual);
-    const SchmidtUpdateResult update = applySchmidtUpdate(
-        paa, pas, pss, ha, hs,
+    const SchmidtJointUpdateResult update = applySchmidtUpdateToJointCovariance(
+        prior_covariance, likelihood_sqrt_information,
         Eigen::MatrixXd::Identity(
             likelihood_sqrt_information.rows(), likelihood_sqrt_information.rows()),
-        innovation);
-
-    Eigen::VectorXd posterior_mean = prior_mean;
-    Eigen::MatrixXd posterior_covariance = prior_covariance;
-    for (size_t i = 0; i < active_indices.size(); ++i) {
-        posterior_mean[active_indices[i]] += update.active_delta[static_cast<Eigen::Index>(i)];
-        for (size_t j = 0; j < active_indices.size(); ++j) {
-            posterior_covariance(active_indices[i], active_indices[j]) =
-                update.active_covariance(i, j);
-        }
-        for (size_t j = 0; j < schmidt_indices.size(); ++j) {
-            posterior_covariance(active_indices[i], schmidt_indices[j]) =
-                update.active_schmidt_cross_covariance(i, j);
-            posterior_covariance(schmidt_indices[j], active_indices[i]) =
-                update.active_schmidt_cross_covariance(i, j);
-        }
-    }
-    for (size_t i = 0; i < schmidt_indices.size(); ++i) {
-        for (size_t j = 0; j < schmidt_indices.size(); ++j) {
-            posterior_covariance(schmidt_indices[i], schmidt_indices[j]) =
-                update.schmidt_covariance(i, j);
-        }
-    }
+        innovation, schmidt_indices);
+    const Eigen::VectorXd posterior_mean = prior_mean + update.delta;
 
     SchmidtSqrtPrior result;
-    result.H = sqrtInformationFromPositiveDefiniteCovariance(posterior_covariance);
+    result.H = sqrtInformationFromPositiveDefiniteCovariance(update.covariance);
     result.b = -result.H * posterior_mean;
     return result;
 }

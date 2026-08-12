@@ -1,3 +1,7 @@
 [submodule "third_party/ceres-solver"]
 	path = third_party/ceres-solver
 	url = git@github.com:Ju-yzp/Custom_Ceres_Solver.git
+[submodule "third_party/rtabmap"]
+	path = third_party/rtabmap
+	url = git@github.com:Ju-yzp/simple_rtabmap.git
+	branch = main

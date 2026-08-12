@@ -80,8 +80,7 @@ private:
     void monoMatching(
         const cv::Mat& prev_img, const cv::Mat& cur_img, std::vector<cv::Point2f>& prev_pts,
         std::vector<cv::Point2f>& cur_pts, std::vector<size_t>& prev_ids,
-        std::vector<size_t>& cur_ids,
-        const std::unordered_map<int, cv::Point2f>& predicted_pixels);
+        std::vector<size_t>& cur_ids, const std::unordered_map<int, cv::Point2f>& predicted_pixels);
 
     void setMask();
 

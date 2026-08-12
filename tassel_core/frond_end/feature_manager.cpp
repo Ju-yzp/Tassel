@@ -370,6 +370,37 @@ std::unordered_map<int, Eigen::Vector3d> FeatureManager::exportObservedWorldLand
     return landmarks;
 }
 
+std::vector<ObservedLandmark> FeatureManager::exportObservedLandmarks(
+    int observed_frame_index, const State& state, const Eigen::Matrix3d& ric,
+    const Eigen::Vector3d& tic) const {
+    if (observed_frame_index < 0 || observed_frame_index > state.latest_frame_index) {
+        throw std::out_of_range("Observed landmark frame is outside the active window");
+    }
+    std::vector<ObservedLandmark> landmarks;
+    landmarks.reserve(features_.size());
+    for (const auto& [feature_id, feature] : features_) {
+        const int host_index = feature.host_frame_index;
+        const int observation_index = observed_frame_index - host_index;
+        if (host_index < 0 || host_index > state.latest_frame_index || observation_index < 0 ||
+            observation_index >= static_cast<int>(feature.observations.size()) ||
+            feature.observations.empty() || !std::isfinite(feature.estimated_depth) ||
+            feature.estimated_depth < min_depth_ || feature.estimated_depth > max_depth_) {
+            continue;
+        }
+        const FeaturePerFrame& observation = feature.observations[observation_index];
+        const FeaturePerFrame& host_observation = feature.observations.front();
+        Eigen::Vector3d world_point;
+        if (!std::isfinite(observation.pt.x) || !std::isfinite(observation.pt.y) ||
+            !hostPointToWorld(
+                state.frames[host_index], host_observation.uv, feature.estimated_depth,
+                host_observation.sync_delay, state.delay_time, ric, tic, world_point)) {
+            continue;
+        }
+        landmarks.push_back({feature_id, observation.pt, world_point});
+    }
+    return landmarks;
+}
+
 std::vector<Feature*> FeatureManager::collectLandmarks() {
     std::vector<Feature*> result;
     for (auto& item : features_) {

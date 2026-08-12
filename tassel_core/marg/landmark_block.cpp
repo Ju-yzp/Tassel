@@ -39,7 +39,7 @@ void LandmarkBlock::allocate(int num_frames, int num_obs, int dim) {
 
 void LandmarkBlock::linearize(
     const Feature& feature, int target_frame_index, const State& state, const Eigen::Matrix3d& ric,
-    const Eigen::Vector3d& tic) {
+    const Eigen::Vector3d& tic, const VisualFrameCache* frame_cache, int landmark_cache_index) {
     storage_.setZero();
 
     const std::vector<FeaturePerFrame>& observations = feature.observations;
@@ -74,7 +74,8 @@ void LandmarkBlock::linearize(
             state.frames[target_frame].speed_bias.data() + 6,
             state.frames[host_frame_index].speed_bias.data() + 3,
             state.frames[target_frame].speed_bias.data() + 3, sqrt_info, state.camera,
-            observations[0].sync_delay, target_observation.sync_delay);
+            observations[0].sync_delay, target_observation.sync_delay, frame_cache,
+            host_frame_index, target_frame, landmark_cache_index);
 
         std::vector<double*> jacobians = {
             jacobian_pose_i.data(), jacobian_pose_j.data(), jacobian_dt.data(),

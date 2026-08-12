@@ -21,6 +21,12 @@ struct HostLandmark {
     double host_depth = 0.0;
 };
 
+struct ObservedLandmark {
+    int feature_id = -1;
+    cv::Point2f pixel;
+    Eigen::Vector3d world_point = Eigen::Vector3d::Zero();
+};
+
 class FeatureManager {
 public:
     FeatureManager(
@@ -63,6 +69,10 @@ public:
     std::vector<HostLandmark> exportHostLandmarks(int host_frame_index, const State& state) const;
 
     std::unordered_map<int, Eigen::Vector3d> exportObservedWorldLandmarks(
+        int observed_frame_index, const State& state, const Eigen::Matrix3d& ric,
+        const Eigen::Vector3d& tic) const;
+
+    std::vector<ObservedLandmark> exportObservedLandmarks(
         int observed_frame_index, const State& state, const Eigen::Matrix3d& ric,
         const Eigen::Vector3d& tic) const;
 
