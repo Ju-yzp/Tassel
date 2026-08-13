@@ -287,6 +287,10 @@ std::vector<int> FeatureManager::removeOutliers(
             removed_ids.push_back(feature_id);
         }
     }
+    for (int feature_id : removed_ids) {
+        features_.erase(feature_id);
+        latest_keyframe_observations_.erase(feature_id);
+    }
     return removed_ids;
 }
 
@@ -295,11 +299,10 @@ void FeatureManager::reset() {
     latest_keyframe_observations_.clear();
 }
 
-std::vector<Feature*> FeatureManager::collectMarginalizedFeatures(
-    int host_frame_index, int target_frame_index) {
-    std::vector<Feature*> result;
-    for (auto& item : features_) {
-        auto& feature = item.second;
+std::vector<std::pair<int, Feature>> FeatureManager::collectMarginalizedFeatures(
+    int host_frame_index, int target_frame_index) const {
+    std::vector<std::pair<int, Feature>> result;
+    for (const auto& [feature_id, feature] : features_) {
         if (feature.host_frame_index != host_frame_index ||
             !canUseFeature(feature, min_landmark_observations_)) {
             continue;
@@ -309,7 +312,7 @@ std::vector<Feature*> FeatureManager::collectMarginalizedFeatures(
                                             static_cast<int>(feature.observations.size()))) {
             continue;
         }
-        result.push_back(&feature);
+        result.emplace_back(feature_id, feature);
     }
     return result;
 }
@@ -401,16 +404,25 @@ std::vector<ObservedLandmark> FeatureManager::exportObservedLandmarks(
     return landmarks;
 }
 
-std::vector<Feature*> FeatureManager::collectLandmarks() {
-    std::vector<Feature*> result;
-    for (auto& item : features_) {
-        auto& feature = item.second;
+std::vector<std::pair<int, Feature>> FeatureManager::collectLandmarks() const {
+    std::vector<std::pair<int, Feature>> result;
+    for (const auto& [feature_id, feature] : features_) {
         if (!canUseFeature(feature, min_landmark_observations_)) {
             continue;
         }
-        result.push_back(&feature);
+        result.emplace_back(feature_id, feature);
     }
     return result;
+}
+
+void FeatureManager::updateFeatureDepths(const std::vector<std::pair<int, double>>& depths) {
+    for (const auto& [feature_id, depth] : depths) {
+        auto feature = features_.find(feature_id);
+        if (feature == features_.end()) {
+            throw std::out_of_range("Optimized feature is no longer managed");
+        }
+        feature->second.estimated_depth = depth;
+    }
 }
 
 std::vector<SFMFeature> FeatureManager::collectSFMFeatures(

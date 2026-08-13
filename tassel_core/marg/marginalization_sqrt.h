@@ -8,7 +8,7 @@
 #include <memory>
 #include <sophus/so3.hpp>
 #include <stdexcept>
-#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "factor/integrator_base.h"
@@ -17,7 +17,6 @@
 #include "marg/imu_block.h"
 #include "marg/landmark_block.h"
 #include "marg/marg_lin_data.h"
-#include "marg/state_layout.h"
 #include "state/state.h"
 #include "tassel_utils/macros.h"
 
@@ -26,10 +25,10 @@ namespace tassel_core {
 template <typename Derived>
 class MarginalizationSqrt {
 public:
-    // retiring_features 由 FeatureManager 持有；linearize() 前不得修改其容器。
+    // retiring_features 是本次边缘化独占的值快照，其顺序与 landmark_blocks_ 一致。
     // landmark_target_frame_index < 0 表示消去每个宿主路标的全部后续观测。
     MarginalizationSqrt(
-        std::vector<Feature*> retiring_features, int landmark_target_frame_index,
+        std::vector<std::pair<int, Feature>> retiring_features, int landmark_target_frame_index,
         std::unique_ptr<ceres::LossFunction> loss_function, std::shared_ptr<State> state,
         std::vector<IntegratorBase<Derived>*>& preintegrators, const Eigen::Matrix3d& ric,
         const Eigen::Vector3d& tic, const MargLinData* prior = nullptr,
@@ -53,10 +52,9 @@ public:
     void allocate() {
         landmark_blocks_.clear();
         landmark_blocks_.reserve(retiring_features_.size());
-        for (Feature* feature : retiring_features_) {
-            TASSEL_ASSERT(feature != nullptr);
+        for (const auto& [_, feature] : retiring_features_) {
             const int num_observations = landmark_target_frame_index_ < 0
-                                             ? static_cast<int>(feature->observations.size()) - 1
+                                             ? static_cast<int>(feature.observations.size()) - 1
                                              : 1;
             landmark_blocks_.emplace_back(preintegrators_.empty() ? 6 : 15, loss_function_.get());
             auto& landmark_block = landmark_blocks_.back();
@@ -77,7 +75,7 @@ public:
             const int landmark_cache_index =
                 visual_landmark_cache_indices_.empty() ? -1 : visual_landmark_cache_indices_[idx];
             landmark_block.linearize(
-                *retiring_features_[idx], landmark_target_frame_index_, *state_, ric_, tic_,
+                retiring_features_[idx].second, landmark_target_frame_index_, *state_, ric_, tic_,
                 visual_frame_cache_.get(), landmark_cache_index);
         }
 
@@ -132,52 +130,23 @@ public:
 
         if (prior_) {
             // 旧先验使用当前残差和边缘化时冻结的雅各比。
-            const PriorStateLayout layout(
-                static_cast<int>(prior_->linearization_poses.size()),
-                static_cast<int>(prior_->H.cols()));
-            const std::vector<int> mapping = layout.compactToWindowColumns(state_->max_frame_count);
-            for (int compact_column = 0; compact_column < static_cast<int>(mapping.size());
-                 ++compact_column) {
-                jacobian.col(mapping[static_cast<size_t>(compact_column)])
-                    .segment(rows, prior_rows) = prior_->H.col(compact_column);
+            prior_->validate();
+            for (int frame_index = 0; frame_index < prior_->stateCount(); ++frame_index) {
+                const int compact_pose = prior_->poseColumn(frame_index);
+                const int window_pose = frame_index * MargLinData::StateSize;
+                jacobian.block(rows, window_pose, prior_rows, MargLinData::PoseSize) =
+                    prior_->H.middleCols(compact_pose, MargLinData::PoseSize);
+                if (frame_index > 0) {
+                    jacobian.block(
+                        rows, window_pose + MargLinData::PoseSize, prior_rows,
+                        MargLinData::SpeedBiasSize) =
+                        prior_->H.middleCols(
+                            prior_->speedBiasColumn(frame_index), MargLinData::SpeedBiasSize);
+                }
             }
+            jacobian.col(state_->max_frame_count * MargLinData::StateSize)
+                .segment(rows, prior_rows) = prior_->H.col(prior_->delayColumn());
             residual.segment(rows, prior_rows) = prior_->b;
-        }
-    }
-
-    void buildReducedVisualSystem(
-        const std::vector<Feature*>& selected_features, Eigen::MatrixXd& jacobian,
-        Eigen::VectorXd& residual) const {
-        std::unordered_set<const Feature*> selected;
-        selected.reserve(selected_features.size());
-        for (const Feature* feature : selected_features) {
-            if (!feature || !selected.insert(feature).second) {
-                throw std::invalid_argument("Selected visual feature is null or duplicated");
-            }
-        }
-
-        int selected_rows = 0;
-        size_t matched_features = 0;
-        for (size_t index = 0; index < retiring_features_.size(); ++index) {
-            if (selected.find(retiring_features_[index]) != selected.end()) {
-                selected_rows += landmark_blocks_[index].get_kept_rows();
-                ++matched_features;
-            }
-        }
-        if (matched_features != selected.size()) {
-            throw std::invalid_argument("Selected visual feature is not in the retiring set");
-        }
-
-        jacobian = Eigen::MatrixXd::Zero(selected_rows, num_cols_);
-        residual = Eigen::VectorXd::Zero(selected_rows);
-        // selected_features 的顺序不影响行空间；输出沿 retiring_features 的稳定布局组装。
-        int row = 0;
-        for (size_t index = 0; index < retiring_features_.size(); ++index) {
-            if (selected.find(retiring_features_[index]) == selected.end()) {
-                continue;
-            }
-            landmark_blocks_[index].writeReducedSystem(jacobian, residual, row);
-            row += landmark_blocks_[index].get_kept_rows();
         }
     }
 
@@ -212,7 +181,7 @@ private:
         visual_landmark_cache_indices_.reserve(retiring_features_.size());
 
         for (size_t index = 0; index < retiring_features_.size(); ++index) {
-            const Feature& feature = *retiring_features_[index];
+            const Feature& feature = retiring_features_[index].second;
             const std::vector<FeaturePerFrame>& observations = feature.observations;
             if (observations.empty()) {
                 throw std::logic_error("Marginalized feature has no observations");
@@ -246,7 +215,7 @@ private:
         visual_frame_cache_->PrepareForEvaluation(true, true);
     }
 
-    std::vector<Feature*> retiring_features_;
+    std::vector<std::pair<int, Feature>> retiring_features_;
     int landmark_target_frame_index_;
     std::unique_ptr<ceres::LossFunction> loss_function_;
 

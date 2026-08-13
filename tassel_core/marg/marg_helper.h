@@ -27,7 +27,7 @@ public:
         MargLinData& prior, const std::vector<std::array<double, 6>>& poses,
         const std::vector<std::array<double, 9>>& speed_bias, double delay_time);
 
-    // 对先验的世界系位置、姿态和速度施加统一的 gauge 变换。
+    // 将世界系刚体变换同步写入先验线性化点和世界系位置、速度列。
     static void transformPriorGauge(
         MargLinData& prior, const Eigen::Matrix3d& rotation, const Eigen::Vector3d& translation);
 

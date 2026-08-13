@@ -12,29 +12,29 @@ Tassel 是一个研究型单目视觉惯性里程计，重点关注滑动窗口�
 - **单目视觉惯性估计**：包含 SFM、惯性对齐、预积分、重投影因子和滑动窗口优化。
 - **时间延迟估计**：将相机-IMU 时间偏移纳入运动补偿和后端优化。
 - **关键帧与选择性边缘化**：根据视觉连接关系维护路标宿主，并控制窗口中的状态规模。
-- **保守状态管理**：低速时保护已有加速度计偏置先验，避免不可辨识方向错误吸收信息。
-- **Schmidt/consider 先验**：保留固定变量均值、协方差及其与 active state 的交叉项。
-- **Gauge 管理**：显式处理先验中的世界位置和 yaw 自由度，维护状态布局与协方差一致性。
+- **保守偏置均值**：近静止窗口中，加速度计偏置参与联合 Ceres 系统；优化保留其他变量的
+  联立求解结果，但恢复各活动帧求解前的加速度计偏置均值。
+- **Gauge 管理**：优化后规范世界位置和 yaw 自由度，并将旧先验迁移到规范化状态的
+  右切空间。
 - **Custom Ceres 后端**：复用视觉中间结果并特化固定结构 Schur 路径，同时保留 Ceres 的
   非线性优化、信赖域和步长接受机制。
-- **可复现实验**：提供 EuRoC 轨迹评估、阶段计时、交错 A/B 性能测试和结果归档脚本。
+- **数据集评估**：提供独立的 EuRoC 离线轨迹评估入口。
 
 ## 项目框架
 
 ```text
 Tassel
 ├── tassel_core/                # 局部视觉惯性估计器
-│   ├── behavior/               # 估计行为和低速状态管理
 │   ├── cam/                    # 相机模型与投影接口
 │   ├── estimator/              # 传播、优化、边缘化和窗口管理
+│   ├── evaluation/             # EuRoC 等数据集评估入口
 │   ├── factor/                 # 视觉、IMU、先验因子和视觉缓存
 │   ├── frond_end/              # 特征跟踪、路标管理和三角化
 │   ├── initial/                # SFM、惯性对齐和初始化
-│   ├── marg/                   # 边缘化、gauge 和 Schmidt/consider 管理
-│   ├── profiling/              # VTune 等性能分析标记
+│   ├── marg/                   # 平方根边缘化和先验切空间迁移
 │   ├── solver/                 # 线性化系统和参数管理
-│   ├── state/                  # 状态、变量角色和布局映射
-│   └── tests/                  # 单元测试和 EuRoC 评估入口
+│   ├── state/                  # 物理状态、优化参数缓存和 gauge anchor
+│   └── tests/                  # 单元测试
 ├── tassel_tools/               # 参数、ROS 2 和 Foxglove 工具
 │   ├── parameters/             # 配置解析
 │   ├── viewer/                 # 可视化和话题发布
@@ -43,7 +43,7 @@ Tassel
 ├── third_party/ceres-solver/   # 面向 Tassel 的 Custom Ceres
 ├── cmake/                      # 依赖和测试配置
 ├── config/                     # 估计器和可视化配置
-├── scripts/                    # 环境、基准和性能分析脚本
+├── scripts/                    # 环境和数据集工具
 ├── media/                      # 演示素材
 └── doc/                        # 理论和实验说明
 ```
@@ -68,14 +68,22 @@ cmake --build build -j5
 
 ### EuRoC
 
-测试程序读取单目相机、IMU 和真值文件，并对最终轨迹执行单一全局 yaw 与平移对齐，输出
-ATE RMSE、终点位置误差和旋转 RMSE。第三个参数是离线回放频率，程序默认处理完整序列。
+评估程序读取单目相机、IMU 和真值文件，并对最终轨迹执行单一全局 yaw 与平移对齐，输出
+ATE RMSE、终点位置误差和旋转 RMSE。第三个 `replay_hz` 参数控制实时回放频率。运行时
+同时发布单目图像、特征追踪图像、IMU/相机里程计、轨迹、偏置和视觉因子窗口。可选的
+第四个参数是 RTAB-Map 数据库路径；传入后会将保留关键帧提交给 RTAB-Map 后端。
 
 ```bash
 ./build/tassel_core/test_euroc \
   config/euroc.yaml \
   datasets/machine_hall/MH_01_easy \
   60
+```
+
+完整调用形式为：
+
+```text
+test_euroc [config.yaml] [sequence_dir] [replay_hz] [rtabmap_database]
 ```
 
 ## 参考文献

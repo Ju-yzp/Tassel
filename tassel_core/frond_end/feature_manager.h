@@ -4,6 +4,7 @@
 // 标准库
 #include <Eigen/Core>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Tassel
@@ -59,12 +60,15 @@ public:
 
     void reset();
 
-    std::vector<Feature*> collectLandmarks();
+    // 返回与内部地址无关的 {id, Feature} 快照；深度结果必须按 ID 通过 updateFeatureDepths 写回。
+    std::vector<std::pair<int, Feature>> collectLandmarks() const;
 
     // target_frame_index < 0 选择宿主帧后的全部观测，否则只选择该目标帧的观测。
-    // 返回指针仅在本次特征管理器不修改 features_ 的边缘化流程内有效。
-    std::vector<Feature*> collectMarginalizedFeatures(
-        int host_frame_index, int target_frame_index = -1);
+    std::vector<std::pair<int, Feature>> collectMarginalizedFeatures(
+        int host_frame_index, int target_frame_index = -1) const;
+
+    // depths 中的 ID 必须仍存在，保证优化快照的结果不会静默丢失。
+    void updateFeatureDepths(const std::vector<std::pair<int, double>>& depths);
 
     std::vector<HostLandmark> exportHostLandmarks(int host_frame_index, const State& state) const;
 

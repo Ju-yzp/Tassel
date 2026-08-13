@@ -7,6 +7,7 @@
 
 #include <Eigen/Core>
 #include <array>
+#include <optional>
 #include <sophus/so3.hpp>
 #include <stdexcept>
 #include <vector>
@@ -59,6 +60,13 @@ struct FrameState {
     }
 };
 
+// 当前 retained 关键帧第一次完成优化后的自由度参考。
+struct GaugeAnchor {
+    tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
+    Eigen::Matrix3d rotation = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d position = Eigen::Vector3d::Zero();
+};
+
 struct State {
     explicit State(int max_frame_count_ = 10) : max_frame_count(max_frame_count_) {
         if (max_frame_count < 1) {
@@ -88,6 +96,18 @@ struct State {
         frames[target_frame_index] = frames[source_index];
     }
 
+    void captureGauge(int frame_index) {
+        if (frame_index < 0 || frame_index > latest_frame_index) {
+            throw std::out_of_range("Gauge frame is outside the active window");
+        }
+        const FrameState& frame = frames[frame_index];
+        if (frame.timestamp_ns == tassel_utils::kInvalidFrameId || !frame.R.allFinite() ||
+            !frame.P.allFinite()) {
+            throw std::logic_error("Cannot capture gauge from an invalid frame");
+        }
+        gauge_anchor = GaugeAnchor{frame.timestamp_ns, frame.R, frame.P};
+    }
+
     State get_compensated_state() const {
         State compensated = *this;
         for (int frame_index = 0; frame_index <= latest_frame_index; ++frame_index) {
@@ -110,6 +130,7 @@ struct State {
         frames.assign(max_frame_count, FrameState{});
         delay_time = 0.0;
         param_delay_time = 0.0;
+        gauge_anchor.reset();
     }
 
     std::vector<FrameState> frames;
@@ -118,6 +139,7 @@ struct State {
     int latest_frame_index = 0;
     double delay_time = 0.0;
     double param_delay_time = 0.0;
+    std::optional<GaugeAnchor> gauge_anchor;
     const CameraBase* camera = nullptr;
     Eigen::Matrix2d visual_sqrt_info = Eigen::Matrix2d::Identity();
 };

@@ -90,7 +90,11 @@ TEST(FeatureManagerTest, CollectsFeatureForSpecifiedMarginalizationTarget) {
 
     auto marginalized = fm.collectMarginalizedFeatures(0, 1);
     ASSERT_EQ(marginalized.size(), 1u);
-    EXPECT_EQ(marginalized[0], &fm.features().at(1));
+    EXPECT_EQ(marginalized[0].first, 1);
+    EXPECT_EQ(marginalized[0].second.host_frame_index, 0);
+    EXPECT_DOUBLE_EQ(marginalized[0].second.estimated_depth, 2.0);
+    ASSERT_EQ(marginalized[0].second.observations.size(), 2u);
+    EXPECT_DOUBLE_EQ(marginalized[0].second.observations[1].uv.x(), 0.1);
 }
 
 TEST(FeatureManagerTest, CollectsFeatureForAllMarginalizationTargets) {
@@ -103,7 +107,37 @@ TEST(FeatureManagerTest, CollectsFeatureForAllMarginalizationTargets) {
     auto marginalized = fm.collectMarginalizedFeatures(1);
 
     ASSERT_EQ(marginalized.size(), 1u);
-    EXPECT_EQ(marginalized[0], &fm.features().at(1));
+    EXPECT_EQ(marginalized[0].first, 1);
+    EXPECT_EQ(marginalized[0].second.host_frame_index, 1);
+    EXPECT_DOUBLE_EQ(marginalized[0].second.estimated_depth, 2.0);
+    EXPECT_EQ(marginalized[0].second.observations.size(), 3u);
+}
+
+TEST(FeatureManagerTest, CollectsIndependentLandmarkSnapshots) {
+    auto fm = manager();
+    Feature feature(0, 4);
+    feature.estimated_depth = 2.0;
+    feature.observations = {observation(), observation(0.1)};
+    fm.features().emplace(7, std::move(feature));
+
+    auto landmarks = fm.collectLandmarks();
+
+    ASSERT_EQ(landmarks.size(), 1u);
+    EXPECT_EQ(landmarks[0].first, 7);
+    landmarks[0].second.estimated_depth = 3.0;
+    EXPECT_DOUBLE_EQ(fm.features().at(7).estimated_depth, 2.0);
+}
+
+TEST(FeatureManagerTest, UpdatesFeatureDepthsById) {
+    auto fm = manager();
+    fm.features().emplace(3, Feature(0, 2));
+    fm.features().emplace(5, Feature(0, 2));
+
+    fm.updateFeatureDepths({{3, 1.5}, {5, Feature::InvalidDepth}});
+
+    EXPECT_DOUBLE_EQ(fm.features().at(3).estimated_depth, 1.5);
+    EXPECT_DOUBLE_EQ(fm.features().at(5).estimated_depth, Feature::InvalidDepth);
+    EXPECT_THROW(fm.updateFeatureDepths({{9, 2.0}}), std::out_of_range);
 }
 
 TEST(FeatureManagerTest, TransfersDepthWhenOldestHostLeaves) {
@@ -373,14 +407,14 @@ TEST(FeatureManagerTest, RemovesLandmarkUsingDirectPixelReprojectionError) {
         fm.removeOutliers(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
 
     EXPECT_TRUE(fm.features().contains(1));
-    EXPECT_TRUE(fm.features().contains(2));
-    EXPECT_TRUE(fm.features().contains(3));
+    EXPECT_FALSE(fm.features().contains(2));
+    EXPECT_FALSE(fm.features().contains(3));
     EXPECT_EQ(removed_ids.size(), 2u);
     EXPECT_TRUE(containsId(removed_ids, 2));
     EXPECT_TRUE(containsId(removed_ids, 3));
 }
 
-TEST(FeatureManagerTest, ReprojectionOutlierRemainsAvailableForLaterObservations) {
+TEST(FeatureManagerTest, RemovesReprojectionOutlierBeforeLaterFrames) {
     cv::Mat K = (cv::Mat_<double>(3, 3) << 100.0, 0.0, 50.0, 0.0, 100.0, 40.0, 0.0, 0.0, 1.0);
     cv::Mat D = cv::Mat::zeros(1, 5, CV_64F);
     CameraRadTan camera(K, D, 100, 80);
@@ -400,13 +434,13 @@ TEST(FeatureManagerTest, ReprojectionOutlierRemainsAvailableForLaterObservations
     fm.features().at(2).estimated_depth = 2.0;
     const std::vector<int> removed_ids =
         fm.removeOutliers(state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
-    ASSERT_TRUE(fm.features().contains(2));
+    ASSERT_FALSE(fm.features().contains(2));
     ASSERT_EQ(removed_ids.size(), 1u);
     EXPECT_EQ(removed_ids.front(), 2);
 
-    EXPECT_FALSE(fm.addFeatureFrame(2, {{1, matching}, {2, matching}}));
+    EXPECT_FALSE(fm.addFeatureFrame(2, {{1, matching}}));
     EXPECT_TRUE(fm.features().contains(1));
-    EXPECT_TRUE(fm.features().contains(2));
+    EXPECT_FALSE(fm.features().contains(2));
 }
 
 TEST(FeatureManagerTest, ExportsValidLandmarksForRequestedHostAsIndependentValues) {

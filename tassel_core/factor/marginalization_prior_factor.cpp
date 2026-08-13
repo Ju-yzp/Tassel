@@ -1,8 +1,6 @@
 #include "marginalization_prior_factor.h"
 
 #include <Eigen/Core>
-#include <sophus/se3.hpp>
-
 #include <stdexcept>
 
 #include "tassel_utils/macros.h"
@@ -16,26 +14,22 @@ MarginalizationPriorFactor::MarginalizationPriorFactor(const MargLinData& data)
       lin_poses_(data.linearization_poses),
       lin_speed_bias_(data.linearization_speed_bias),
       lin_delay_time_(data.linearization_delay_time),
-      num_kept_(static_cast<int>(data.linearization_poses.size())),
-      layout_(num_kept_, static_cast<int>(data.H.cols())) {
-    if (H_.rows() != b_.size()) {
-        throw std::invalid_argument("Marginalization prior Jacobian and residual rows differ");
-    }
-    for (int i = 0; i < num_kept_; ++i) {
-        if (layout_.hasSpeedBias(i) && static_cast<int>(lin_speed_bias_.size()) != num_kept_) {
-            throw std::invalid_argument("Marginalization prior speed-bias states are incomplete");
-        }
-    }
+      num_kept_(data.stateCount()),
+      delay_column_(-1) {
+    data.validate();
+    delay_column_ = data.delayColumn();
     set_num_residuals(static_cast<int>(b_.size()));
+    pose_columns_.reserve(static_cast<size_t>(num_kept_));
+    speed_bias_columns_.reserve(static_cast<size_t>(num_kept_ - 1));
     for (int i = 0; i < num_kept_; ++i) {
+        pose_columns_.push_back(data.poseColumn(i));
         mutable_parameter_block_sizes()->push_back(6);  // pose
-        if (layout_.hasSpeedBias(i)) {
+        if (i > 0) {
+            speed_bias_columns_.push_back(data.speedBiasColumn(i));
             mutable_parameter_block_sizes()->push_back(9);  // speed_bias
         }
     }
-    if (layout_.hasDelay()) {
-        mutable_parameter_block_sizes()->push_back(1);
-    }
+    mutable_parameter_block_sizes()->push_back(1);
 }
 
 bool MarginalizationPriorFactor::Evaluate(
@@ -44,7 +38,7 @@ bool MarginalizationPriorFactor::Evaluate(
     Eigen::VectorXd delta(H_.cols());
     int parameter_index = 0;
     for (int i = 0; i < num_kept_; ++i) {
-        const int pose_column = layout_.poseColumn(i);
+        const int pose_column = pose_columns_[static_cast<size_t>(i)];
         const double* pose = parameters[parameter_index++];
         const Eigen::Vector3d position(pose[0], pose[1], pose[2]);
         const Eigen::Vector3d phi(pose[3], pose[4], pose[5]);
@@ -52,22 +46,21 @@ bool MarginalizationPriorFactor::Evaluate(
             lin_poses_[i][0], lin_poses_[i][1], lin_poses_[i][2]);
         const Eigen::Vector3d linearization_phi(
             lin_poses_[i][3], lin_poses_[i][4], lin_poses_[i][5]);
-        const Sophus::SO3d rotation_delta =
-            Sophus::SO3d::exp(linearization_phi).inverse() * Sophus::SO3d::exp(phi);
-        delta.segment<3>(pose_column) = position - linearization_position;
-        delta.segment<3>(pose_column + 3) = rotation_delta.log();
+        Eigen::Matrix<double, 6, 1> linearization_pose;
+        linearization_pose << linearization_position, linearization_phi;
+        Eigen::Matrix<double, 6, 1> current_pose;
+        current_pose << position, phi;
+        delta.segment<6>(pose_column) = rightTangentDelta(linearization_pose, current_pose);
 
-        if (layout_.hasSpeedBias(i)) {
-            const int speed_bias_column = layout_.speedBiasColumn(i);
+        if (i > 0) {
+            const int speed_bias_column = speed_bias_columns_[static_cast<size_t>(i - 1)];
             const double* speed_bias = parameters[parameter_index++];
             for (int d = 0; d < 9; ++d) {
                 delta(speed_bias_column + d) = speed_bias[d] - lin_speed_bias_[i][d];
             }
         }
     }
-    if (layout_.hasDelay()) {
-        delta(layout_.delayColumn()) = parameters[parameter_index++][0] - lin_delay_time_;
-    }
+    delta(delay_column_) = parameters[parameter_index++][0] - lin_delay_time_;
 
     Eigen::Map<Eigen::VectorXd> r(residuals, b_.size());
     r = H_ * delta + b_;
@@ -75,7 +68,7 @@ bool MarginalizationPriorFactor::Evaluate(
     if (jacobians) {
         parameter_index = 0;
         for (int i = 0; i < num_kept_; ++i) {
-            const int pose_column = layout_.poseColumn(i);
+            const int pose_column = pose_columns_[static_cast<size_t>(i)];
             if (jacobians[parameter_index]) {
                 Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 6, Eigen::RowMajor>> pose_jacobian(
                     jacobians[parameter_index], b_.size(), 6);
@@ -86,21 +79,20 @@ bool MarginalizationPriorFactor::Evaluate(
                 pose_jacobian = H_.block(0, pose_column, b_.size(), 6) * minus;
             }
             ++parameter_index;
-            if (layout_.hasSpeedBias(i)) {
+            if (i > 0) {
                 if (jacobians[parameter_index]) {
                     Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 9, Eigen::RowMajor>>
                         speed_bias_jacobian(jacobians[parameter_index], b_.size(), 9);
-                    speed_bias_jacobian = H_.block(0, layout_.speedBiasColumn(i), b_.size(), 9);
+                    speed_bias_jacobian =
+                        H_.block(0, speed_bias_columns_[static_cast<size_t>(i - 1)], b_.size(), 9);
                 }
                 ++parameter_index;
             }
         }
-        if (layout_.hasDelay()) {
-            if (jacobians[parameter_index]) {
-                Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 1>> J_delay(
-                    jacobians[parameter_index], b_.size(), 1);
-                J_delay = H_.col(layout_.delayColumn());
-            }
+        if (jacobians[parameter_index]) {
+            Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, 1>> J_delay(
+                jacobians[parameter_index], b_.size(), 1);
+            J_delay = H_.col(delay_column_);
         }
     }
 

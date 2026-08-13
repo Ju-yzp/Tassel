@@ -5,16 +5,49 @@
 #include <stdexcept>
 #include "factor/marginalization_prior_factor.h"
 #include "marg/marg_helper.h"
-#include "marg/state_layout.h"
 #include "tassel_utils/macros.h"
 
-#include <sophus/so3.hpp>
+#include "tassel_utils/se3_right_manifold.h"
 
 namespace tassel_core {
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
+std::vector<int> marginalizationColumnOrder(int window_state_count, RetainedHostAction action) {
+    if (window_state_count < 2) {
+        throw std::invalid_argument("Marginalization requires at least two window states");
+    }
+    constexpr int pose_size = MargHelper::kPoseSize;
+    constexpr int speed_bias_size = MargHelper::kSpeedBiasSize;
+    constexpr int state_size = MargHelper::kFullStateSize;
+    const int total_columns = window_state_count * state_size + 1;
+    std::vector<int> order;
+    order.reserve(static_cast<size_t>(total_columns));
+    const auto append = [&order](int first, int count) {
+        for (int i = 0; i < count; ++i) {
+            order.push_back(first + i);
+        }
+    };
+
+    switch (action) {
+        case RetainedHostAction::InitializeRetainedSlot:
+        case RetainedHostAction::ReplaceRetainedSlot:
+            append(0, state_size);
+            append(state_size + pose_size, speed_bias_size);
+            append(state_size, pose_size);
+            append(2 * state_size, total_columns - 2 * state_size);
+            break;
+        case RetainedHostAction::MarginalizeOldestFrame:
+            append(state_size, state_size);
+            append(0, state_size);
+            append(2 * state_size, total_columns - 2 * state_size);
+            break;
+    }
+    if (static_cast<int>(order.size()) != total_columns) {
+        throw std::logic_error("Marginalization column mapping is incomplete");
+    }
+    return order;
+}
 
 }  // namespace
 
@@ -25,15 +58,14 @@ Eigen::VectorXd MargHelper::evaluatePriorResidual(
     TASSEL_ASSERT(static_cast<int>(poses.size()) == num_kept);
     TASSEL_ASSERT(static_cast<int>(speed_bias.size()) == num_kept);
     TASSEL_ASSERT(static_cast<int>(prior.linearization_speed_bias.size()) == num_kept);
-    const PriorStateLayout layout(num_kept, static_cast<int>(prior.H.cols()));
-    TASSEL_ASSERT(layout.hasDelay());
+    prior.validate();
 
     MarginalizationPriorFactor factor(prior);
     std::vector<const double*> parameters;
     parameters.reserve(num_kept * 2 + 1);
     for (int i = 0; i < num_kept; ++i) {
         parameters.push_back(poses[i].data());
-        if (layout.hasSpeedBias(i)) {
+        if (i > 0) {
             parameters.push_back(speed_bias[i].data());
         }
     }
@@ -52,11 +84,11 @@ void MargHelper::recenterPrior(
         static_cast<int>(prior.linearization_speed_bias.size()) != n) {
         throw std::logic_error("Prior recenter state count does not match its linearization data");
     }
-    const PriorStateLayout layout(n, static_cast<int>(prior.H.cols()));
+    prior.validate();
     Eigen::VectorXd delta = Eigen::VectorXd::Zero(prior.H.cols());
     std::vector<Eigen::Matrix3d> rotation_maps(n, Eigen::Matrix3d::Identity());
     for (int i = 0; i < n; ++i) {
-        const int col = layout.poseColumn(i);
+        const int col = prior.poseColumn(i);
         const Eigen::Vector3d old_position(
             prior.linearization_poses[i][0], prior.linearization_poses[i][1],
             prior.linearization_poses[i][2]);
@@ -66,28 +98,28 @@ void MargHelper::recenterPrior(
             prior.linearization_poses[i][5]);
         const Eigen::Vector3d new_phi(poses[i][3], poses[i][4], poses[i][5]);
         const Eigen::Vector3d rotation_delta =
-            (Sophus::SO3d::exp(old_phi).inverse() * Sophus::SO3d::exp(new_phi)).log();
-        if (!old_position.allFinite() || !new_position.allFinite() || !rotation_delta.allFinite() ||
-            rotation_delta.norm() >= kPi - 1e-6) {
-            throw std::logic_error("Prior recenter encountered an invalid SO(3) linearization");
+            rightTangentDelta(
+                (Eigen::Matrix<double, 6, 1>() << old_position, old_phi).finished(),
+                (Eigen::Matrix<double, 6, 1>() << new_position, new_phi).finished())
+                .tail<3>();
+        if (!old_position.allFinite() || !new_position.allFinite()) {
+            throw std::logic_error("Prior recenter encountered an invalid state");
         }
         delta.segment<3>(col) = new_position - old_position;
         delta.segment<3>(col + 3) = rotation_delta;
-        rotation_maps[i] = Sophus::SO3d::leftJacobianInverse(-rotation_delta);
+        rotation_maps[i] = rightTangentTransport(old_phi, new_phi);
 
-        if (layout.hasSpeedBias(i)) {
-            const int sb_col = layout.speedBiasColumn(i);
+        if (i > 0) {
+            const int sb_col = prior.speedBiasColumn(i);
             for (int d = 0; d < kSpeedBiasSize; ++d) {
                 delta(sb_col + d) = speed_bias[i][d] - prior.linearization_speed_bias[i][d];
             }
         }
     }
-    if (layout.hasDelay()) {
-        delta(layout.delayColumn()) = delay_time - prior.linearization_delay_time;
-    }
+    delta(prior.delayColumn()) = delay_time - prior.linearization_delay_time;
     prior.b += prior.H * delta;
     for (int i = 0; i < n; ++i) {
-        const int col = layout.poseColumn(i);
+        const int col = prior.poseColumn(i);
         prior.H.middleCols(col + 3, 3) *= rotation_maps[i];
     }
     prior.linearization_poses = poses;
@@ -105,15 +137,12 @@ void MargHelper::transformPriorGauge(
         std::abs(rotation.determinant() - 1.0) > 1e-8) {
         throw std::logic_error("Prior gauge transform is not a valid rigid transform");
     }
-    const PriorStateLayout layout(
-        static_cast<int>(prior.linearization_poses.size()), static_cast<int>(prior.H.cols()));
+    prior.validate();
     const Eigen::Matrix3d inverse_rotation = rotation.transpose();
-    const int n = static_cast<int>(prior.linearization_poses.size());
-    for (int i = 0; i < n; ++i) {
-        const int col = layout.poseColumn(i);
-        prior.H.middleCols(col, 3) *= inverse_rotation;
-        if (layout.hasSpeedBias(i)) {
-            prior.H.middleCols(layout.speedBiasColumn(i), 3) *= inverse_rotation;
+    for (int i = 0; i < prior.stateCount(); ++i) {
+        prior.H.middleCols(prior.poseColumn(i), 3) *= inverse_rotation;
+        if (i > 0) {
+            prior.H.middleCols(prior.speedBiasColumn(i), 3) *= inverse_rotation;
         }
 
         const Eigen::Vector3d position(
@@ -122,12 +151,12 @@ void MargHelper::transformPriorGauge(
         const Eigen::Vector3d phi(
             prior.linearization_poses[i][3], prior.linearization_poses[i][4],
             prior.linearization_poses[i][5]);
-        const Eigen::Vector3d transformed_position = rotation * position + translation;
-        const Eigen::Vector3d transformed_phi =
-            (Sophus::SO3d(rotation) * Sophus::SO3d::exp(phi)).log();
         const Eigen::Vector3d velocity(
             prior.linearization_speed_bias[i][0], prior.linearization_speed_bias[i][1],
             prior.linearization_speed_bias[i][2]);
+        const Eigen::Vector3d transformed_position = rotation * position + translation;
+        const Eigen::Vector3d transformed_phi =
+            (Sophus::SO3d(rotation) * Sophus::SO3d::exp(phi)).log();
         const Eigen::Vector3d transformed_velocity = rotation * velocity;
         for (int d = 0; d < 3; ++d) {
             prior.linearization_poses[i][d] = transformed_position[d];
@@ -160,7 +189,9 @@ void MargHelper::marginalizeSquareRootSystem(
 
     Eigen::VectorXd temp_vec(cols + 1);
     double* temp_data = temp_vec.data();
-    const double rank_threshold = std::sqrt(std::numeric_limits<double>::epsilon());
+    // Householder beta 与输入同尺度，秩阈值必须随整个平方根系统缩放。
+    const double system_scale = jacobian.cwiseAbs().maxCoeff();
+    const double rank_threshold = std::sqrt(std::numeric_limits<double>::epsilon()) * system_scale;
     for (Eigen::Index i = 0; i < cols && total_rank < rows; ++i) {
         Eigen::Index remainingRows = rows - total_rank;
         Eigen::Index remainingCols = cols - i - 1;

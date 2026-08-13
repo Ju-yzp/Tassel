@@ -5,10 +5,33 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <stdexcept>
 
 #include <sophus/so3.hpp>
 
 namespace tassel_core {
+
+// 统一先验切空间契约：姿态采用右扰动 R_new = R_old * Exp(delta_theta)。
+// 返回 y ⊟ x = [p_y-p_x, Log(R_x^{-1}R_y)]，其旋转坐标在 x 的局部右切空间。
+inline Eigen::Matrix<double, 6, 1> rightTangentDelta(
+    const Eigen::Matrix<double, 6, 1>& x, const Eigen::Matrix<double, 6, 1>& y) {
+    Eigen::Matrix<double, 6, 1> delta;
+    delta.head<3>() = y.head<3>() - x.head<3>();
+    delta.tail<3>() =
+        (Sophus::SO3d::exp(x.tail<3>()).inverse() * Sophus::SO3d::exp(y.tail<3>())).log();
+    return delta;
+}
+
+// 将旧线性化点的旋转切空间坐标转换到新线性化点：delta_old = T * delta_new。
+inline Eigen::Matrix3d rightTangentTransport(
+    const Eigen::Vector3d& old_phi, const Eigen::Vector3d& new_phi) {
+    const Eigen::Vector3d delta =
+        (Sophus::SO3d::exp(old_phi).inverse() * Sophus::SO3d::exp(new_phi)).log();
+    if (!delta.allFinite() || delta.norm() >= 3.14159265358979323846 - 1e-6) {
+        throw std::invalid_argument("Right tangent rotation transport is invalid");
+    }
+    return Sophus::SO3d::leftJacobianInverse(-delta);
+}
 
 class SE3RightManifold : public ceres::Manifold {
 public:

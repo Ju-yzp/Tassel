@@ -214,10 +214,10 @@ TEST(MarginalizationPriorTest, ResidualMatchesDirect) {
     std::mt19937 rng(42);
     std::normal_distribution<double> n(0.0, 1.0);
 
-    // H: 6 × 12 (2 frames), b: 6 × 1
-    Eigen::MatrixXd H(6, 12);
+    constexpr int kCols = 6 + 15 + 1;
+    Eigen::MatrixXd H(6, kCols);
     for (int r = 0; r < 6; ++r) {
-        for (int c = 0; c < 12; ++c) {
+        for (int c = 0; c < kCols; ++c) {
             H(r, c) = n(rng);
         }
     }
@@ -230,6 +230,7 @@ TEST(MarginalizationPriorTest, ResidualMatchesDirect) {
     data.H = H;
     data.b = b;
     data.linearization_poses = {lin0, lin1};
+    data.linearization_speed_bias.resize(2);
     MarginalizationPriorFactor factor(data);
 
     // 随机优化位姿
@@ -240,12 +241,16 @@ TEST(MarginalizationPriorTest, ResidualMatchesDirect) {
     }
 
     // 预期残差
-    Eigen::VectorXd x_opt(12);
+    double speed_bias1[9] = {};
+    double delay = 0.0;
+    Eigen::VectorXd x_opt = Eigen::VectorXd::Zero(kCols);
     x_opt << pose0[0], pose0[1], pose0[2], pose0[3], pose0[4], pose0[5], pose1[0], pose1[1],
-        pose1[2], pose1[3], pose1[4], pose1[5];
+        pose1[2], pose1[3], pose1[4], pose1[5], speed_bias1[0], speed_bias1[1], speed_bias1[2],
+        speed_bias1[3], speed_bias1[4], speed_bias1[5], speed_bias1[6], speed_bias1[7],
+        speed_bias1[8], delay;
     Eigen::VectorXd expected_r = H * x_opt + b;
 
-    double const* params[] = {pose0, pose1};
+    double const* params[] = {pose0, pose1, speed_bias1, &delay};
     Eigen::VectorXd r(factor.num_residuals());
     factor.Evaluate(params, r.data(), nullptr);
 
@@ -257,9 +262,10 @@ TEST(MarginalizationPriorTest, JacobiansRemainFixedInLocalTangent) {
     std::mt19937 rng(123);
     std::normal_distribution<double> n(0.0, 1.0);
 
-    Eigen::MatrixXd H(8, 12);
+    constexpr int kCols = 6 + 15 + 1;
+    Eigen::MatrixXd H(8, kCols);
     for (int r = 0; r < 8; ++r) {
-        for (int c = 0; c < 12; ++c) {
+        for (int c = 0; c < kCols; ++c) {
             H(r, c) = n(rng);
         }
     }
@@ -272,6 +278,7 @@ TEST(MarginalizationPriorTest, JacobiansRemainFixedInLocalTangent) {
     data.H = H;
     data.b = b;
     data.linearization_poses = {lin0, lin1};
+    data.linearization_speed_bias.resize(2);
     MarginalizationPriorFactor factor(data);
 
     double pose0[6], pose1[6];
@@ -280,14 +287,16 @@ TEST(MarginalizationPriorTest, JacobiansRemainFixedInLocalTangent) {
         pose1[i] = lin1[i] + 0.2 * n(rng);
     }
 
-    double const* params[] = {pose0, pose1};
+    double speed_bias1[9] = {};
+    double delay = 0.0;
+    double const* params[] = {pose0, pose1, speed_bias1, &delay};
     int res_dim = factor.num_residuals();
 
     Eigen::VectorXd r0(res_dim);
     Eigen::Matrix<double, Eigen::Dynamic, 6, Eigen::RowMajor> J0(res_dim, 6);
     Eigen::Matrix<double, Eigen::Dynamic, 6, Eigen::RowMajor> J1(res_dim, 6);
     {
-        double* jacs[] = {J0.data(), J1.data()};
+        double* jacs[] = {J0.data(), J1.data(), nullptr, nullptr};
         factor.Evaluate(params, r0.data(), jacs);
     }
 
@@ -306,7 +315,7 @@ TEST(MarginalizationPriorTest, JacobiansRemainFixedInLocalTangent) {
 
 TEST(MarginalizationPriorTest, CurrentResidualMatchesStoredPrior) {
     constexpr int kFrames = 2;
-    constexpr int kCols = kFrames * 15 + 1;
+    constexpr int kCols = 6 + (kFrames - 1) * 15 + 1;
     constexpr int kRows = 24;
     std::mt19937 rng(789);
     std::normal_distribution<double> n(0.0, 1.0);
@@ -347,7 +356,8 @@ TEST(MarginalizationPriorTest, CurrentResidualMatchesStoredPrior) {
         old_prior, current_poses, current_speed_bias, current_delay);
     MarginalizationPriorFactor old_factor(old_prior);
     std::vector<const double*> parameters;
-    for (int i = 0; i < kFrames; ++i) {
+    parameters.push_back(current_poses[0].data());
+    for (int i = 1; i < kFrames; ++i) {
         parameters.push_back(current_poses[i].data());
         parameters.push_back(current_speed_bias[i].data());
     }
@@ -456,10 +466,23 @@ TEST(MarginalizationPriorTest, GaugeTransformPreservesResidual) {
     EXPECT_TRUE(transformed.isApprox(original, 1e-11));
 }
 
-TEST(MarginalizationPriorTest, RecenterRejectsRotationLogSingularity) {
+TEST(MarginalizationPriorTest, GaugeTransformRejectsNonRotation) {
     MargLinData prior;
     prior.H = Eigen::MatrixXd::Identity(6, 6);
     prior.b = Eigen::VectorXd::Zero(6);
+    prior.linearization_poses = {std::array<double, 6>{}};
+    prior.linearization_speed_bias = {std::array<double, 9>{}};
+    Eigen::Matrix3d scaling = Eigen::Matrix3d::Identity();
+    scaling(0, 0) = 2.0;
+
+    EXPECT_THROW(
+        MargHelper::transformPriorGauge(prior, scaling, Eigen::Vector3d::Zero()), std::logic_error);
+}
+
+TEST(MarginalizationPriorTest, RecenterRejectsRotationLogSingularity) {
+    MargLinData prior;
+    prior.H = Eigen::MatrixXd::Identity(7, 7);
+    prior.b = Eigen::VectorXd::Zero(7);
     prior.linearization_poses = {std::array<double, 6>{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
     prior.linearization_speed_bias = {std::array<double, 9>{}};
     auto poses = prior.linearization_poses;
@@ -470,20 +493,7 @@ TEST(MarginalizationPriorTest, RecenterRejectsRotationLogSingularity) {
         std::logic_error);
 }
 
-TEST(MarginalizationPriorTest, GaugeTransformRejectsNonRotation) {
-    MargLinData prior;
-    prior.H = Eigen::MatrixXd::Identity(6, 6);
-    prior.b = Eigen::VectorXd::Zero(6);
-    prior.linearization_poses = {std::array<double, 6>{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
-    prior.linearization_speed_bias = {std::array<double, 9>{}};
-    Eigen::Matrix3d scaling = Eigen::Matrix3d::Identity();
-    scaling(0, 0) = 2.0;
-
-    EXPECT_THROW(
-        MargHelper::transformPriorGauge(prior, scaling, Eigen::Vector3d::Zero()), std::logic_error);
-}
-
-TEST(MarginalizationPriorTest, PoseOnlyHostMixedLayout) {
+TEST(MarginalizationPriorTest, FixedWindowLayout) {
     constexpr int kFrames = 3;
     constexpr int kCols = 6 + (kFrames - 1) * 15 + 1;
     constexpr int kRows = 10;
@@ -562,6 +572,16 @@ TEST(MarginalizationPriorTest, PoseOnlyHostMixedLayout) {
     EXPECT_TRUE(jacobian_blocks[5].isApprox(data.H.rightCols(1), 1e-12));
 }
 
+TEST(MarginalizationPriorTest, RejectsNonWindowPriorLayout) {
+    MargLinData data;
+    data.H = Eigen::MatrixXd::Zero(3, 12);
+    data.b = Eigen::VectorXd::Zero(3);
+    data.linearization_poses.resize(2);
+    data.linearization_speed_bias.resize(2);
+
+    EXPECT_THROW(MarginalizationPriorFactor factor(data), std::invalid_argument);
+}
+
 TEST(SE3RightManifoldTest, PlusAndMinusJacobiansAreInverse) {
     SE3RightManifold manifold;
     double pose[6] = {0.3, -0.2, 0.1, 0.7, -0.4, 0.25};
@@ -582,12 +602,13 @@ TEST(MarginalizationPriorTest, CeresConvergesWithPrior) {
     std::normal_distribution<double> n(0.0, 1.0);
 
     // FEJ 旋转雅各比有意不等于远离线性化点后的真实导数；Ceres 集成测试使用精确线性的平移方向。
-    Eigen::VectorXd x_gt = Eigen::VectorXd::Zero(12);
+    constexpr int kCols = 6 + 15 + 1;
+    Eigen::VectorXd x_gt = Eigen::VectorXd::Zero(kCols);
     for (const int index : {0, 1, 2, 6, 7, 8}) {
         x_gt(index) = n(rng);
     }
 
-    Eigen::MatrixXd H = Eigen::MatrixXd::Identity(12, 12);
+    Eigen::MatrixXd H = Eigen::MatrixXd::Identity(kCols, kCols);
     Eigen::VectorXd b = -H * x_gt;
 
     std::array<double, 6> lin0, lin1;
@@ -600,10 +621,13 @@ TEST(MarginalizationPriorTest, CeresConvergesWithPrior) {
     marg_data.H = H;
     marg_data.b = b;
     marg_data.linearization_poses = {lin0, lin1};
+    marg_data.linearization_speed_bias.resize(2);
     auto* factor = new MarginalizationPriorFactor(marg_data);
 
     double pose0[6] = {};
     double pose1[6] = {};
+    double speed_bias1[9] = {};
+    double delay = 0.0;
     for (int axis = 0; axis < 3; ++axis) {
         pose0[axis] = x_gt(axis) + 0.5 * n(rng);
         pose1[axis] = x_gt(6 + axis) + 0.5 * n(rng);
@@ -612,7 +636,7 @@ TEST(MarginalizationPriorTest, CeresConvergesWithPrior) {
     ceres::Problem problem;
     problem.AddParameterBlock(pose0, 6, new SE3RightManifold());
     problem.AddParameterBlock(pose1, 6, new SE3RightManifold());
-    problem.AddResidualBlock(factor, nullptr, pose0, pose1);
+    problem.AddResidualBlock(factor, nullptr, pose0, pose1, speed_bias1, &delay);
 
     ceres::Solver::Options opts;
     opts.linear_solver_type = ceres::DENSE_QR;

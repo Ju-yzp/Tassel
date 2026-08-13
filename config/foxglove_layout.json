@@ -1,7 +1,7 @@
 {
   "configById": {
     "3D!tasselmain": {
-      "followTf": "world",
+      "followTf": "odom",
       "scene": {
         "transforms": {
           "visible": true,
@@ -39,9 +39,9 @@
         }
       }
     },
-    "Image!tasselmono": {
+    "Image!tasseltracking": {
       "imageMode": {
-        "imageTopic": "/mono/image",
+        "imageTopic": "/tracking/image",
         "synchronize": false
       }
     },
@@ -86,7 +86,7 @@
       "splitPercentage": 82
     },
     "second": {
-      "first": "Image!tasselmono",
+      "first": "Image!tasseltracking",
       "second": {
         "first": "Plot!tasselba",
         "second": "Plot!tasselbg",

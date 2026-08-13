@@ -6,14 +6,12 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
-#include <unordered_set>
 #include <variant>
 #include <vector>
 
 #include "factor/integrator_base.h"
 #include "frond_end/feature_manager.h"
 #include "marg/marg_lin_data.h"
-#include "marg/schmidt/schmidt_prior_covariance.h"
 #include "marg/window_action.h"
 #include "parameters/parameters.h"
 #include "state/state.h"
@@ -26,11 +24,7 @@
 namespace tassel_core {
 
 class CameraBase;
-
-enum class EstimatorMode {
-    Normal,
-    StationaryBaHold,
-};
+class WindowOptimizer;
 
 // 整帧优化和窗口搬迁完成后复制发布；跨线程使用时不得再引用 FeatureManager 内部对象。
 struct TrackingPredictionSnapshot {
@@ -60,6 +54,7 @@ public:
     Estimator(
         const tassel_tools::Parameters& params, std::shared_ptr<State> state,
         std::shared_ptr<FeatureManager> fm);
+    ~Estimator();
 
     void processMeasurement(
         tassel_utils::FrameId frame_id,
@@ -96,16 +91,6 @@ public:
     void reset();
 
 private:
-    struct StageTimes {
-        double feature_ms = 0.0;
-        double predict_ms = 0.0;
-        double triangulation_ms = 0.0;
-        double optimization_ms = 0.0;
-        double outlier_ms = 0.0;
-        double marginalization_ms = 0.0;
-        double migration_ms = 0.0;
-    };
-
     template <typename Integrator>
     using IntegratorVector = std::vector<Integrator>;
     using PreintegratorStorage =
@@ -118,22 +103,19 @@ private:
     void predictFrameState(
         int frame_index, const std::vector<tassel_utils::IMUMeasurement>& imu_measurements);
 
+    void runSlidingWindowUpdate(int latest_frame_index, double timestamp);
+
     void slideInitializationWindow();
 
     void migrateMarginalizedData(RetainedHostAction action);
 
-    void captureGauge(int frame_index);
+    void normalizeGaugeAfterOptimization(int reference_frame_index);
 
-    void restoreGauge(int reference_frame_index);
-
-    bool holdsBa() const { return mode_ == EstimatorMode::StationaryBaHold; }
-    bool maintainsSchmidtCovariance() const { return mode_ == EstimatorMode::StationaryBaHold; }
+    bool isStationaryWindow() const;
 
     bool tryInitialize();
 
     Eigen::Matrix<double, 18, 18> initNoise() const;
-
-    void recordStageTimes(const StageTimes& times);
 
     template <typename Fn>
     decltype(auto) visitPreintegrators(Fn&& fn) {
@@ -149,18 +131,13 @@ private:
     std::shared_ptr<State> state_;
     std::shared_ptr<FeatureManager> feature_manager_;
     const CameraBase* camera_ = nullptr;
-    std::unique_ptr<ceres::Context> ceres_context_{ceres::Context::Create()};
+    std::unique_ptr<WindowOptimizer> window_optimizer_;
 
     Eigen::Matrix<double, 18, 18> noise_;
-
-    // 只累计初始化完成后的正常滑窗帧，避免初始化长尾污染稳态阶段统计。
-    StageTimes stage_time_totals_;
-    size_t stage_time_samples_ = 0;
 
     bool initialized_ = false;
     bool last_measurement_was_keyframe_ = false;
     std::optional<RetainedKeyframe> last_retained_keyframe_;
-    EstimatorMode mode_ = EstimatorMode::Normal;
     std::function<void(double, const Sophus::SE3d&)> pose_callback_;
     std::function<void(double, const std::vector<int>&)> visual_factor_callback_;
     PreintegratorStorage preintegrators_;
@@ -169,14 +146,6 @@ private:
     Eigen::Vector3d last_imu_gyro_;
 
     std::unique_ptr<MargLinData> marginalization_prior_;
-    // 仅用于 Schmidt/consider 协方差递推，不替换 Ceres 使用的平方根先验。
-    std::unique_ptr<SchmidtPriorCovariance> schmidt_prior_covariance_;
-    // 完整 posterior 已吸收这些特征；其后续观测保守跳过，避免结构消元后重复计数。
-    std::unordered_set<int> schmidt_absorbed_feature_ids_;
-    // VIO 初始化成功后从当前参考帧捕获；仅在保留槽创建或替换后更新。
-    Eigen::Matrix3d retained_rotation_ = Eigen::Matrix3d::Identity();
-    Eigen::Vector3d retained_position_ = Eigen::Vector3d::Zero();
-
     // 动态初始化使用，存储 SFM 位姿以及 IMU 在体坐标系下的速度。
     std::vector<Eigen::Matrix3d> Rs_;
     std::vector<Eigen::Vector3d> Ps_;

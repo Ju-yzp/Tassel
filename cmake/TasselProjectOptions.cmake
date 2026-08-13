@@ -2,8 +2,6 @@ include_guard(GLOBAL)
 
 option(TASSEL_ENABLE_ASAN
        "Enable AddressSanitizer (leak / OOB / UAF detection)" OFF)
-option(TASSEL_ENABLE_PROFILING
-       "Add frame-pointer + debug symbols for perf / VTune profiling" OFF)
 option(TASSEL_ENABLE_NATIVE_ARCH
        "Compile local C++ targets for the build host ISA" OFF)
 function(tassel_setup_project_options)
@@ -54,11 +52,6 @@ function(tassel_setup_project_options)
     endif()
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-march=native>)
     message(STATUS "Native architecture optimization: ENABLED (-march=native)")
-  endif()
-
-  if(TASSEL_ENABLE_PROFILING)
-    message(STATUS "Profiling support: ENABLED  (-fno-omit-frame-pointer -g)")
-    add_compile_options(-fno-omit-frame-pointer -g)
   endif()
 
   if(TASSEL_ENABLE_ASAN)

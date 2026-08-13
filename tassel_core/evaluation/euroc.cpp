@@ -1,11 +1,11 @@
 // =============================================================================
-// test_euroc.cpp
+// euroc.cpp
 //
 // 目的：
 //   EuRoC MAV Machine Hall 单目序列的离线集成入口。
 //
 // 用法：
-//   test_euroc [config.yaml] [sequence_dir] [replay_hz]
+//   test_euroc [config.yaml] [sequence_dir] [replay_hz] [rtabmap_database]
 //
 // 示例：
 //   unzip dataset/machine_hall/MH_01_easy/MH_01_easy.zip -d dataset/machine_hall/MH_01_easy
@@ -37,15 +37,14 @@
 #include <unordered_map>
 #include <vector>
 
-#include <spdlog/spdlog.h>
 #include <rclcpp/executors/single_threaded_executor.hpp>
 
 #include "cam/camera_factory.h"
+#include "evaluation/trajectory_evaluator.h"
 #include "estimator/estimator.h"
 #include "frond_end/feature_manager.h"
 #include "frond_end/feature_tracker.h"
 #include "parameters/parameters.h"
-#include "profiling/vtune_profile_scope.h"
 #include "rtabmap/rtabmap_backend.h"
 #include "state/state.h"
 #include "viewer/viewer.h"
@@ -72,18 +71,13 @@ struct MonoObservation {
     double get_timestamp() const { return tassel_utils::frameIdToSeconds(timestamp); }
 };
 
-struct GroundTruthPose {
-    double timestamp = 0.0;
-    Sophus::SE3d pose;
-};
+using tassel_core::evaluation::PosePair;
+using tassel_core::evaluation::TimedPose;
 
-struct EvaluatedPose {
-    Sophus::SE3d estimate;
-    Sophus::SE3d truth;
-};
-
-struct LatestDisplayImage {
-    cv::Mat image;
+struct LatestDisplayImages {
+    cv::Mat mono;
+    cv::Mat tracking;
+    double timestamp = -1.0;
 };
 
 struct SyncedPacket {
@@ -304,13 +298,13 @@ std::vector<tassel_utils::IMUMeasurement> loadImuCsv(const fs::path& csv_path) {
     return measurements;
 }
 
-std::vector<GroundTruthPose> loadGroundTruthCsv(const fs::path& csv_path) {
+std::vector<TimedPose> loadGroundTruthCsv(const fs::path& csv_path) {
     std::ifstream file(csv_path);
     if (!file.is_open()) {
         throw std::runtime_error("Failed to open ground truth csv: " + csv_path.string());
     }
 
-    std::vector<GroundTruthPose> poses;
+    std::vector<TimedPose> poses;
     std::string line;
     while (std::getline(file, line)) {
         if (line.empty() || line[0] == '#') {
@@ -330,88 +324,20 @@ std::vector<GroundTruthPose> loadGroundTruthCsv(const fs::path& csv_path) {
     return poses;
 }
 
-std::optional<Sophus::SE3d> interpolateGroundTruth(
-    const std::vector<GroundTruthPose>& poses, double timestamp) {
-    if (poses.empty() || timestamp < poses.front().timestamp ||
-        timestamp > poses.back().timestamp) {
-        return std::nullopt;
-    }
-    const auto upper = std::lower_bound(
-        poses.begin(), poses.end(), timestamp,
-        [](const GroundTruthPose& pose, double value) { return pose.timestamp < value; });
-    if (upper == poses.begin()) {
-        return upper->pose;
-    }
-    if (upper == poses.end()) {
-        return poses.back().pose;
-    }
-
-    const auto lower = std::prev(upper);
-    const double duration = upper->timestamp - lower->timestamp;
-    const double alpha = duration > 0.0 ? (timestamp - lower->timestamp) / duration : 0.0;
-    const Eigen::Vector3d position =
-        (1.0 - alpha) * lower->pose.translation() + alpha * upper->pose.translation();
-    const Eigen::Quaterniond orientation =
-        lower->pose.unit_quaternion().slerp(alpha, upper->pose.unit_quaternion()).normalized();
-    return Sophus::SE3d(orientation, position);
-}
-
-Sophus::SE3d alignByYawAndTranslation(const std::vector<EvaluatedPose>& poses) {
-    if (poses.empty()) {
-        throw std::invalid_argument("Cannot align an empty trajectory");
-    }
-
-    Eigen::Vector3d estimate_mean = Eigen::Vector3d::Zero();
-    Eigen::Vector3d truth_mean = Eigen::Vector3d::Zero();
-    for (const auto& pose : poses) {
-        estimate_mean += pose.estimate.translation();
-        truth_mean += pose.truth.translation();
-    }
-    estimate_mean /= static_cast<double>(poses.size());
-    truth_mean /= static_cast<double>(poses.size());
-
-    double xx = 0.0;
-    double xy = 0.0;
-    for (const auto& pose : poses) {
-        const Eigen::Vector3d estimate = pose.estimate.translation() - estimate_mean;
-        const Eigen::Vector3d truth = pose.truth.translation() - truth_mean;
-        xx += estimate.x() * truth.x() + estimate.y() * truth.y();
-        xy += estimate.x() * truth.y() - estimate.y() * truth.x();
-    }
-    const double yaw = std::atan2(xy, xx);
-    const Eigen::Matrix3d rotation =
-        Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-    const Eigen::Vector3d translation = truth_mean - rotation * estimate_mean;
-    return Sophus::SE3d(rotation, translation);
-}
-
-void reportTrajectoryError(const std::vector<EvaluatedPose>& poses) {
+void reportTrajectoryError(const std::vector<PosePair>& poses) {
     if (poses.empty()) {
         std::cout << "[EuRoC] no synchronized ground-truth poses for evaluation\n";
         return;
     }
 
-    const Sophus::SE3d alignment = alignByYawAndTranslation(poses);
-    double squared_position_error = 0.0;
-    double squared_rotation_error = 0.0;
-    double terminal_position_error = 0.0;
-    for (const auto& pose : poses) {
-        const Sophus::SE3d aligned_estimate = alignment * pose.estimate;
-        const Eigen::Vector3d position_error =
-            aligned_estimate.translation() - pose.truth.translation();
-        const Eigen::Vector3d rotation_error =
-            (pose.truth.so3().inverse() * aligned_estimate.so3()).log();
-        squared_position_error += position_error.squaredNorm();
-        squared_rotation_error += rotation_error.squaredNorm();
-        terminal_position_error = position_error.norm();
-    }
-
-    const double count = static_cast<double>(poses.size());
+    const auto error = tassel_core::evaluation::evaluateTrajectory(poses);
     std::cout << "[EuRoC] trajectory evaluation (single global yaw+translation alignment): "
               << "samples=" << poses.size()
-              << " ATE_RMSE=" << std::sqrt(squared_position_error / count) << " m"
-              << " terminal_position_error=" << terminal_position_error << " m"
-              << " rotation_RMSE=" << std::sqrt(squared_rotation_error / count) << " rad\n";
+              << " time_range=[" << poses.front().timestamp << ", " << poses.back().timestamp
+              << "] s"
+              << " ATE_RMSE=" << error.position_rmse << " m"
+              << " terminal_position_error=" << error.terminal_position_error << " m"
+              << " rotation_RMSE=" << error.rotation_rmse << " rad\n";
 }
 
 fs::path resolveSequenceDir(const fs::path& sequence_dir) {
@@ -444,12 +370,14 @@ tassel_core::Camera initializeCamera(const tassel_tools::Parameters& params) {
         params.camera_model, params.cam_intrinsic, params.cam_distort, params.cols, params.rows);
 }
 
-void publishMonoImage(
-    const std::shared_ptr<tassel_tools::Viewer>& viewer, const LatestDisplayImage& image) {
-    if (image.image.empty()) {
+void publishDisplayImages(
+    const std::shared_ptr<tassel_tools::Viewer>& viewer, const LatestDisplayImages& images) {
+    if (images.mono.empty() || images.tracking.empty()) {
         return;
     }
-    viewer->publishImage("mono/image", "camera_optical_frame", image.image);
+    viewer->publishImage("mono/image", "camera_optical_frame", images.mono, images.timestamp);
+    viewer->publishImage(
+        "tracking/image", "camera_optical_frame", images.tracking, images.timestamp);
 }
 
 }  // namespace
@@ -468,8 +396,7 @@ int main(int argc, char** argv) {
     if (!std::isfinite(replay_hz) || replay_hz <= 0.0) {
         throw std::invalid_argument("replay_hz must be finite and positive");
     }
-    tassel_core::profiling::pauseVtuneCollection();
-    constexpr bool kBackendProfileOnly = true;
+    constexpr bool kHeadless = false;
 
     const fs::path resolved_sequence_dir = resolveSequenceDir(sequence_dir);
     if (!fs::exists(resolved_sequence_dir / "mav0" / "cam0" / "data.csv")) {
@@ -498,11 +425,12 @@ int main(int argc, char** argv) {
 
     rclcpp::init(argc, argv);
     std::shared_ptr<tassel_tools::Viewer> viewer;
-    if (!kBackendProfileOnly) {
+    if (!kHeadless) {
         viewer = std::make_shared<tassel_tools::Viewer>("odom");
         rclcpp::QoS image_qos(rclcpp::KeepLast(1));
         image_qos.best_effort().durability_volatile();
         viewer->createImagePublisher("mono/image", image_qos);
+        viewer->createImagePublisher("tracking/image", image_qos);
         viewer->createOdometryPublisher("imu_link", "vio/odometry");
         viewer->createOdometryPublisher(
             "camera_optical_frame", "vio/camera_odometry", rclcpp::QoS(10), false);
@@ -523,7 +451,7 @@ int main(int argc, char** argv) {
     }
     std::atomic_bool stop_executor{false};
     std::thread spin_thread;
-    if (!kBackendProfileOnly) {
+    if (!kHeadless) {
         spin_thread = std::thread([&]() {
             while (rclcpp::ok() && !stop_executor.load()) {
                 executor.spin_some(std::chrono::milliseconds(5));
@@ -557,25 +485,36 @@ int main(int argc, char** argv) {
     }
     const size_t frame_limit = frames.size();
     std::optional<Sophus::SE3d> ground_truth_alignment;
-    std::vector<EvaluatedPose> evaluated_poses;
+    std::vector<PosePair> evaluated_poses;
     evaluated_poses.reserve(frame_limit);
     std::optional<Sophus::SE3d> latest_optimized_pose;
     estimator.setPoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment,
                                &evaluated_poses, &params,
                                &latest_optimized_pose](double ts, const Sophus::SE3d& pose) {
         latest_optimized_pose = pose;
+        const FrameState& frame = state->frames[state->latest_frame_index];
         if (viewer) {
+            // Odometry twist 必须表达在 child_frame_id；V 是世界系速度，gyro-Bg 是 IMU 系角速度。
+            const Eigen::Vector3d body_velocity = frame.R.transpose() * frame.V;
+            const Eigen::Vector3d body_angular_velocity = frame.gyro - frame.Bg;
             viewer->publishOdometry(
-                "vio/odometry", pose.translation(), pose.unit_quaternion(), Eigen::Vector3d::Zero(),
-                Eigen::Vector3d::Zero(), ts);
+                "vio/odometry", pose.translation(), pose.unit_quaternion(), body_velocity,
+                body_angular_velocity, ts);
             const Sophus::SE3d camera_pose = pose * Sophus::SE3d(params.ric, params.tic);
+            const Eigen::Vector3d camera_velocity =
+                params.ric.transpose() * (body_velocity + body_angular_velocity.cross(params.tic));
+            const Eigen::Vector3d camera_angular_velocity =
+                params.ric.transpose() * body_angular_velocity;
             viewer->publishOdometry(
                 "vio/camera_odometry", camera_pose.translation(), camera_pose.unit_quaternion(),
-                Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), ts);
+                camera_velocity, camera_angular_velocity, ts);
             viewer->publishPath("vio/path", pose.translation(), pose.unit_quaternion(), ts);
         }
-        if (const auto truth = interpolateGroundTruth(ground_truth, ts)) {
-            evaluated_poses.push_back({pose, *truth});
+        // R/P/V 位于图像时间加同步延迟的 IMU 时刻；视觉因子另行补偿 delay_time-sync_delay。
+        const double evaluation_ts = ts + frame.sync_delay;
+        if (const auto truth = tassel_core::evaluation::interpolatePose(
+                ground_truth, evaluation_ts)) {
+            evaluated_poses.push_back({evaluation_ts, pose, *truth});
             if (!ground_truth_alignment) {
                 // 仅用于 Foxglove 叠加显示；正式评估在所有样本收集后统一对齐。
                 ground_truth_alignment = pose * truth->inverse();
@@ -597,9 +536,9 @@ int main(int argc, char** argv) {
     });
     if (viewer) {
         estimator.setVisualFactorCallback(
-            [&viewer](double /*ts*/, const std::vector<int>& visual_factors_per_frame) {
+            [&viewer](double ts, const std::vector<int>& visual_factors_per_frame) {
                 viewer->publishVisualFactorWindow(
-                    "optimization/visual_window", visual_factors_per_frame);
+                    "optimization/visual_window", visual_factors_per_frame, ts);
             });
     }
     BlockingDatasetSync sync;
@@ -610,7 +549,7 @@ int main(int argc, char** argv) {
     std::atomic_size_t produced{0};
     std::atomic_size_t produced_imu{0};
     std::mutex latest_image_mutex;
-    LatestDisplayImage latest_image;
+    LatestDisplayImages latest_images;
     std::mutex loaded_mono_mutex;
     std::condition_variable loaded_mono_cv;
     std::deque<std::shared_ptr<MonoObservation>> loaded_mono_queue;
@@ -618,8 +557,8 @@ int main(int argc, char** argv) {
     constexpr size_t kMaxLoadedMonoFrames = 30;
     const size_t preload_target = std::min(frame_limit, kMaxLoadedMonoFrames);
     std::vector<std::shared_ptr<MonoObservation>> preloaded_mono;
-    if (kBackendProfileOnly) {
-        // 后端 profiling 先离线预读全部图像，避免 imread 进入优化/边缘化采样窗口。
+    if (kHeadless) {
+        // Headless 离线入口预读图像，避免数据读取线程影响确定性的回放顺序。
         preloaded_mono.reserve(frame_limit);
         for (size_t i = 0; i < frame_limit; ++i) {
             const auto& frame = frames[i];
@@ -636,12 +575,12 @@ int main(int argc, char** argv) {
             preloaded_mono.push_back(std::move(mono_msg));
         }
         if (preloaded_mono.size() != frame_limit) {
-            throw std::runtime_error("Failed to preload the full mono sequence for profiling");
+            throw std::runtime_error("Failed to preload the full mono sequence");
         }
     }
 
     std::thread mono_loader_thread;
-    if (!kBackendProfileOnly) {
+    if (!kHeadless) {
         mono_loader_thread = std::thread([&]() {
             for (size_t i = 0; i < frame_limit && rclcpp::ok() && !stop_reader.load(); ++i) {
                 const auto& frame = frames[i];
@@ -706,17 +645,19 @@ int main(int argc, char** argv) {
     };
 
     std::thread image_publish_thread;
-    if (!kBackendProfileOnly) {
+    if (!kHeadless) {
         image_publish_thread = std::thread([&]() {
             const auto period = std::chrono::duration<double>(1.0 / replay_hz);
             auto next_tick = std::chrono::steady_clock::now();
             while (rclcpp::ok() && !stop_image_publisher.load()) {
-                LatestDisplayImage image;
+                LatestDisplayImages images;
                 {
                     std::lock_guard<std::mutex> lock(latest_image_mutex);
-                    image.image = latest_image.image.clone();
+                    images.mono = latest_images.mono.clone();
+                    images.tracking = latest_images.tracking.clone();
+                    images.timestamp = latest_images.timestamp;
                 }
-                publishMonoImage(viewer, image);
+                publishDisplayImages(viewer, images);
 
                 next_tick +=
                     std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
@@ -727,8 +668,8 @@ int main(int argc, char** argv) {
 
     std::thread imu_reader_thread;
     std::thread mono_reader_thread;
-    if (kBackendProfileOnly) {
-        // 后端 profiling 采用离线一次性灌入，避免 replay 调度和 sleep_until 污染采样窗口。
+    if (kHeadless) {
+        // Headless 模式一次性灌入数据，避免真实时间调度拖慢离线评估。
         for (const auto& imu : imu_measurements) {
             if (imu.timestamp > playback_end_ts) {
                 break;
@@ -804,35 +745,31 @@ int main(int argc, char** argv) {
     size_t processed = 0;
     std::map<tassel_utils::FrameId, cv::Mat> rtabmap_images;
     while (rclcpp::ok()) {
-        const auto packet_start = std::chrono::steady_clock::now();
         SyncedPacket packet;
         if (!sync.waitPop(packet, state->delay_time)) {
             break;
         }
-        const auto after_sync = std::chrono::steady_clock::now();
         if (!packet.mono) {
             continue;
         }
 
         std::unordered_map<int, FeaturePerFrame> feature_frame;
-        const auto tracking_start = std::chrono::steady_clock::now();
         feature_frame = tracker.monoTracking(packet.mono->left_img);
-        const auto after_tracking = std::chrono::steady_clock::now();
         for (auto& [id, feature] : feature_frame) {
             (void)id;
             feature.sync_delay = packet.sync_delay;
         }
 
-        if (!kBackendProfileOnly) {
+        if (!kHeadless) {
             cv::Mat left_tracking = packet.mono->left_img.clone();
             tracker.drawTrackingResult(left_tracking);
             {
                 std::lock_guard<std::mutex> lock(latest_image_mutex);
-                latest_image.image = std::move(left_tracking);
+                latest_images.mono = packet.mono->left_img.clone();
+                latest_images.tracking = std::move(left_tracking);
+                latest_images.timestamp = packet.mono->get_timestamp();
             }
         }
-        const auto after_visualization = std::chrono::steady_clock::now();
-
         latest_optimized_pose.reset();
         if (rtabmap_backend) {
             rtabmap_images[packet.mono->timestamp] = packet.mono->left_img;
@@ -852,19 +789,6 @@ int main(int argc, char** argv) {
         if (rtabmap_backend && !estimator.lastMeasurementWasKeyframe()) {
             rtabmap_images.erase(packet.mono->timestamp);
         }
-        const auto after_estimator = std::chrono::steady_clock::now();
-
-        const auto milliseconds = [](auto begin, auto end) {
-            return std::chrono::duration<double, std::milli>(end - begin).count();
-        };
-        spdlog::info(
-            "Timing pipeline: total={:.3f} ms sync_wait={:.3f} tracking={:.3f} "
-            "visualization={:.3f} estimator={:.3f}",
-            milliseconds(packet_start, after_estimator), milliseconds(packet_start, after_sync),
-            milliseconds(tracking_start, after_tracking),
-            milliseconds(after_tracking, after_visualization),
-            milliseconds(after_visualization, after_estimator));
-
         ++processed;
 
         if (processed % 20 == 0) {

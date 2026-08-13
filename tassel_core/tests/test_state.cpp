@@ -31,6 +31,8 @@ TEST(StateTest, RotationParameterRoundTripIncludingNearPi) {
 
 TEST(StateTest, ResetClearsFrameIds) {
     State state(3);
+    state.frames[0].timestamp_ns = 1;
+    state.captureGauge(0);
     for (int i = 0; i < 3; ++i) {
         state.frames[i].timestamp_ns = 10 * (i + 1);
     }
@@ -40,6 +42,22 @@ TEST(StateTest, ResetClearsFrameIds) {
     for (const auto& frame : state.frames) {
         EXPECT_EQ(frame.timestamp_ns, tassel_utils::kInvalidFrameId);
     }
+    EXPECT_FALSE(state.gauge_anchor.has_value());
+}
+
+TEST(StateTest, CapturesGaugeFromOptimizedFrame) {
+    State state(2);
+    state.latest_frame_index = 1;
+    state.frames[1].timestamp_ns = 42;
+    state.frames[1].R = Sophus::SO3d::exp(Eigen::Vector3d(0.1, -0.2, 0.3)).matrix();
+    state.frames[1].P = Eigen::Vector3d(1.0, 2.0, 3.0);
+
+    state.captureGauge(1);
+
+    ASSERT_TRUE(state.gauge_anchor.has_value());
+    EXPECT_EQ(state.gauge_anchor->frame_id, 42);
+    EXPECT_TRUE(state.gauge_anchor->rotation.isApprox(state.frames[1].R));
+    EXPECT_EQ(state.gauge_anchor->position, state.frames[1].P);
 }
 
 TEST(StateTest, RejectsInvalidWindowSizeBeforeAllocation) {
