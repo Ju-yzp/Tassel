@@ -98,10 +98,10 @@ protected:
         for (int k = 0; k < total_steps; ++k) {
             const int f = std::min(k / steps_per_frame_, num_frames_ - 1);
             auto& sample = imu_timeline_.states[k];
-            sample.Ba = Ba_true_[f];
-            sample.Bg = Bg_true_[f];
-            sample.acc = a_body_ + sample.R.transpose() * tassel_utils::G + sample.Ba;
-            sample.gyro = w_body_ + sample.Bg;
+            sample.accel_bias = Ba_true_[f];
+            sample.gyro_bias = Bg_true_[f];
+            sample.acc = a_body_ + sample.rot_w_i.transpose() * tassel_utils::G + sample.accel_bias;
+            sample.gyro = w_body_ + sample.gyro_bias;
         }
 
         // 提取帧状态
@@ -110,9 +110,9 @@ protected:
         frames_V_.resize(num_frames_);
         for (int f = 0; f < num_frames_; ++f) {
             int k = f * steps_per_frame_;
-            frames_R_[f] = imu_timeline_.states[k].R;
-            frames_P_[f] = imu_timeline_.states[k].P;
-            frames_V_[f] = imu_timeline_.states[k].V;
+            frames_R_[f] = imu_timeline_.states[k].rot_w_i;
+            frames_P_[f] = imu_timeline_.states[k].pos_w_i;
+            frames_V_[f] = imu_timeline_.states[k].vel_w;
         }
 
         // 预积分（线性化点为基础偏置，模拟未标定偏置）

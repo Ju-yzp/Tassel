@@ -531,12 +531,12 @@ TEST(MarginalizationPriorTest, FixedWindowLayout) {
             value += 0.02 * n(rng);
         }
     }
-    double delay_time = -0.004;
+    double time_delay = -0.004;
 
     MarginalizationPriorFactor factor(data);
     std::vector<const double*> parameters = {poses[0].data(),      poses[1].data(),
                                              speed_bias[1].data(), poses[2].data(),
-                                             speed_bias[2].data(), &delay_time};
+                                             speed_bias[2].data(), &time_delay};
 
     Eigen::VectorXd residual(kRows);
     std::vector<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>
@@ -554,7 +554,7 @@ TEST(MarginalizationPriorTest, FixedWindowLayout) {
 
     ASSERT_TRUE(factor.Evaluate(parameters.data(), residual.data(), jacobians.data()));
     const Eigen::VectorXd helper_residual =
-        MargHelper::evaluatePriorResidual(data, poses, speed_bias, delay_time);
+        MargHelper::evaluatePriorResidual(data, poses, speed_bias, time_delay);
     EXPECT_TRUE(residual.isApprox(helper_residual, 1e-12));
 
     SE3RightManifold manifold;

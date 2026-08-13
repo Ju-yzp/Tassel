@@ -8,9 +8,9 @@
 
 namespace tassel_core::evaluation {
 
-std::optional<Sophus::SE3d> interpolatePose(
-    const std::vector<TimedPose>& poses, double timestamp) {
-    if (poses.empty() || timestamp < poses.front().timestamp || timestamp > poses.back().timestamp) {
+std::optional<Sophus::SE3d> interpolatePose(const std::vector<TimedPose>& poses, double timestamp) {
+    if (poses.empty() || timestamp < poses.front().timestamp ||
+        timestamp > poses.back().timestamp) {
         return std::nullopt;
     }
 

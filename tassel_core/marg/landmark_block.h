@@ -11,8 +11,6 @@
 
 namespace tassel_core {
 
-class VisualFrameCache;
-
 class LandmarkBlock {
 public:
     LandmarkBlock(int dim = 6, ceres::LossFunction* loss = nullptr);
@@ -21,8 +19,7 @@ public:
 
     void linearize(
         const Feature& feature, int target_frame_index, const State& state,
-        const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
-        const VisualFrameCache* frame_cache = nullptr, int landmark_cache_index = -1);
+        const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
     void marginalizeLandmark();
 

@@ -12,6 +12,7 @@ datasets
 private_notes/
 private_hardware/
 tassel_hardware/
+PROJECT.md
 tassel_core/tests/test_nori_estimator.cpp
 config/tassel.yaml
 config/nori_valid_mask.png

@@ -40,8 +40,8 @@
 #include <rclcpp/executors/single_threaded_executor.hpp>
 
 #include "cam/camera_factory.h"
-#include "evaluation/trajectory_evaluator.h"
 #include "estimator/estimator.h"
+#include "evaluation/trajectory_evaluator.h"
 #include "frond_end/feature_manager.h"
 #include "frond_end/feature_tracker.h"
 #include "parameters/parameters.h"
@@ -332,9 +332,8 @@ void reportTrajectoryError(const std::vector<PosePair>& poses) {
 
     const auto error = tassel_core::evaluation::evaluateTrajectory(poses);
     std::cout << "[EuRoC] trajectory evaluation (single global yaw+translation alignment): "
-              << "samples=" << poses.size()
-              << " time_range=[" << poses.front().timestamp << ", " << poses.back().timestamp
-              << "] s"
+              << "samples=" << poses.size() << " time_range=[" << poses.front().timestamp << ", "
+              << poses.back().timestamp << "] s"
               << " ATE_RMSE=" << error.position_rmse << " m"
               << " terminal_position_error=" << error.terminal_position_error << " m"
               << " rotation_RMSE=" << error.rotation_rmse << " rad\n";
@@ -492,11 +491,11 @@ int main(int argc, char** argv) {
                                &evaluated_poses, &params,
                                &latest_optimized_pose](double ts, const Sophus::SE3d& pose) {
         latest_optimized_pose = pose;
-        const FrameState& frame = state->frames[state->latest_frame_index];
+        const FrameState& frame = state->frames[state->latest_active_frame_index];
         if (viewer) {
             // Odometry twist 必须表达在 child_frame_id；V 是世界系速度，gyro-Bg 是 IMU 系角速度。
-            const Eigen::Vector3d body_velocity = frame.R.transpose() * frame.V;
-            const Eigen::Vector3d body_angular_velocity = frame.gyro - frame.Bg;
+            const Eigen::Vector3d body_velocity = frame.rot_w_i.transpose() * frame.vel_w;
+            const Eigen::Vector3d body_angular_velocity = frame.imu_gyro - frame.gyro_bias;
             viewer->publishOdometry(
                 "vio/odometry", pose.translation(), pose.unit_quaternion(), body_velocity,
                 body_angular_velocity, ts);
@@ -510,10 +509,10 @@ int main(int argc, char** argv) {
                 camera_velocity, camera_angular_velocity, ts);
             viewer->publishPath("vio/path", pose.translation(), pose.unit_quaternion(), ts);
         }
-        // R/P/V 位于图像时间加同步延迟的 IMU 时刻；视觉因子另行补偿 delay_time-sync_delay。
-        const double evaluation_ts = ts + frame.sync_delay;
-        if (const auto truth = tassel_core::evaluation::interpolatePose(
-                ground_truth, evaluation_ts)) {
+        // R/P/V 位于图像时间加同步延迟的 IMU 时刻；视觉因子另行补偿 time_delay-sync_delay。
+        const double evaluation_ts = ts + frame.image_sync_delay;
+        if (const auto truth =
+                tassel_core::evaluation::interpolatePose(ground_truth, evaluation_ts)) {
             evaluated_poses.push_back({evaluation_ts, pose, *truth});
             if (!ground_truth_alignment) {
                 // 仅用于 Foxglove 叠加显示；正式评估在所有样本收集后统一对齐。
@@ -526,10 +525,12 @@ int main(int argc, char** argv) {
                     aligned_truth.unit_quaternion(), ts);
             }
         }
-        const Eigen::Vector3d& velocity = state->frames[state->latest_frame_index].V;
+        const Eigen::Vector3d& velocity = state->frames[state->latest_active_frame_index].vel_w;
         if (viewer) {
-            viewer->publishVector3("vio/ba", state->frames[state->latest_frame_index].Ba, ts);
-            viewer->publishVector3("vio/bg", state->frames[state->latest_frame_index].Bg, ts);
+            viewer->publishVector3(
+                "vio/ba", state->frames[state->latest_active_frame_index].accel_bias, ts);
+            viewer->publishVector3(
+                "vio/bg", state->frames[state->latest_active_frame_index].gyro_bias, ts);
         }
         std::cout << "[pose] t=" << ts << " p=" << pose.translation().transpose()
                   << " |V|=" << velocity.norm() << "\n";
@@ -746,7 +747,7 @@ int main(int argc, char** argv) {
     std::map<tassel_utils::FrameId, cv::Mat> rtabmap_images;
     while (rclcpp::ok()) {
         SyncedPacket packet;
-        if (!sync.waitPop(packet, state->delay_time)) {
+        if (!sync.waitPop(packet, state->time_delay)) {
             break;
         }
         if (!packet.mono) {
@@ -823,12 +824,13 @@ int main(int argc, char** argv) {
     rclcpp::shutdown();
 
     std::cout << "\n[EuRoC] done. processed=" << processed
-              << ", newest frame_index=" << state->latest_frame_index << "\n";
+              << ", newest frame_index=" << state->latest_active_frame_index << "\n";
     reportTrajectoryError(evaluated_poses);
-    if (state->latest_frame_index > 0) {
-        int idx = state->latest_frame_index;
+    if (state->latest_active_frame_index > 0) {
+        int idx = state->latest_active_frame_index;
         std::cout << "Final pose:\n"
-                  << Sophus::SE3d(state->frames[idx].R, state->frames[idx].P).matrix() << "\n";
+                  << Sophus::SE3d(state->frames[idx].rot_w_i, state->frames[idx].pos_w_i).matrix()
+                  << "\n";
     }
 
     return 0;

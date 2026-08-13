@@ -20,12 +20,12 @@ public:
     // 在当前状态计算固定线性化先验的残差；先验雅各比保持在原线性化点。
     static Eigen::VectorXd evaluatePriorResidual(
         const MargLinData& prior, const std::vector<std::array<double, 6>>& poses,
-        const std::vector<std::array<double, 9>>& speed_bias, double delay_time);
+        const std::vector<std::array<double, 9>>& speed_bias, double time_delay);
 
     // 将先验的一阶模型迁移到当前状态，并同步更新局部雅各比。
     static void recenterPrior(
         MargLinData& prior, const std::vector<std::array<double, 6>>& poses,
-        const std::vector<std::array<double, 9>>& speed_bias, double delay_time);
+        const std::vector<std::array<double, 9>>& speed_bias, double time_delay);
 
     // 将世界系刚体变换同步写入先验线性化点和世界系位置、速度列。
     static void transformPriorGauge(

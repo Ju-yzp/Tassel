@@ -39,7 +39,7 @@ void LandmarkBlock::allocate(int num_frames, int num_obs, int dim) {
 
 void LandmarkBlock::linearize(
     const Feature& feature, int target_frame_index, const State& state, const Eigen::Matrix3d& ric,
-    const Eigen::Vector3d& tic, const VisualFrameCache* frame_cache, int landmark_cache_index) {
+    const Eigen::Vector3d& tic) {
     storage_.setZero();
 
     const std::vector<FeaturePerFrame>& observations = feature.observations;
@@ -66,31 +66,33 @@ void LandmarkBlock::linearize(
         Eigen::Matrix<double, 2, 1> residual;
         const Eigen::Vector2d pt_j(target_observation.pt.x, target_observation.pt.y);
         ReprojectionFactor reprojection_factor(
-            uv_i, pt_j, ric, tic, state.frames[host_frame_index].gyro,
-            state.frames[target_frame].gyro, state.frames[host_frame_index].acc,
-            state.frames[target_frame].acc, state.frames[host_frame_index].speed_bias.data(),
-            state.frames[target_frame].speed_bias.data(),
-            state.frames[host_frame_index].speed_bias.data() + 6,
-            state.frames[target_frame].speed_bias.data() + 6,
-            state.frames[host_frame_index].speed_bias.data() + 3,
-            state.frames[target_frame].speed_bias.data() + 3, sqrt_info, state.camera,
-            observations[0].sync_delay, target_observation.sync_delay, frame_cache,
-            host_frame_index, target_frame, landmark_cache_index);
+            uv_i, pt_j, ric, tic, state.frames[host_frame_index].imu_gyro,
+            state.frames[target_frame].imu_gyro, state.frames[host_frame_index].imu_acc,
+            state.frames[target_frame].imu_acc,
+            state.frames[host_frame_index].param_speed_bias.data(),
+            state.frames[target_frame].param_speed_bias.data(),
+            state.frames[host_frame_index].param_speed_bias.data() + 6,
+            state.frames[target_frame].param_speed_bias.data() + 6,
+            state.frames[host_frame_index].param_speed_bias.data() + 3,
+            state.frames[target_frame].param_speed_bias.data() + 3, sqrt_info, state.camera,
+            observations[0].sync_delay, target_observation.sync_delay, &state, host_frame_index,
+            target_frame);
 
         std::vector<double*> jacobians = {
             jacobian_pose_i.data(), jacobian_pose_j.data(), jacobian_dt.data(),
             jacobian_landmark.data()};
         std::vector<double const*> parameters = {
-            state.frames[host_frame_index].pose.data(), state.frames[target_frame].pose.data(),
-            &state.param_delay_time, &inv_depth};
+            state.frames[host_frame_index].param_pose.data(),
+            state.frames[target_frame].param_pose.data(), &state.param_time_delay, &inv_depth};
         TASSEL_ASSERT(
             reprojection_factor.Evaluate(parameters.data(), residual.data(), jacobians.data()));
         jacobian_pose_i.block<2, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Eigen::Vector3d(
-            state.frames[host_frame_index].pose[3], state.frames[host_frame_index].pose[4],
-            state.frames[host_frame_index].pose[5]));
+            state.frames[host_frame_index].param_pose[3],
+            state.frames[host_frame_index].param_pose[4],
+            state.frames[host_frame_index].param_pose[5]));
         jacobian_pose_j.block<2, 3>(0, 3) *= Sophus::SO3d::leftJacobianInverse(-Eigen::Vector3d(
-            state.frames[target_frame].pose[3], state.frames[target_frame].pose[4],
-            state.frames[target_frame].pose[5]));
+            state.frames[target_frame].param_pose[3], state.frames[target_frame].param_pose[4],
+            state.frames[target_frame].param_pose[5]));
 
         double scale = 1.0;
         if (loss_) {

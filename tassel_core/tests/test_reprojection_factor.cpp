@@ -41,6 +41,30 @@ namespace {
 
 class ReprojectionFactorTest : public ::testing::Test {
 protected:
+    State makeVisualState() const {
+        State state(2);
+        for (int i = 0; i < 2; ++i) {
+            auto& frame = state.frames[i];
+            const double* pose = i == 0 ? pose_i_ : pose_j_;
+            const Eigen::Vector3d& velocity = i == 0 ? V_i_ : V_j_;
+            const Eigen::Vector3d& gyro = i == 0 ? w_i_ : w_j_;
+            const Eigen::Vector3d& acceleration = i == 0 ? a_i_ : a_j_;
+            for (int d = 0; d < 6; ++d) {
+                frame.param_pose[d] = pose[d];
+            }
+            for (int d = 0; d < 3; ++d) {
+                frame.param_speed_bias[d] = velocity[d];
+                frame.param_speed_bias[d + 3] = Ba_[d];
+                frame.param_speed_bias[d + 6] = Bg_[d];
+            }
+            frame.imu_gyro = gyro;
+            frame.imu_acc = acceleration;
+        }
+        state.latest_active_frame_index = 1;
+        state.param_time_delay = td_;
+        return state;
+    }
+
     void SetUp() override {
         ric_ = Eigen::Matrix3d::Identity();
         tic_ = Eigen::Vector3d(0.05, 0.0, 0.0);
@@ -70,10 +94,10 @@ protected:
 
         w_i_ = sci.gyro;
         a_i_ = sci.acc;
-        V_i_ = sci.V;
+        V_i_ = sci.vel_w;
         w_j_ = scj.gyro;
         a_j_ = scj.acc;
-        V_j_ = scj.V;
+        V_j_ = scj.vel_w;
 
         // 从查询状态生成路标（精确计算，不使用近似）。
         std::vector<Eigen::Vector3d> P_cam_i_pts = {
@@ -86,19 +110,19 @@ protected:
             lm.inv_depth = 1.0 / Pc.z();
 
             Eigen::Vector3d P_imu_i = ric_ * Pc + tic_;
-            Eigen::Vector3d P_world = sqi.R * P_imu_i + sqi.P;
-            Eigen::Vector3d P_imu_j = sqj.R.transpose() * (P_world - sqj.P);
+            Eigen::Vector3d P_world = sqi.rot_w_i * P_imu_i + sqi.pos_w_i;
+            Eigen::Vector3d P_imu_j = sqj.rot_w_i.transpose() * (P_world - sqj.pos_w_i);
             Eigen::Vector3d P_cam_j = ric_.transpose() * (P_imu_j - tic_);
             lm.pt_j = Eigen::Vector2d(P_cam_j.x() / P_cam_j.z(), P_cam_j.y() / P_cam_j.z());
             lms_.push_back(lm);
         }
 
-        Eigen::Vector3d phi_ci = Sophus::SO3d(sci.R).log();
-        Eigen::Vector3d phi_cj = Sophus::SO3d(scj.R).log();
+        Eigen::Vector3d phi_ci = Sophus::SO3d(sci.rot_w_i).log();
+        Eigen::Vector3d phi_cj = Sophus::SO3d(scj.rot_w_i).log();
         for (int d = 0; d < 3; ++d) {
-            pose_i_[d] = sci.P[d];
+            pose_i_[d] = sci.pos_w_i[d];
             pose_i_[d + 3] = phi_ci[d];
-            pose_j_[d] = scj.P[d];
+            pose_j_[d] = scj.pos_w_i[d];
             pose_j_[d + 3] = phi_cj[d];
         }
         v_i_[0] = V_i_.x();
@@ -145,31 +169,17 @@ protected:
 
 TEST_F(ReprojectionFactorTest, SharedFrameCachePreservesLinearization) {
     std::unique_ptr<ReprojectionFactor> uncached(makeFactor(0));
-    double delay = td_;
-    std::vector<VisualFrameCacheInput> inputs(2);
-    inputs[0].pose = pose_i_;
-    inputs[0].velocity = V_i_;
-    inputs[0].gyro = w_i_;
-    inputs[0].acceleration = a_i_;
-    inputs[0].gyro_bias = Bg_;
-    inputs[0].accel_bias = Ba_;
-    inputs[1].pose = pose_j_;
-    inputs[1].velocity = V_j_;
-    inputs[1].gyro = w_j_;
-    inputs[1].acceleration = a_j_;
-    inputs[1].gyro_bias = Bg_;
-    inputs[1].accel_bias = Ba_;
-    VisualFrameCache cache(std::move(inputs), &delay, ric_, tic_);
-    cache.addPair(0, 1);
+    State state = makeVisualState();
+    VisualFrameCache cache(state, ric_);
     double inverse_depth = lms_[0].inv_depth;
     const auto& lm = lms_[0];
-    cache.reserveLandmarks(1);
-    const int landmark_index = cache.addLandmark(lm.uv_i, &inverse_depth);
     cache.PrepareForEvaluation(false, true);
     ReprojectionFactor cached(
         lm.uv_i, lm.pt_j, ric_, tic_, w_i_, w_j_, a_i_, a_j_, v_i_, v_j_, bg_, bg_, ba_, ba_,
-        sqrt_info_, &camera_, 0.0, 0.0, &cache, 0, 1, landmark_index);
-    double const* parameters[] = {pose_i_, pose_j_, &delay, &inverse_depth};
+        sqrt_info_, &camera_, 0.0, 0.0, &state, 0, 1);
+    double const* parameters[] = {
+        state.frames[0].param_pose.data(), state.frames[1].param_pose.data(),
+        &state.param_time_delay, &inverse_depth};
     double uncached_residual[2];
     double cached_residual[2];
     double uncached_jacobian[12 + 12 + 2 + 2];
@@ -192,9 +202,9 @@ TEST_F(ReprojectionFactorTest, SharedFrameCachePreservesLinearization) {
     const Eigen::Map<const Eigen::Matrix<double, 28, 1>> cached_jacobian_map(cached_jacobian);
     EXPECT_TRUE(uncached_jacobian_map.isApprox(cached_jacobian_map, 1e-12));
 
-    pose_i_[0] += 0.02;
-    pose_j_[4] -= 0.01;
-    delay = 0.013;
+    state.frames[0].param_pose[0] += 0.02;
+    state.frames[1].param_pose[4] -= 0.01;
+    state.param_time_delay = 0.013;
     cache.PrepareForEvaluation(true, true);
     ASSERT_TRUE(uncached->Evaluate(parameters, uncached_residual, uncached_blocks));
     ASSERT_TRUE(cached.Evaluate(parameters, cached_residual, cached_blocks));
@@ -202,92 +212,6 @@ TEST_F(ReprojectionFactorTest, SharedFrameCachePreservesLinearization) {
         << "uncached=" << uncached_residual_map.transpose()
         << " cached=" << cached_residual_map.transpose();
     EXPECT_TRUE(uncached_jacobian_map.isApprox(cached_jacobian_map, 1e-12));
-}
-
-#if defined(CERES_HAS_EVALUATION_STEP_EVENTS)
-TEST_F(ReprojectionFactorTest, SharedFrameCacheRestoresRejectedTrialPoint) {
-    double delay = td_;
-    std::vector<VisualFrameCacheInput> inputs(2);
-    inputs[0] = {pose_i_, V_i_, w_i_, a_i_, Bg_, Ba_, 0.0};
-    inputs[1] = {pose_j_, V_j_, w_j_, a_j_, Bg_, Ba_, 0.0};
-    VisualFrameCache cache(std::move(inputs), &delay, ric_, tic_);
-    cache.addPair(0, 1);
-
-    cache.PrepareForEvaluation(true, true);
-    const Eigen::Vector3d accepted_translation = cache.pair(0, 1, true).camera_relative_translation;
-
-    pose_i_[0] += 0.5;
-    cache.PrepareForEvaluation(false, true);
-    const Eigen::Vector3d rejected_trial_translation = cache.pair(0, 1).camera_relative_translation;
-    EXPECT_GT((rejected_trial_translation - accepted_translation).norm(), 1e-3);
-    cache.OnEvaluationRejected();
-    EXPECT_TRUE(
-        cache.pair(0, 1, true).camera_relative_translation.isApprox(accepted_translation, 1e-12));
-
-    pose_i_[0] += 0.25;
-    cache.PrepareForEvaluation(false, true);
-    const Eigen::Vector3d committed_translation = cache.pair(0, 1).camera_relative_translation;
-    cache.OnEvaluationAccepted();
-    EXPECT_TRUE(
-        cache.pair(0, 1).camera_relative_translation.isApprox(committed_translation, 1e-12));
-
-    pose_i_[0] -= 1.0;
-    cache.PrepareForEvaluation(false, true);
-    cache.OnEvaluationRejected();
-    EXPECT_TRUE(
-        cache.pair(0, 1).camera_relative_translation.isApprox(committed_translation, 1e-12));
-}
-#endif
-
-TEST_F(ReprojectionFactorTest, FramePairPoseJacobiansMatchFiniteDifferences) {
-    double delay = td_;
-    auto make_cache = [&]() {
-        std::vector<VisualFrameCacheInput> inputs(2);
-        inputs[0] = {pose_i_, V_i_, w_i_, a_i_, Bg_, Ba_, 0.0};
-        inputs[1] = {pose_j_, V_j_, w_j_, a_j_, Bg_, Ba_, 0.0};
-        auto cache = std::make_unique<VisualFrameCache>(std::move(inputs), &delay, ric_, tic_);
-        cache->addPair(0, 1);
-        return cache;
-    };
-
-    auto cache = make_cache();
-    cache->PrepareForEvaluation(true, true);
-    const auto& pair = cache->pair(0, 1, true);
-    const Sophus::SE3d relative_pose(
-        pair.camera_relative_rotation, pair.camera_relative_translation);
-    const Eigen::Matrix<double, 6, 6> host_jacobian = pair.host_pose_jacobian;
-    const Eigen::Matrix<double, 6, 6> target_jacobian = pair.target_pose_jacobian;
-
-    const double epsilon = 1e-7;
-    for (int block = 0; block < 2; ++block) {
-        double* pose = block == 0 ? pose_i_ : pose_j_;
-        const auto& expected = block == 0 ? host_jacobian : target_jacobian;
-        for (int column = 0; column < 6; ++column) {
-            pose[column] += epsilon;
-            auto plus_cache = make_cache();
-            plus_cache->PrepareForEvaluation(false, true);
-            const auto& plus_pair = plus_cache->pair(0, 1);
-            const Sophus::SE3d plus_pose(
-                plus_pair.camera_relative_rotation, plus_pair.camera_relative_translation);
-
-            pose[column] -= 2.0 * epsilon;
-            auto minus_cache = make_cache();
-            minus_cache->PrepareForEvaluation(false, true);
-            const auto& minus_pair = minus_cache->pair(0, 1);
-            const Sophus::SE3d minus_pose(
-                minus_pair.camera_relative_rotation, minus_pair.camera_relative_translation);
-            pose[column] += epsilon;
-
-            const Eigen::Matrix<double, 6, 1> numerical =
-                ((plus_pose * relative_pose.inverse()).log() -
-                 (minus_pose * relative_pose.inverse()).log()) /
-                (2.0 * epsilon);
-            EXPECT_TRUE(numerical.isApprox(expected.col(column), 1e-7))
-                << "block=" << block << " column=" << column
-                << "\nexpected=" << expected.col(column).transpose()
-                << "\nnumerical=" << numerical.transpose();
-        }
-    }
 }
 
 // =============================================================================

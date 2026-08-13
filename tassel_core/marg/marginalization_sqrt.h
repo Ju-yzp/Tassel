@@ -45,7 +45,7 @@ public:
         if (!preintegrators_.empty()) {
             TASSEL_ASSERT(
                 preintegrators.size() <= static_cast<size_t>(state_->max_frame_count - 1));
-            TASSEL_ASSERT(state_->latest_frame_index == state_->max_frame_count - 1);
+            TASSEL_ASSERT(state_->latest_active_frame_index == state_->max_frame_count - 1);
         }
     }
 
@@ -72,23 +72,21 @@ public:
         prepareVisualCache();
         for (size_t idx = 0; idx < retiring_features_.size(); ++idx) {
             auto& landmark_block = landmark_blocks_[idx];
-            const int landmark_cache_index =
-                visual_landmark_cache_indices_.empty() ? -1 : visual_landmark_cache_indices_[idx];
             landmark_block.linearize(
-                retiring_features_[idx].second, landmark_target_frame_index_, *state_, ric_, tic_,
-                visual_frame_cache_.get(), landmark_cache_index);
+                retiring_features_[idx].second, landmark_target_frame_index_, *state_, ric_, tic_);
         }
 
         for (size_t i = 0; i < imu_blocks_.size(); ++i) {
             auto& imu_block = imu_blocks_[i];
             const int state_i = first_imu_factor_index_ + static_cast<int>(i);
             const int state_j = state_i + 1;
-            const Eigen::Vector3d Q_i = Sophus::SO3d(state_->frames[state_i].R).log();
-            const Eigen::Vector3d Q_j = Sophus::SO3d(state_->frames[state_j].R).log();
+            const Eigen::Vector3d Q_i = Sophus::SO3d(state_->frames[state_i].rot_w_i).log();
+            const Eigen::Vector3d Q_j = Sophus::SO3d(state_->frames[state_j].rot_w_i).log();
             imu_block.linearize(
-                state_->frames[state_i].V, state_->frames[state_j].V, state_->frames[state_i].P,
-                state_->frames[state_j].P, Q_i, Q_j, state_->frames[state_i].Ba,
-                state_->frames[state_j].Ba, state_->frames[state_i].Bg, state_->frames[state_j].Bg);
+                state_->frames[state_i].vel_w, state_->frames[state_j].vel_w,
+                state_->frames[state_i].pos_w_i, state_->frames[state_j].pos_w_i, Q_i, Q_j,
+                state_->frames[state_i].accel_bias, state_->frames[state_j].accel_bias,
+                state_->frames[state_i].gyro_bias, state_->frames[state_j].gyro_bias);
         }
     }
 
@@ -154,31 +152,12 @@ private:
     void prepareVisualCache() {
         visual_frame_cache_.reset();
         visual_inverse_depth_params_.clear();
-        visual_landmark_cache_indices_.clear();
         if (retiring_features_.empty()) {
             return;
         }
 
-        std::vector<VisualFrameCacheInput> inputs;
-        inputs.reserve(static_cast<size_t>(state_->max_frame_count));
-        for (int frame_index = 0; frame_index < state_->max_frame_count; ++frame_index) {
-            const auto& frame = state_->frames[frame_index];
-            VisualFrameCacheInput input;
-            input.pose = frame.pose.data();
-            input.velocity = Eigen::Map<const Eigen::Vector3d>(frame.speed_bias.data());
-            input.accel_bias = Eigen::Map<const Eigen::Vector3d>(frame.speed_bias.data() + 3);
-            input.gyro_bias = Eigen::Map<const Eigen::Vector3d>(frame.speed_bias.data() + 6);
-            input.gyro = frame.gyro;
-            input.acceleration = frame.acc;
-            input.sync_delay = frame.sync_delay;
-            inputs.push_back(input);
-        }
-
-        visual_frame_cache_ = std::make_unique<VisualFrameCache>(
-            std::move(inputs), &state_->param_delay_time, ric_, tic_);
-        visual_frame_cache_->reserveLandmarks(retiring_features_.size());
+        visual_frame_cache_ = std::make_unique<VisualFrameCache>(*state_, ric_);
         visual_inverse_depth_params_.resize(retiring_features_.size());
-        visual_landmark_cache_indices_.reserve(retiring_features_.size());
 
         for (size_t index = 0; index < retiring_features_.size(); ++index) {
             const Feature& feature = retiring_features_[index].second;
@@ -186,12 +165,11 @@ private:
             if (observations.empty()) {
                 throw std::logic_error("Marginalized feature has no observations");
             }
-            if (observations[0].sync_delay != state_->frames[feature.host_frame_index].sync_delay) {
+            if (observations[0].sync_delay !=
+                state_->frames[feature.host_frame_index].image_sync_delay) {
                 throw std::logic_error("Feature sync delay does not match its host frame state");
             }
             visual_inverse_depth_params_[index] = 1.0 / feature.estimated_depth;
-            visual_landmark_cache_indices_.push_back(visual_frame_cache_->addLandmark(
-                observations[0].uv, &visual_inverse_depth_params_[index]));
 
             const int first_observation_index =
                 landmark_target_frame_index_ < 0
@@ -204,11 +182,10 @@ private:
                  observation_index < last_observation_index; ++observation_index) {
                 const int target_frame = feature.observationFrameIndex(observation_index);
                 if (observations[observation_index].sync_delay !=
-                    state_->frames[target_frame].sync_delay) {
+                    state_->frames[target_frame].image_sync_delay) {
                     throw std::logic_error(
                         "Feature sync delay does not match its target frame state");
                 }
-                visual_frame_cache_->addPair(feature.host_frame_index, target_frame);
             }
         }
         // 边缘化不走 Ceres callback，必须在当前线性化点显式刷新共享中间量。
@@ -226,7 +203,6 @@ private:
     std::vector<IntegratorBase<Derived>*> preintegrators_;
     std::unique_ptr<VisualFrameCache> visual_frame_cache_;
     std::vector<double> visual_inverse_depth_params_;
-    std::vector<int> visual_landmark_cache_indices_;
 
     const MargLinData* prior_ = nullptr;
     int first_imu_factor_index_ = 0;

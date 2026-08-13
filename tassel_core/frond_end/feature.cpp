@@ -22,13 +22,13 @@ void Feature::monoTriangulate(
     }
 
     const int host_index = host_frame_index;
-    if (host_index < 0 || host_index > state.latest_frame_index) {
+    if (host_index < 0 || host_index > state.latest_active_frame_index) {
         return;
     }
     Eigen::Matrix3d reference_r;
     Eigen::Vector3d reference_t;
     if (!compensatedCameraPose(
-            state.frames[host_index], observations.front().sync_delay, state.delay_time, ric, tic,
+            state.frames[host_index], observations.front().sync_delay, state.time_delay, ric, tic,
             reference_r, reference_t)) {
         throw std::runtime_error("Feature host camera pose is not finite");
     }
@@ -44,13 +44,13 @@ void Feature::monoTriangulate(
     for (size_t obs_idx = 1; obs_idx < observations.size(); ++obs_idx) {
         const auto& observation = observations[obs_idx];
         const int current_frame_index = observationFrameIndex(obs_idx);
-        if (current_frame_index > state.latest_frame_index) {
+        if (current_frame_index > state.latest_active_frame_index) {
             throw std::logic_error("Feature observation index is outside the active window");
         }
         Eigen::Matrix3d cur_r;
         Eigen::Vector3d cur_t;
         if (!compensatedCameraPose(
-                state.frames[current_frame_index], observation.sync_delay, state.delay_time, ric,
+                state.frames[current_frame_index], observation.sync_delay, state.time_delay, ric,
                 tic, cur_r, cur_t)) {
             throw std::runtime_error("Feature target camera pose is not finite");
         }
@@ -100,7 +100,7 @@ bool Feature::transferHost(
     const Eigen::Vector3d& tic) {
     const int old_frame_index = host_frame_index;
     const int new_observation_index = new_host_index - host_frame_index;
-    if (old_frame_index < 0 || new_host_index > state.latest_frame_index ||
+    if (old_frame_index < 0 || new_host_index > state.latest_active_frame_index ||
         new_observation_index <= 0 ||
         new_observation_index >= static_cast<int>(observations.size()) ||
         estimated_depth == InvalidDepth) {
@@ -113,7 +113,7 @@ bool Feature::transferHost(
     Eigen::Vector3d pj_in_C;
     if (!reprojectToTargetCamera(
             state.frames[old_frame_index], state.frames[new_frame_index], old_host_it->uv,
-            estimated_depth, old_host_it->sync_delay, new_host_it->sync_delay, state.delay_time,
+            estimated_depth, old_host_it->sync_delay, new_host_it->sync_delay, state.time_delay,
             ric, tic, pj_in_C)) {
         return false;
     }

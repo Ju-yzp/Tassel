@@ -24,14 +24,14 @@ TEST(EstimatorKeyframeTest, ReportsLatestDecisionAndClearsItOnReset) {
     estimator.processMeasurement(1, std::unordered_map<int, tassel_core::FeaturePerFrame>{});
     EXPECT_TRUE(estimator.lastMeasurementWasKeyframe());
     EXPECT_FALSE(estimator.lastRetainedKeyframe().has_value());
-    EXPECT_EQ(state->frames[0].type, tassel_core::FrameType::Unknown);
-    EXPECT_EQ(state->frames[1].type, tassel_core::FrameType::KeyFrame);
+    EXPECT_EQ(state->frames[0].frame_type, tassel_core::FrameType::Unknown);
+    EXPECT_EQ(state->frames[1].frame_type, tassel_core::FrameType::KeyFrame);
 
     estimator.reset();
     EXPECT_FALSE(estimator.lastMeasurementWasKeyframe());
     EXPECT_FALSE(estimator.lastRetainedKeyframe().has_value());
-    EXPECT_EQ(state->frames[0].type, tassel_core::FrameType::Unknown);
-    EXPECT_EQ(state->frames[1].type, tassel_core::FrameType::Unknown);
+    EXPECT_EQ(state->frames[0].frame_type, tassel_core::FrameType::Unknown);
+    EXPECT_EQ(state->frames[1].frame_type, tassel_core::FrameType::Unknown);
 }
 
 }  // namespace

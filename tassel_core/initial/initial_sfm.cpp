@@ -632,10 +632,10 @@ bool InitialSFM::construct(
     State& cur_state, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
     std::vector<Eigen::Matrix3d>& Rs_out, std::vector<Eigen::Vector3d>& Ps_out,
     int first_frame_index) {
-    if (first_frame_index < 0 || first_frame_index > cur_state.latest_frame_index) {
+    if (first_frame_index < 0 || first_frame_index > cur_state.latest_active_frame_index) {
         return false;
     }
-    int frame_num = cur_state.latest_frame_index - first_frame_index + 1;
+    int frame_num = cur_state.latest_active_frame_index - first_frame_index + 1;
     if (frame_num < 2) {
         return false;
     }
@@ -655,7 +655,7 @@ bool InitialSFM::construct(
     std::vector<Eigen::Quaterniond> q_cam_i0(frame_num);
     for (int i = 0; i < frame_num; i++) {
         q_cam_i0[i] =
-            Eigen::Quaterniond(cur_state.frames[first_frame_index + i].R * ric).normalized();
+            Eigen::Quaterniond(cur_state.frames[first_frame_index + i].rot_w_i * ric).normalized();
     }
 
     for (const auto& [other_id, common] : other_candidates) {

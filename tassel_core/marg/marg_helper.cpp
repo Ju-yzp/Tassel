@@ -53,7 +53,7 @@ std::vector<int> marginalizationColumnOrder(int window_state_count, RetainedHost
 
 Eigen::VectorXd MargHelper::evaluatePriorResidual(
     const MargLinData& prior, const std::vector<std::array<double, 6>>& poses,
-    const std::vector<std::array<double, 9>>& speed_bias, double delay_time) {
+    const std::vector<std::array<double, 9>>& speed_bias, double time_delay) {
     const int num_kept = static_cast<int>(prior.linearization_poses.size());
     TASSEL_ASSERT(static_cast<int>(poses.size()) == num_kept);
     TASSEL_ASSERT(static_cast<int>(speed_bias.size()) == num_kept);
@@ -69,7 +69,7 @@ Eigen::VectorXd MargHelper::evaluatePriorResidual(
             parameters.push_back(speed_bias[i].data());
         }
     }
-    parameters.push_back(&delay_time);
+    parameters.push_back(&time_delay);
 
     Eigen::VectorXd residual(factor.num_residuals());
     TASSEL_ASSERT(factor.Evaluate(parameters.data(), residual.data(), nullptr));
@@ -78,7 +78,7 @@ Eigen::VectorXd MargHelper::evaluatePriorResidual(
 
 void MargHelper::recenterPrior(
     MargLinData& prior, const std::vector<std::array<double, 6>>& poses,
-    const std::vector<std::array<double, 9>>& speed_bias, double delay_time) {
+    const std::vector<std::array<double, 9>>& speed_bias, double time_delay) {
     const int n = static_cast<int>(prior.linearization_poses.size());
     if (static_cast<int>(poses.size()) != n || static_cast<int>(speed_bias.size()) != n ||
         static_cast<int>(prior.linearization_speed_bias.size()) != n) {
@@ -116,7 +116,7 @@ void MargHelper::recenterPrior(
             }
         }
     }
-    delta(prior.delayColumn()) = delay_time - prior.linearization_delay_time;
+    delta(prior.delayColumn()) = time_delay - prior.linearization_delay_time;
     prior.b += prior.H * delta;
     for (int i = 0; i < n; ++i) {
         const int col = prior.poseColumn(i);
@@ -124,7 +124,7 @@ void MargHelper::recenterPrior(
     }
     prior.linearization_poses = poses;
     prior.linearization_speed_bias = speed_bias;
-    prior.linearization_delay_time = delay_time;
+    prior.linearization_delay_time = time_delay;
     if (!prior.H.allFinite() || !prior.b.allFinite()) {
         throw std::logic_error("Recentered marginalization prior is not finite");
     }

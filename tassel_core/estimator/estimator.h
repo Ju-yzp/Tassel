@@ -33,7 +33,7 @@ struct TrackingPredictionSnapshot {
     double imu_timestamp = -1.0;
     Eigen::Vector3d imu_acc = Eigen::Vector3d::Zero();
     Eigen::Vector3d imu_gyro = Eigen::Vector3d::Zero();
-    double delay_time = 0.0;
+    double time_delay = 0.0;
     std::unordered_map<int, Eigen::Vector3d> world_landmarks;
 };
 
@@ -103,7 +103,7 @@ private:
     void predictFrameState(
         int frame_index, const std::vector<tassel_utils::IMUMeasurement>& imu_measurements);
 
-    void runSlidingWindowUpdate(int latest_frame_index, double timestamp);
+    void runSlidingWindowUpdate(int latest_active_frame_index, double timestamp);
 
     void slideInitializationWindow();
 

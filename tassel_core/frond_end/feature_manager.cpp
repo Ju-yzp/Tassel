@@ -34,11 +34,11 @@ inline bool canUseFeature(const Feature& feature, int min_observations) {
 
 bool computeReprojectionError(
     const FrameState& target, const Eigen::Vector3d& world_point,
-    const FeaturePerFrame& target_observation, double delay_time, const Eigen::Matrix3d& ric,
+    const FeaturePerFrame& target_observation, double time_delay, const Eigen::Matrix3d& ric,
     const Eigen::Vector3d& tic, const CameraBase& camera, double& error) {
     Eigen::Vector3d point_c;
     if (!worldPointToTargetCamera(
-            target, world_point, target_observation.sync_delay, delay_time, ric, tic, point_c)) {
+            target, world_point, target_observation.sync_delay, time_delay, ric, tic, point_c)) {
         return false;
     }
 
@@ -187,7 +187,7 @@ void FeatureManager::triangulate(
 void FeatureManager::removeFrameObservations(
     int removed_frame_index, const State& state, const Eigen::Matrix3d& ric,
     const Eigen::Vector3d& tic) {
-    if (state.latest_frame_index > 0) {
+    if (state.latest_active_frame_index > 0) {
         std::erase_if(features_, [&](const auto& item) {
             return item.second.host_frame_index == removed_frame_index &&
                    item.second.observations.size() == 1;
@@ -250,7 +250,7 @@ std::vector<int> FeatureManager::removeOutliers(
         }
 
         const int host_frame_index = feature.host_frame_index;
-        if (host_frame_index < 0 || host_frame_index > state.latest_frame_index) {
+        if (host_frame_index < 0 || host_frame_index > state.latest_active_frame_index) {
             removed_ids.push_back(feature_id);
             continue;
         }
@@ -259,7 +259,7 @@ std::vector<int> FeatureManager::removeOutliers(
         Eigen::Vector3d world_point;
         if (!hostPointToWorld(
                 state.frames[host_frame_index], observations.front().uv, feature.estimated_depth,
-                observations.front().sync_delay, state.delay_time, ric, tic, world_point)) {
+                observations.front().sync_delay, state.time_delay, ric, tic, world_point)) {
             removed_ids.push_back(feature_id);
             continue;
         }
@@ -267,14 +267,14 @@ std::vector<int> FeatureManager::removeOutliers(
         double error_sum = 0.0;
         for (size_t k = 1; k < observations.size(); ++k) {
             const int target_frame_index = feature.observationFrameIndex(k);
-            if (target_frame_index < 0 || target_frame_index > state.latest_frame_index) {
+            if (target_frame_index < 0 || target_frame_index > state.latest_active_frame_index) {
                 removed_ids.push_back(feature_id);
                 break;
             }
             double reprojection_error = 0.0;
             if (!computeReprojectionError(
                     state.frames[target_frame_index], world_point, observations[k],
-                    state.delay_time, ric, tic, *state.camera, reprojection_error)) {
+                    state.time_delay, ric, tic, *state.camera, reprojection_error)) {
                 removed_ids.push_back(feature_id);
                 break;
             }
@@ -320,7 +320,7 @@ std::vector<std::pair<int, Feature>> FeatureManager::collectMarginalizedFeatures
 std::vector<HostLandmark> FeatureManager::exportHostLandmarks(
     int host_frame_index, const State& state) const {
     std::vector<HostLandmark> landmarks;
-    if (host_frame_index < 0 || host_frame_index > state.latest_frame_index) {
+    if (host_frame_index < 0 || host_frame_index > state.latest_active_frame_index) {
         return landmarks;
     }
 
@@ -346,7 +346,7 @@ std::vector<HostLandmark> FeatureManager::exportHostLandmarks(
 std::unordered_map<int, Eigen::Vector3d> FeatureManager::exportObservedWorldLandmarks(
     int observed_frame_index, const State& state, const Eigen::Matrix3d& ric,
     const Eigen::Vector3d& tic) const {
-    if (observed_frame_index < 0 || observed_frame_index > state.latest_frame_index) {
+    if (observed_frame_index < 0 || observed_frame_index > state.latest_active_frame_index) {
         throw std::out_of_range("Observed landmark frame is outside the active window");
     }
     std::unordered_map<int, Eigen::Vector3d> landmarks;
@@ -354,7 +354,8 @@ std::unordered_map<int, Eigen::Vector3d> FeatureManager::exportObservedWorldLand
     for (const auto& [feature_id, feature] : features_) {
         const int host_index = feature.host_frame_index;
         const int observation_index = observed_frame_index - host_index;
-        if (host_index < 0 || host_index > state.latest_frame_index || observation_index < 0 ||
+        if (host_index < 0 || host_index > state.latest_active_frame_index ||
+            observation_index < 0 ||
             observation_index >= static_cast<int>(feature.observations.size()) ||
             feature.observations.empty() || !std::isfinite(feature.estimated_depth) ||
             feature.estimated_depth < min_depth_ || feature.estimated_depth > max_depth_) {
@@ -365,7 +366,7 @@ std::unordered_map<int, Eigen::Vector3d> FeatureManager::exportObservedWorldLand
         Eigen::Vector3d world_point;
         if (!hostPointToWorld(
                 state.frames[host_index], host_observation.uv, feature.estimated_depth,
-                host_observation.sync_delay, state.delay_time, ric, tic, world_point)) {
+                host_observation.sync_delay, state.time_delay, ric, tic, world_point)) {
             continue;
         }
         landmarks.emplace(feature_id, world_point);
@@ -376,7 +377,7 @@ std::unordered_map<int, Eigen::Vector3d> FeatureManager::exportObservedWorldLand
 std::vector<ObservedLandmark> FeatureManager::exportObservedLandmarks(
     int observed_frame_index, const State& state, const Eigen::Matrix3d& ric,
     const Eigen::Vector3d& tic) const {
-    if (observed_frame_index < 0 || observed_frame_index > state.latest_frame_index) {
+    if (observed_frame_index < 0 || observed_frame_index > state.latest_active_frame_index) {
         throw std::out_of_range("Observed landmark frame is outside the active window");
     }
     std::vector<ObservedLandmark> landmarks;
@@ -384,7 +385,8 @@ std::vector<ObservedLandmark> FeatureManager::exportObservedLandmarks(
     for (const auto& [feature_id, feature] : features_) {
         const int host_index = feature.host_frame_index;
         const int observation_index = observed_frame_index - host_index;
-        if (host_index < 0 || host_index > state.latest_frame_index || observation_index < 0 ||
+        if (host_index < 0 || host_index > state.latest_active_frame_index ||
+            observation_index < 0 ||
             observation_index >= static_cast<int>(feature.observations.size()) ||
             feature.observations.empty() || !std::isfinite(feature.estimated_depth) ||
             feature.estimated_depth < min_depth_ || feature.estimated_depth > max_depth_) {
@@ -396,7 +398,7 @@ std::vector<ObservedLandmark> FeatureManager::exportObservedLandmarks(
         if (!std::isfinite(observation.pt.x) || !std::isfinite(observation.pt.y) ||
             !hostPointToWorld(
                 state.frames[host_index], host_observation.uv, feature.estimated_depth,
-                host_observation.sync_delay, state.delay_time, ric, tic, world_point)) {
+                host_observation.sync_delay, state.time_delay, ric, tic, world_point)) {
             continue;
         }
         landmarks.push_back({feature_id, observation.pt, world_point});
@@ -427,7 +429,7 @@ void FeatureManager::updateFeatureDepths(const std::vector<std::pair<int, double
 
 std::vector<SFMFeature> FeatureManager::collectSFMFeatures(
     const State& state, int first_frame_index) const {
-    if (first_frame_index < 0 || first_frame_index > state.latest_frame_index) {
+    if (first_frame_index < 0 || first_frame_index > state.latest_active_frame_index) {
         throw std::logic_error("SFM first frame index is outside the active window");
     }
     std::vector<SFMFeature> sfm_features;
@@ -443,7 +445,7 @@ std::vector<SFMFeature> FeatureManager::collectSFMFeatures(
              ++observation_index) {
             const auto& observation = feature.observations[observation_index];
             const int frame_index = feature.observationFrameIndex(observation_index);
-            if (frame_index < first_frame_index || frame_index > state.latest_frame_index) {
+            if (frame_index < first_frame_index || frame_index > state.latest_active_frame_index) {
                 throw std::logic_error("SFM observation index is outside the active window");
             }
             Eigen::Vector2d uv_norm(observation.uv(0), observation.uv(1));

@@ -14,13 +14,13 @@ namespace tassel_core::test {
 
 struct ImuSample {
     double ts = 0.0;
-    Eigen::Vector3d P = Eigen::Vector3d::Zero();
-    Eigen::Vector3d V = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d pos_w_i = Eigen::Vector3d::Zero();
+    Eigen::Vector3d vel_w = Eigen::Vector3d::Zero();
+    Eigen::Matrix3d rot_w_i = Eigen::Matrix3d::Identity();
     Eigen::Vector3d gyro = Eigen::Vector3d::Zero();
     Eigen::Vector3d acc = Eigen::Vector3d::Zero();
-    Eigen::Vector3d Ba = Eigen::Vector3d::Zero();
-    Eigen::Vector3d Bg = Eigen::Vector3d::Zero();
+    Eigen::Vector3d accel_bias = Eigen::Vector3d::Zero();
+    Eigen::Vector3d gyro_bias = Eigen::Vector3d::Zero();
 };
 
 struct ImuTimeline {
@@ -51,11 +51,11 @@ inline ImuTimeline generateConstantMotionTimeline(
     for (int k = 0; k < total_steps; ++k) {
         ImuSample sample;
         sample.ts = k * imu_dt;
-        sample.R = R;
-        sample.P = P;
-        sample.V = V;
-        sample.Ba = ba;
-        sample.Bg = bg;
+        sample.rot_w_i = R;
+        sample.pos_w_i = P;
+        sample.vel_w = V;
+        sample.accel_bias = ba;
+        sample.gyro_bias = bg;
         sample.gyro = w_body + bg;
         sample.acc = a_body + R.transpose() * gravity + ba;
         timeline.states.push_back(sample);
@@ -93,15 +93,15 @@ inline ImuSample interpolateSample(const ImuTimeline& timeline, double t) {
 
     ImuSample sample;
     sample.ts = t;
-    sample.P = (1.0 - a) * s0.P + a * s1.P;
-    sample.V = (1.0 - a) * s0.V + a * s1.V;
+    sample.pos_w_i = (1.0 - a) * s0.pos_w_i + a * s1.pos_w_i;
+    sample.vel_w = (1.0 - a) * s0.vel_w + a * s1.vel_w;
     sample.gyro = (1.0 - a) * s0.gyro + a * s1.gyro;
     sample.acc = (1.0 - a) * s0.acc + a * s1.acc;
-    sample.Ba = (1.0 - a) * s0.Ba + a * s1.Ba;
-    sample.Bg = (1.0 - a) * s0.Bg + a * s1.Bg;
-    const Eigen::Quaterniond q0(s0.R);
-    const Eigen::Quaterniond q1(s1.R);
-    sample.R = q0.slerp(a, q1).toRotationMatrix();
+    sample.accel_bias = (1.0 - a) * s0.accel_bias + a * s1.accel_bias;
+    sample.gyro_bias = (1.0 - a) * s0.gyro_bias + a * s1.gyro_bias;
+    const Eigen::Quaterniond q0(s0.rot_w_i);
+    const Eigen::Quaterniond q1(s1.rot_w_i);
+    sample.rot_w_i = q0.slerp(a, q1).toRotationMatrix();
     return sample;
 }
 
@@ -109,9 +109,9 @@ inline CameraState integrateImu(
     const ImuTimeline& timeline, double t_param, double t_cam, const Eigen::Vector3d& bg,
     const Eigen::Vector3d& ba) {
     ImuSample start = interpolateSample(timeline, t_param);
-    Eigen::Vector3d P = start.P;
-    Eigen::Vector3d V = start.V;
-    Eigen::Matrix3d R = start.R;
+    Eigen::Vector3d P = start.pos_w_i;
+    Eigen::Vector3d V = start.vel_w;
+    Eigen::Matrix3d R = start.rot_w_i;
     double t = t_param;
 
     while (t < t_cam - 1e-9) {

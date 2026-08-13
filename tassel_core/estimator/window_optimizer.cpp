@@ -43,21 +43,21 @@ bool allFinite(const Range& values) {
 
 std::vector<Eigen::Vector3d> captureAccelBiasMeans(const State& state) {
     std::vector<Eigen::Vector3d> means;
-    means.reserve(static_cast<size_t>(state.latest_frame_index));
-    for (int i = 1; i <= state.latest_frame_index; ++i) {
+    means.reserve(static_cast<size_t>(state.latest_active_frame_index));
+    for (int i = 1; i <= state.latest_active_frame_index; ++i) {
         // speed_bias 的隐含局部布局为 [v(3), ba(3), bg(3)]。
         means.emplace_back(
-            Eigen::Map<const Eigen::Vector3d>(state.frames[i].speed_bias.data() + 3));
+            Eigen::Map<const Eigen::Vector3d>(state.frames[i].param_speed_bias.data() + 3));
     }
     return means;
 }
 
 void restoreAccelBiasMeans(State& state, const std::vector<Eigen::Vector3d>& means) {
-    if (means.size() != static_cast<size_t>(state.latest_frame_index)) {
+    if (means.size() != static_cast<size_t>(state.latest_active_frame_index)) {
         throw std::logic_error("Acceleration-bias snapshot does not match the active window");
     }
-    for (int i = 1; i <= state.latest_frame_index; ++i) {
-        Eigen::Map<Eigen::Vector3d>(state.frames[i].speed_bias.data() + 3) =
+    for (int i = 1; i <= state.latest_active_frame_index; ++i) {
+        Eigen::Map<Eigen::Vector3d>(state.frames[i].param_speed_bias.data() + 3) =
             means[static_cast<size_t>(i - 1)];
     }
 }
@@ -118,53 +118,39 @@ ceres::Solver::Options::SchurLayoutCallback makeSchurLayoutCallback() {
 
 std::unique_ptr<VisualFrameCache> createVisualFrameCache(
     State& state, const tassel_tools::Parameters& params) {
-    std::vector<VisualFrameCacheInput> inputs;
-    inputs.reserve(static_cast<size_t>(state.latest_frame_index + 1));
-    for (int i = 0; i <= state.latest_frame_index; ++i) {
-        const FrameState& frame = state.frames[i];
-        VisualFrameCacheInput input;
-        input.pose = frame.pose.data();
-        input.velocity = Eigen::Map<const Eigen::Vector3d>(frame.speed_bias.data());
-        input.accel_bias = Eigen::Map<const Eigen::Vector3d>(frame.speed_bias.data() + 3);
-        input.gyro_bias = Eigen::Map<const Eigen::Vector3d>(frame.speed_bias.data() + 6);
-        input.gyro = frame.gyro;
-        input.acceleration = frame.acc;
-        input.sync_delay = frame.sync_delay;
-        inputs.push_back(input);
-    }
-    return std::make_unique<VisualFrameCache>(
-        std::move(inputs), &state.param_delay_time, params.ric, params.tic);
+    return std::make_unique<VisualFrameCache>(state, params.ric);
 }
 
 void addParameterBlocks(ceres::Problem& problem, State& state, const MargLinData* prior) {
     for (int i = 0; i < state.max_frame_count; ++i) {
-        problem.AddParameterBlock(state.frames[i].pose.data(), 6, new SE3RightManifold());
+        problem.AddParameterBlock(state.frames[i].param_pose.data(), 6, new SE3RightManifold());
         if (i != kRetainedFrameIndex || prior == nullptr) {
-            problem.AddParameterBlock(state.frames[i].speed_bias.data(), 9);
+            problem.AddParameterBlock(state.frames[i].param_speed_bias.data(), 9);
         }
     }
     if (prior == nullptr) {
         // 初始化期间 frame0 为空，不参与任何物理因子。
-        problem.SetParameterBlockConstant(state.frames[kRetainedFrameIndex].speed_bias.data());
-        problem.SetParameterBlockConstant(state.frames[kRetainedFrameIndex].pose.data());
+        problem.SetParameterBlockConstant(
+            state.frames[kRetainedFrameIndex].param_speed_bias.data());
+        problem.SetParameterBlockConstant(state.frames[kRetainedFrameIndex].param_pose.data());
     }
-    problem.AddParameterBlock(&state.param_delay_time, 1);
+    problem.AddParameterBlock(&state.param_time_delay, 1);
 }
 
 void configureDelayParameter(
     ceres::Problem& problem, State& state, const tassel_tools::Parameters& params) {
     int observable_frames = 0;
-    for (int i = 0; i <= state.latest_frame_index; ++i) {
+    for (int i = 0; i <= state.latest_active_frame_index; ++i) {
         const FrameState& frame = state.frames[i];
         const bool angular_motion =
-            (frame.gyro - frame.Bg).norm() > params.delay_obs_gyro_threshold;
-        const bool linear_motion = frame.V.norm() > params.delay_obs_speed_threshold;
+            (frame.imu_gyro - frame.gyro_bias).norm() > params.delay_obs_gyro_threshold;
+        const bool linear_motion = frame.vel_w.norm() > params.delay_obs_speed_threshold;
         if (angular_motion || linear_motion) {
             ++observable_frames;
         }
     }
     if (observable_frames < params.delay_obs_min_frames) {
-        problem.SetParameterBlockConstant(&state.param_delay_time);
+        problem.SetParameterBlockConstant(&state.param_time_delay);
     }
 }
 
@@ -175,12 +161,12 @@ ceres::ResidualBlockId addPriorFactor(
     }
     auto* factor = new MarginalizationPriorFactor(*prior);
     std::vector<double*> blocks;
-    blocks.push_back(state.frames[0].pose.data());
+    blocks.push_back(state.frames[0].param_pose.data());
     for (int i = 1; i < prior->stateCount(); ++i) {
-        blocks.push_back(state.frames[i].pose.data());
-        blocks.push_back(state.frames[i].speed_bias.data());
+        blocks.push_back(state.frames[i].param_pose.data());
+        blocks.push_back(state.frames[i].param_speed_bias.data());
     }
-    blocks.push_back(&state.param_delay_time);
+    blocks.push_back(&state.param_time_delay);
     return problem.AddResidualBlock(factor, nullptr, blocks);
 }
 
@@ -191,60 +177,54 @@ void addVisualFactors(
     const double huber_delta = params.reproj_huber_thres * params.visual_factor_weight;
     ceres::LossFunction* loss = new ceres::HuberLoss(huber_delta);
     inverse_depths.resize(features.size());
-    std::vector<int> landmark_cache_indices(features.size());
-    cache.reserveLandmarks(features.size());
-
-    // 三个容器以 feature snapshot 索引一一对应，求解后按同一索引生成 ID 深度结果。
+    // inverse depth 与 feature 索引一一对应，求解后按同一索引生成深度结果。
     for (size_t k = 0; k < features.size(); ++k) {
         const Feature& feature = features[k].second;
         TASSEL_ASSERT(std::isfinite(feature.estimated_depth) && feature.estimated_depth > 1e-12);
         inverse_depths[k] = 1.0 / feature.estimated_depth;
         problem.AddParameterBlock(&inverse_depths[k], 1);
-        landmark_cache_indices[k] =
-            cache.addLandmark(feature.observations.front().uv, &inverse_depths[k]);
     }
 
     for (size_t k = 0; k < features.size(); ++k) {
         const Feature& feature = features[k].second;
         const int host_index = feature.host_frame_index;
-        if (host_index < 0 || host_index > state.latest_frame_index) {
+        if (host_index < 0 || host_index > state.latest_active_frame_index) {
             throw std::logic_error("Feature host index is outside the active window");
         }
         for (size_t observation_index = 0; observation_index < feature.observations.size();
              ++observation_index) {
             const int frame_index = feature.observationFrameIndex(observation_index);
-            if (frame_index <= state.latest_frame_index) {
+            if (frame_index <= state.latest_active_frame_index) {
                 ++factors_per_frame[frame_index];
             }
         }
         for (size_t observation_index = 1; observation_index < feature.observations.size();
              ++observation_index) {
             const int target_index = feature.observationFrameIndex(observation_index);
-            if (target_index > state.latest_frame_index) {
+            if (target_index > state.latest_active_frame_index) {
                 throw std::logic_error("Feature target index is outside the active window");
             }
             const FeaturePerFrame& host = feature.observations.front();
             const FeaturePerFrame& target = feature.observations[observation_index];
-            if (host.sync_delay != state.frames[host_index].sync_delay ||
-                target.sync_delay != state.frames[target_index].sync_delay) {
+            if (host.sync_delay != state.frames[host_index].image_sync_delay ||
+                target.sync_delay != state.frames[target_index].image_sync_delay) {
                 throw std::logic_error("Feature sync delay does not match its frame state");
             }
-            cache.addPair(host_index, target_index);
             const Eigen::Vector2d target_pixel(target.pt.x, target.pt.y);
             auto* cost = new ReprojectionFactor(
-                host.uv, target_pixel, params.ric, params.tic, state.frames[host_index].gyro,
-                state.frames[target_index].gyro, state.frames[host_index].acc,
-                state.frames[target_index].acc, state.frames[host_index].speed_bias.data(),
-                state.frames[target_index].speed_bias.data(),
-                state.frames[host_index].speed_bias.data() + 6,
-                state.frames[target_index].speed_bias.data() + 6,
-                state.frames[host_index].speed_bias.data() + 3,
-                state.frames[target_index].speed_bias.data() + 3, state.visual_sqrt_info,
-                state.camera, host.sync_delay, target.sync_delay, &cache, host_index, target_index,
-                landmark_cache_indices[k]);
+                host.uv, target_pixel, params.ric, params.tic, state.frames[host_index].imu_gyro,
+                state.frames[target_index].imu_gyro, state.frames[host_index].imu_acc,
+                state.frames[target_index].imu_acc,
+                state.frames[host_index].param_speed_bias.data(),
+                state.frames[target_index].param_speed_bias.data(),
+                state.frames[host_index].param_speed_bias.data() + 6,
+                state.frames[target_index].param_speed_bias.data() + 6,
+                state.frames[host_index].param_speed_bias.data() + 3,
+                state.frames[target_index].param_speed_bias.data() + 3, state.visual_sqrt_info,
+                state.camera, host.sync_delay, target.sync_delay, &state, host_index, target_index);
             problem.AddResidualBlock(
-                cost, loss, state.frames[host_index].pose.data(),
-                state.frames[target_index].pose.data(), &state.param_delay_time,
+                cost, loss, state.frames[host_index].param_pose.data(),
+                state.frames[target_index].param_pose.data(), &state.param_time_delay,
                 &inverse_depths[k]);
         }
     }
@@ -267,12 +247,12 @@ ceres::Solver::Options createSolverOptions(
     }
     int group = 1;
     for (int i = 0; i < state.max_frame_count; ++i) {
-        ordering->AddElementToGroup(state.frames[i].pose.data(), group++);
+        ordering->AddElementToGroup(state.frames[i].param_pose.data(), group++);
         if (i != kRetainedFrameIndex || prior == nullptr) {
-            ordering->AddElementToGroup(state.frames[i].speed_bias.data(), group++);
+            ordering->AddElementToGroup(state.frames[i].param_speed_bias.data(), group++);
         }
     }
-    ordering->AddElementToGroup(&state.param_delay_time, group);
+    ordering->AddElementToGroup(&state.param_time_delay, group);
     options.linear_solver_ordering = std::move(ordering);
 #if defined(CERES_HAS_SCHUR_LAYOUT_CALLBACK)
     options.schur_layout_callback = makeSchurLayoutCallback();
@@ -328,30 +308,30 @@ WindowOptimizationResult WindowOptimizer::solveImpl(
 
     std::vector<double> inverse_depths;
     WindowOptimizationResult result;
-    result.visual_factors_per_frame.assign(state_->latest_frame_index + 1, 0);
+    result.visual_factors_per_frame.assign(state_->latest_active_frame_index + 1, 0);
     addVisualFactors(
         problem, *visual_cache, *state_, params_, features, inverse_depths,
         result.visual_factors_per_frame);
 
     const int imu_start = prior == nullptr ? 0 : 1;
-    for (int i = imu_start; i < state_->latest_frame_index; ++i) {
+    for (int i = imu_start; i < state_->latest_active_frame_index; ++i) {
         if (preintegrators[i].buffer.size() < 2) {
             continue;
         }
         auto integrator = std::shared_ptr<Integrator>(&preintegrators[i], [](Integrator*) {});
         problem.AddResidualBlock(
             new IMUFactor<Integrator>(std::move(integrator)), nullptr,
-            state_->frames[i].pose.data(), state_->frames[i].speed_bias.data(),
-            state_->frames[i + 1].pose.data(), state_->frames[i + 1].speed_bias.data());
+            state_->frames[i].param_pose.data(), state_->frames[i].param_speed_bias.data(),
+            state_->frames[i + 1].param_pose.data(), state_->frames[i + 1].param_speed_bias.data());
     }
 
     ceres::Solver::Summary summary;
     ceres::Solver::Options options = createSolverOptions(params_, *state_, prior, inverse_depths);
     ceres::Solve(options, &problem, &summary);
-    bool finite_solution = std::isfinite(state_->param_delay_time);
-    for (int i = 0; i <= state_->latest_frame_index && finite_solution; ++i) {
-        finite_solution =
-            allFinite(state_->frames[i].pose) && allFinite(state_->frames[i].speed_bias);
+    bool finite_solution = std::isfinite(state_->param_time_delay);
+    for (int i = 0; i <= state_->latest_active_frame_index && finite_solution; ++i) {
+        finite_solution = allFinite(state_->frames[i].param_pose) &&
+                          allFinite(state_->frames[i].param_speed_bias);
     }
     finite_solution = finite_solution && allFinite(inverse_depths);
     if (!summary.IsSolutionUsable() || !finite_solution) {
