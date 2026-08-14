@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "initial/initial_alignment.h"
+#include "tassel_utils/rotation.h"
 
 namespace tassel_core {
 namespace {
@@ -90,6 +91,71 @@ TEST(InitialAlignmentTest, RecoversLeverArmWithRotatedExtrinsics) {
     for (size_t i = 0; i < velocities.size(); ++i) {
         EXPECT_TRUE(velocities[i].isApprox(data.velocities[i], 1e-7));
     }
+}
+
+TEST(InitialAlignmentTest, BuildsFiniteTangentBasisAtNegativeZ) {
+    const Eigen::Vector3d gravity_direction = -Eigen::Vector3d::UnitZ();
+    const Eigen::Matrix<double, 2, 3> basis = tassel_utils::tangentBasis(gravity_direction);
+
+    EXPECT_TRUE(basis.allFinite());
+    EXPECT_TRUE((basis * gravity_direction).isZero(1e-12));
+    EXPECT_TRUE((basis * basis.transpose()).isApprox(Eigen::Matrix2d::Identity(), 1e-12));
+}
+
+TEST(InitialAlignmentTest, RejectsUnderdeterminedTwoFrameWindow) {
+    std::vector<Eigen::Matrix3d> rotations(2, Eigen::Matrix3d::Identity());
+    std::vector<Eigen::Vector3d> positions(2, Eigen::Vector3d::Zero());
+    std::vector<Eigen::Vector3d> velocities(2, Eigen::Vector3d::Zero());
+    std::vector<Eigen::Vector3d> delta_velocities(1, Eigen::Vector3d::Zero());
+    std::vector<Eigen::Vector3d> delta_positions(1, Eigen::Vector3d::Zero());
+    const std::vector<double> dts{0.1};
+    Eigen::Vector3d gravity = Eigen::Vector3d::UnitZ() * 9.81;
+    double scale = 1.0;
+
+    EXPECT_FALSE(linearAlignment(
+        rotations, positions, velocities, delta_velocities, delta_positions, dts, gravity, scale,
+        Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero(), 0.1, 9.81));
+}
+
+TEST(InitialAlignmentTest, RejectsUnobservableStaticWindow) {
+    constexpr int kFrameCount = 8;
+    std::vector<Eigen::Matrix3d> rotations(kFrameCount, Eigen::Matrix3d::Identity());
+    std::vector<Eigen::Vector3d> positions(kFrameCount, Eigen::Vector3d::Zero());
+    std::vector<Eigen::Vector3d> velocities(kFrameCount, Eigen::Vector3d::Zero());
+    std::vector<Eigen::Vector3d> delta_velocities(kFrameCount - 1, Eigen::Vector3d::Zero());
+    std::vector<Eigen::Vector3d> delta_positions(kFrameCount - 1, Eigen::Vector3d::Zero());
+    std::vector<double> dts(kFrameCount - 1, 0.1);
+    Eigen::Vector3d gravity = Eigen::Vector3d::UnitZ() * 9.81;
+    double scale = 1.0;
+
+    EXPECT_FALSE(linearAlignment(
+        rotations, positions, velocities, delta_velocities, delta_positions, dts, gravity, scale,
+        Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero(), 0.1, 9.81));
+    EXPECT_FALSE(refineGravitySpeeds(
+        velocities, rotations, positions, delta_velocities, delta_positions, dts, gravity, scale,
+        Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero(), 9.81));
+}
+
+TEST(InitialAlignmentTest, SolvesGyroBiasCorrection) {
+    const Eigen::Vector3d expected_correction(0.012, -0.018, 0.009);
+    const std::vector<Eigen::Matrix3d> jacobians{
+        -0.08 * Eigen::Matrix3d::Identity(), -0.11 * Eigen::Matrix3d::Identity(),
+        -0.09 * Eigen::Matrix3d::Identity()};
+    const std::vector<Eigen::Matrix3d> delta_rotations(
+        jacobians.size(), Eigen::Matrix3d::Identity());
+    std::vector<Eigen::Matrix3d> rotations{Eigen::Matrix3d::Identity()};
+    for (const Eigen::Matrix3d& jacobian : jacobians) {
+        const Eigen::Vector3d rotation_vector = jacobian * expected_correction;
+        rotations.push_back(
+            rotations.back() *
+            Eigen::AngleAxisd(rotation_vector.norm(), rotation_vector.normalized())
+                .toRotationMatrix());
+    }
+
+    const Eigen::Vector3d correction =
+        solveGyroBiasCorrection(rotations, jacobians, delta_rotations, Eigen::Matrix3d::Identity());
+
+    EXPECT_TRUE(correction.isApprox(expected_correction, 1e-10));
 }
 
 }  // namespace

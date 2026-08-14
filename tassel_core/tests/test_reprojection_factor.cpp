@@ -1,29 +1,13 @@
-// =============================================================================
-// test_reprojection_factor.cpp
-//
-// 目的：
-//   验证 ReprojectionFactor 的解析雅各比和时间延迟 td 的优化反馈。
-//
-// 测试设计：
-//   使用 imu_test_utils 生成 400Hz IMU 轨迹; 观测由 camera-time state 加真实 td 后的
-//   query state 精确投影生成, factor 端从 camera-time state、IMU 读数和 td 近似恢复
-//   query state。单因子检查雅各比, 多 landmark 优化检查 td 收敛。
-//
-// 通过条件：
-//   位姿、速度、偏置、逆深度和 td 的解析雅各比通过数值微分检查; Ceres 优化后 td
-//   明显靠近构造数据时使用的真实延迟。
-// =============================================================================
-
 #include <gtest/gtest.h>
 
 #include <Eigen/Geometry>
+
+#include <algorithm>
+#include <array>
 #include <cmath>
-#include <iostream>
+#include <memory>
 #include <vector>
 
-#include <ceres/ceres.h>
-#include <ceres/gradient_checker.h>
-#include <sophus/se3.hpp>
 #include <sophus/so3.hpp>
 
 #include "cam/camera_rad_tan.h"
@@ -35,425 +19,202 @@
 namespace tassel_core {
 namespace {
 
-// =============================================================================
-// ReprojectionFactorTest
-// =============================================================================
+constexpr double kDifferenceStep = 1e-6;
+constexpr double kJacobianTolerance = 2e-5;
+
+void expectJacobianNear(
+    const Eigen::MatrixXd& analytic, const Eigen::MatrixXd& numeric, const char* parameter,
+    size_t landmark_index, double delay) {
+    ASSERT_EQ(analytic.rows(), numeric.rows());
+    ASSERT_EQ(analytic.cols(), numeric.cols());
+    const double scale =
+        std::max({1.0, analytic.cwiseAbs().maxCoeff(), numeric.cwiseAbs().maxCoeff()});
+    EXPECT_LE((analytic - numeric).cwiseAbs().maxCoeff(), kJacobianTolerance * scale)
+        << "parameter=" << parameter << " landmark=" << landmark_index << " delay=" << delay;
+}
 
 class ReprojectionFactorTest : public ::testing::Test {
 protected:
-    State makeVisualState() const {
-        State state(2);
-        for (int i = 0; i < 2; ++i) {
-            auto& frame = state.frames[i];
-            const double* pose = i == 0 ? pose_i_ : pose_j_;
-            const Eigen::Vector3d& velocity = i == 0 ? V_i_ : V_j_;
-            const Eigen::Vector3d& gyro = i == 0 ? w_i_ : w_j_;
-            const Eigen::Vector3d& acceleration = i == 0 ? a_i_ : a_j_;
-            for (int d = 0; d < 6; ++d) {
-                frame.param_pose[d] = pose[d];
-            }
-            for (int d = 0; d < 3; ++d) {
-                frame.param_speed_bias[d] = velocity[d];
-                frame.param_speed_bias[d + 3] = Ba_[d];
-                frame.param_speed_bias[d + 6] = Bg_[d];
-            }
-            frame.imu_gyro = gyro;
-            frame.imu_acc = acceleration;
-        }
-        state.latest_active_frame_index = 1;
-        state.param_time_delay = td_;
-        return state;
-    }
+    struct Landmark {
+        Eigen::Vector3d host_ray;
+        Eigen::Vector2d target_pixel;
+        double inverse_depth = 0.0;
+    };
 
     void SetUp() override {
         ric_ = Eigen::Matrix3d::Identity();
         tic_ = Eigen::Vector3d(0.05, 0.0, 0.0);
-        Ba_ = Eigen::Vector3d(0.08, -0.04, 0.03);
-        Bg_ = Eigen::Vector3d(0.012, -0.006, 0.004);
-        td_ = 0.005;
+        accel_bias_ = Eigen::Vector3d(0.08, -0.04, 0.03);
+        gyro_bias_ = Eigen::Vector3d(0.012, -0.006, 0.004);
+        constexpr double true_delay = 0.005;
         sqrt_info_ = Eigen::Matrix2d::Identity() * 320.0;
 
-        Eigen::Matrix3d K = Eigen::Matrix3d::Identity();
-        Eigen::VectorXd D(4);
-        D << 0, 0, 0, 0;
-        camera_ = CameraRadTan(K, D, 640, 480);
+        const Eigen::Matrix3d intrinsics = Eigen::Matrix3d::Identity();
+        const Eigen::VectorXd distortion = Eigen::VectorXd::Zero(4);
+        camera_ = std::make_unique<CameraRadTan>(intrinsics, distortion, 640, 480);
 
-        double imu_dt = 0.0025;
-        Eigen::Vector3d a_body(0.3, -0.1, 0.05);
-        Eigen::Vector3d w_body(0.1, 0.3, 0.4);
-        timeline_ = test::generateConstantMotionTimeline(2.0, imu_dt, a_body, w_body, Ba_, Bg_);
+        constexpr double imu_dt = 0.0025;
+        const Eigen::Vector3d acceleration(0.3, -0.1, 0.05);
+        const Eigen::Vector3d angular_velocity(0.1, 0.3, 0.4);
+        const test::ImuTimeline timeline = test::generateConstantMotionTimeline(
+            2.0, imu_dt, acceleration, angular_velocity, accel_bias_, gyro_bias_);
 
-        int cam_skip = 27;
-        int k_ci = 200, k_cj = k_ci + cam_skip;
-        int td_steps = static_cast<int>(std::round(td_ / imu_dt));
+        constexpr int host_sample = 200;
+        constexpr int target_sample = 227;
+        const int delay_steps = static_cast<int>(std::round(true_delay / imu_dt));
+        const auto& host_query = timeline.at_index(host_sample + delay_steps);
+        const auto& target_query = timeline.at_index(target_sample + delay_steps);
+        const auto& host = timeline.at_index(host_sample);
+        const auto& target = timeline.at_index(target_sample);
+        initializeFrame(host, state_.frames[0]);
+        initializeFrame(target, state_.frames[1]);
+        state_.latest_active_frame_index = 1;
 
-        const auto& sqi = timeline_.at_index(k_ci + td_steps);
-        const auto& sqj = timeline_.at_index(k_cj + td_steps);
-        const auto& sci = timeline_.at_index(k_ci);
-        const auto& scj = timeline_.at_index(k_cj);
-
-        w_i_ = sci.gyro;
-        a_i_ = sci.acc;
-        V_i_ = sci.vel_w;
-        w_j_ = scj.gyro;
-        a_j_ = scj.acc;
-        V_j_ = scj.vel_w;
-
-        // 从查询状态生成路标（精确计算，不使用近似）。
-        std::vector<Eigen::Vector3d> P_cam_i_pts = {
-            {0.3, -0.2, 1.5}, {-0.5, 0.3, 3.0}, {0.2, -0.4, 2.0},
-            {1.2, -0.1, 8.0}, {-1.0, 0.5, 6.0}, {0.01, 0.01, 12.0},
-        };
-        for (const auto& Pc : P_cam_i_pts) {
-            Landmark lm;
-            lm.uv_i = Pc / Pc.z();
-            lm.inv_depth = 1.0 / Pc.z();
-
-            Eigen::Vector3d P_imu_i = ric_ * Pc + tic_;
-            Eigen::Vector3d P_world = sqi.rot_w_i * P_imu_i + sqi.pos_w_i;
-            Eigen::Vector3d P_imu_j = sqj.rot_w_i.transpose() * (P_world - sqj.pos_w_i);
-            Eigen::Vector3d P_cam_j = ric_.transpose() * (P_imu_j - tic_);
-            lm.pt_j = Eigen::Vector2d(P_cam_j.x() / P_cam_j.z(), P_cam_j.y() / P_cam_j.z());
-            lms_.push_back(lm);
+        const std::vector<Eigen::Vector3d> host_points = {{0.3, -0.2, 1.5}, {-0.5, 0.3, 3.0},
+                                                          {0.2, -0.4, 2.0}, {1.2, -0.1, 8.0},
+                                                          {-1.0, 0.5, 6.0}, {0.01, 0.01, 12.0}};
+        for (const Eigen::Vector3d& host_point : host_points) {
+            Landmark landmark;
+            landmark.host_ray = host_point / host_point.z();
+            landmark.inverse_depth = 1.0 / host_point.z();
+            const Eigen::Vector3d host_imu_point = ric_ * host_point + tic_;
+            const Eigen::Vector3d world_point =
+                host_query.rot_w_i * host_imu_point + host_query.pos_w_i;
+            const Eigen::Vector3d target_imu_point =
+                target_query.rot_w_i.transpose() * (world_point - target_query.pos_w_i);
+            const Eigen::Vector3d target_camera_point =
+                ric_.transpose() * (target_imu_point - tic_);
+            landmark.target_pixel = target_camera_point.head<2>() / target_camera_point.z();
+            landmarks_.push_back(landmark);
         }
+    }
 
-        Eigen::Vector3d phi_ci = Sophus::SO3d(sci.rot_w_i).log();
-        Eigen::Vector3d phi_cj = Sophus::SO3d(scj.rot_w_i).log();
+    void initializeFrame(const test::ImuSample& sample, FrameState& frame) {
+        const Eigen::Vector3d rotation_vector = Sophus::SO3d(sample.rot_w_i).log();
         for (int d = 0; d < 3; ++d) {
-            pose_i_[d] = sci.pos_w_i[d];
-            pose_i_[d + 3] = phi_ci[d];
-            pose_j_[d] = scj.pos_w_i[d];
-            pose_j_[d + 3] = phi_cj[d];
+            frame.param_pose[d] = sample.pos_w_i[d];
+            frame.param_pose[d + 3] = rotation_vector[d];
+            frame.param_speed_bias[d] = sample.vel_w[d];
+            frame.param_speed_bias[d + 3] = accel_bias_[d];
+            frame.param_speed_bias[d + 6] = gyro_bias_[d];
         }
-        v_i_[0] = V_i_.x();
-        v_i_[1] = V_i_.y();
-        v_i_[2] = V_i_.z();
-        v_j_[0] = V_j_.x();
-        v_j_[1] = V_j_.y();
-        v_j_[2] = V_j_.z();
-        bg_[0] = Bg_.x();
-        bg_[1] = Bg_.y();
-        bg_[2] = Bg_.z();
-        ba_[0] = Ba_.x();
-        ba_[1] = Ba_.y();
-        ba_[2] = Ba_.z();
+        frame.imu_gyro = sample.gyro;
+        frame.imu_acc = sample.acc;
     }
 
-    ReprojectionFactor* makeFactor(int k) const {
-        const auto& lm = lms_[k];
-        return new ReprojectionFactor(
-            lm.uv_i, lm.pt_j, ric_, tic_, w_i_, w_j_, a_i_, a_j_, v_i_, v_j_, bg_, bg_, ba_, ba_,
-            sqrt_info_, &camera_);
+    std::unique_ptr<ReprojectionFactor> makeFactor(size_t landmark_index) {
+        const Landmark& landmark = landmarks_[landmark_index];
+        return std::make_unique<ReprojectionFactor>(
+            landmark.host_ray, landmark.target_pixel, ric_, tic_, state_.frames[0].imu_gyro,
+            state_.frames[1].imu_gyro, state_.frames[0].imu_acc, state_.frames[1].imu_acc,
+            state_.frames[0].param_speed_bias.data(), state_.frames[1].param_speed_bias.data(),
+            state_.frames[0].param_speed_bias.data() + 6,
+            state_.frames[1].param_speed_bias.data() + 6,
+            state_.frames[0].param_speed_bias.data() + 3,
+            state_.frames[1].param_speed_bias.data() + 3, sqrt_info_, camera_.get(), 0.0, 0.0,
+            &state_, 0, 1);
     }
 
-    // --- 数据 ---
-    test::ImuTimeline timeline_;
-    Eigen::Matrix3d ric_;
-    Eigen::Vector3d tic_;
-    Eigen::Vector3d Ba_, Bg_;
-    double td_;
-    Eigen::Matrix2d sqrt_info_;
-    CameraRadTan camera_{cv::Mat::eye(3, 3, CV_64F), cv::Mat::zeros(1, 4, CV_64F), 640, 480};
-    Eigen::Vector3d V_i_, V_j_, w_i_, a_i_, w_j_, a_j_;
+    Eigen::Vector2d evaluate(
+        ReprojectionFactor& factor, VisualFrameCache& cache, double inverse_depth) {
+        cache.PrepareForEvaluation(false, true);
+        const double* parameters[] = {
+            state_.frames[0].param_pose.data(), state_.frames[1].param_pose.data(),
+            &state_.param_time_delay, &inverse_depth};
+        Eigen::Vector2d residual;
+        EXPECT_TRUE(factor.Evaluate(parameters, residual.data(), nullptr));
+        return residual;
+    }
 
-    struct Landmark {
-        Eigen::Vector3d uv_i;
-        Eigen::Vector2d pt_j;
-        double inv_depth;
-    };
-    std::vector<Landmark> lms_;
+    Eigen::Matrix<double, 2, 6> numericPoseJacobian(
+        ReprojectionFactor& factor, VisualFrameCache& cache, int frame_index,
+        double inverse_depth) {
+        SE3RightManifold manifold;
+        const std::array<double, 6> original = state_.frames[frame_index].param_pose;
+        Eigen::Matrix<double, 2, 6> jacobian;
+        for (int column = 0; column < 6; ++column) {
+            Eigen::Matrix<double, 6, 1> delta = Eigen::Matrix<double, 6, 1>::Zero();
+            delta[column] = kDifferenceStep;
+            manifold.Plus(
+                original.data(), delta.data(), state_.frames[frame_index].param_pose.data());
+            const Eigen::Vector2d positive = evaluate(factor, cache, inverse_depth);
+            manifold.Plus(
+                original.data(), (-delta).eval().data(),
+                state_.frames[frame_index].param_pose.data());
+            const Eigen::Vector2d negative = evaluate(factor, cache, inverse_depth);
+            jacobian.col(column) = (positive - negative) / (2.0 * kDifferenceStep);
+        }
+        state_.frames[frame_index].param_pose = original;
+        return jacobian;
+    }
 
-    double pose_i_[6]{}, pose_j_[6]{};
-    double v_i_[3]{}, v_j_[3]{}, bg_[3]{}, ba_[3]{};
+    State state_{2};
+    Eigen::Matrix3d ric_ = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d tic_ = Eigen::Vector3d::Zero();
+    Eigen::Vector3d accel_bias_ = Eigen::Vector3d::Zero();
+    Eigen::Vector3d gyro_bias_ = Eigen::Vector3d::Zero();
+    Eigen::Matrix2d sqrt_info_ = Eigen::Matrix2d::Identity();
+    std::unique_ptr<CameraRadTan> camera_;
+    std::vector<Landmark> landmarks_;
 };
 
-TEST_F(ReprojectionFactorTest, SharedFrameCachePreservesLinearization) {
-    std::unique_ptr<ReprojectionFactor> uncached(makeFactor(0));
-    State state = makeVisualState();
-    VisualFrameCache cache(state, ric_);
-    double inverse_depth = lms_[0].inv_depth;
-    const auto& lm = lms_[0];
-    cache.PrepareForEvaluation(false, true);
-    ReprojectionFactor cached(
-        lm.uv_i, lm.pt_j, ric_, tic_, w_i_, w_j_, a_i_, a_j_, v_i_, v_j_, bg_, bg_, ba_, ba_,
-        sqrt_info_, &camera_, 0.0, 0.0, &state, 0, 1);
-    double const* parameters[] = {
-        state.frames[0].param_pose.data(), state.frames[1].param_pose.data(),
-        &state.param_time_delay, &inverse_depth};
-    double uncached_residual[2];
-    double cached_residual[2];
-    double uncached_jacobian[12 + 12 + 2 + 2];
-    double cached_jacobian[12 + 12 + 2 + 2];
-    double* uncached_blocks[] = {
-        uncached_jacobian, uncached_jacobian + 12, uncached_jacobian + 24, uncached_jacobian + 26};
-    double* cached_blocks[] = {
-        cached_jacobian, cached_jacobian + 12, cached_jacobian + 24, cached_jacobian + 26};
-
-    ASSERT_TRUE(uncached->Evaluate(parameters, uncached_residual, uncached_blocks));
-    ASSERT_TRUE(cached.Evaluate(parameters, cached_residual, nullptr));
-    cache.PrepareForEvaluation(true, false);
-    ASSERT_TRUE(cached.Evaluate(parameters, cached_residual, cached_blocks));
-    const Eigen::Map<const Eigen::Vector2d> uncached_residual_map(uncached_residual);
-    const Eigen::Map<const Eigen::Vector2d> cached_residual_map(cached_residual);
-    EXPECT_LT((uncached_residual_map - cached_residual_map).norm(), 1e-12)
-        << "uncached=" << uncached_residual_map.transpose()
-        << " cached=" << cached_residual_map.transpose();
-    const Eigen::Map<const Eigen::Matrix<double, 28, 1>> uncached_jacobian_map(uncached_jacobian);
-    const Eigen::Map<const Eigen::Matrix<double, 28, 1>> cached_jacobian_map(cached_jacobian);
-    EXPECT_TRUE(uncached_jacobian_map.isApprox(cached_jacobian_map, 1e-12));
-
-    state.frames[0].param_pose[0] += 0.02;
-    state.frames[1].param_pose[4] -= 0.01;
-    state.param_time_delay = 0.013;
-    cache.PrepareForEvaluation(true, true);
-    ASSERT_TRUE(uncached->Evaluate(parameters, uncached_residual, uncached_blocks));
-    ASSERT_TRUE(cached.Evaluate(parameters, cached_residual, cached_blocks));
-    EXPECT_LT((uncached_residual_map - cached_residual_map).norm(), 1e-12)
-        << "uncached=" << uncached_residual_map.transpose()
-        << " cached=" << cached_residual_map.transpose();
-    EXPECT_TRUE(uncached_jacobian_map.isApprox(cached_jacobian_map, 1e-12));
-}
-
-// =============================================================================
-// 测试 1: 数值微分逐块验证雅各比
-// =============================================================================
-
-TEST_F(ReprojectionFactorTest, JacobianCheck) {
-    const auto& lm = lms_[0];
-    auto* factor = makeFactor(0);
+TEST_F(ReprojectionFactorTest, AnalyticJacobiansMatchNumericDifferentiation) {
     SE3RightManifold manifold;
+    VisualFrameCache cache(state_, ric_);
+    for (const double delay : {0.005, 0.2}) {
+        state_.param_time_delay = delay;
+        for (size_t landmark_index = 0; landmark_index < landmarks_.size(); ++landmark_index) {
+            std::unique_ptr<ReprojectionFactor> factor = makeFactor(landmark_index);
+            const double inverse_depth = landmarks_[landmark_index].inverse_depth;
+            const double* parameters[] = {
+                state_.frames[0].param_pose.data(), state_.frames[1].param_pose.data(),
+                &state_.param_time_delay, &inverse_depth};
+            double residual[2];
+            double host_pose_data[12], target_pose_data[12], delay_data[2], depth_data[2];
+            double* jacobians[] = {host_pose_data, target_pose_data, delay_data, depth_data};
+            cache.PrepareForEvaluation(true, true);
+            ASSERT_TRUE(factor->Evaluate(parameters, residual, jacobians));
 
-    double inv_depth = lm.inv_depth;
-    double dt_val = td_;
-    const double eps = 1e-6;
-    const double tol = 5e-3;
+            double host_plus_data[36], target_plus_data[36];
+            ASSERT_TRUE(manifold.PlusJacobian(parameters[0], host_plus_data));
+            ASSERT_TRUE(manifold.PlusJacobian(parameters[1], target_plus_data));
+            const Eigen::Map<const Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> host_ambient(
+                host_pose_data);
+            const Eigen::Map<const Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> target_ambient(
+                target_pose_data);
+            const Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> host_plus(
+                host_plus_data);
+            const Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> target_plus(
+                target_plus_data);
 
-    double J0[12], J1[12], J2[2], J3[2];
-    double* jac_ptrs[] = {J0, J1, J2, J3};
-    const double* params[] = {pose_i_, pose_j_, &dt_val, &inv_depth};
-    double r[2];
-    factor->Evaluate(params, r, jac_ptrs);
+            expectJacobianNear(
+                host_ambient * host_plus, numericPoseJacobian(*factor, cache, 0, inverse_depth),
+                "host_pose", landmark_index, delay);
+            expectJacobianNear(
+                target_ambient * target_plus, numericPoseJacobian(*factor, cache, 1, inverse_depth),
+                "target_pose", landmark_index, delay);
 
-    double plus_i_data[36], plus_j_data[36];
-    manifold.PlusJacobian(pose_i_, plus_i_data);
-    manifold.PlusJacobian(pose_j_, plus_j_data);
-    Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> J0_ambient(J0);
-    Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> J1_ambient(J1);
-    Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus_i(plus_i_data);
-    Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus_j(plus_j_data);
-    const Eigen::Matrix<double, 2, 6, Eigen::RowMajor> J0_tangent = J0_ambient * plus_i;
-    const Eigen::Matrix<double, 2, 6, Eigen::RowMajor> J1_tangent = J1_ambient * plus_j;
+            const double original_delay = state_.param_time_delay;
+            state_.param_time_delay = original_delay + kDifferenceStep;
+            const Eigen::Vector2d delay_positive = evaluate(*factor, cache, inverse_depth);
+            state_.param_time_delay = original_delay - kDifferenceStep;
+            const Eigen::Vector2d delay_negative = evaluate(*factor, cache, inverse_depth);
+            state_.param_time_delay = original_delay;
+            expectJacobianNear(
+                Eigen::Map<const Eigen::Vector2d>(delay_data),
+                (delay_positive - delay_negative) / (2.0 * kDifferenceStep), "time_delay",
+                landmark_index, delay);
 
-    auto num_pose = [&](int blk, const double* x, int col) {
-        Eigen::VectorXd delta = Eigen::VectorXd::Zero(6);
-        delta(col) = eps;
-        double xp[6], xm[6];
-        manifold.Plus(x, delta.data(), xp);
-        manifold.Plus(x, (-delta).eval().data(), xm);
-        double rp[2], rm[2];
-        if (blk == 0) {
-            const double* pp[] = {xp, params[1], params[2], params[3]};
-            const double* pm[] = {xm, params[1], params[2], params[3]};
-            factor->Evaluate(pp, rp, nullptr);
-            factor->Evaluate(pm, rm, nullptr);
-        } else {
-            const double* pp[] = {params[0], xp, params[2], params[3]};
-            const double* pm[] = {params[0], xm, params[2], params[3]};
-            factor->Evaluate(pp, rp, nullptr);
-            factor->Evaluate(pm, rm, nullptr);
+            const Eigen::Vector2d depth_positive =
+                evaluate(*factor, cache, inverse_depth + kDifferenceStep);
+            const Eigen::Vector2d depth_negative =
+                evaluate(*factor, cache, inverse_depth - kDifferenceStep);
+            expectJacobianNear(
+                Eigen::Map<const Eigen::Vector2d>(depth_data),
+                (depth_positive - depth_negative) / (2.0 * kDifferenceStep), "inverse_depth",
+                landmark_index, delay);
         }
-        return Eigen::Vector2d((rp[0] - rm[0]) / (2 * eps), (rp[1] - rm[1]) / (2 * eps));
-    };
-
-    auto num_scalar = [&](int blk, double val) {
-        double vp = val + eps, vm = val - eps;
-        double rp[2], rm[2];
-        if (blk == 2) {
-            const double* pp[] = {params[0], params[1], &vp, params[3]};
-            const double* pm[] = {params[0], params[1], &vm, params[3]};
-            factor->Evaluate(pp, rp, nullptr);
-            factor->Evaluate(pm, rm, nullptr);
-        } else {
-            const double* pp[] = {params[0], params[1], params[2], &vp};
-            const double* pm[] = {params[0], params[1], params[2], &vm};
-            factor->Evaluate(pp, rp, nullptr);
-            factor->Evaluate(pm, rm, nullptr);
-        }
-        return Eigen::Vector2d((rp[0] - rm[0]) / (2 * eps), (rp[1] - rm[1]) / (2 * eps));
-    };
-
-    int nbad = 0;
-    auto check = [&](const char* label, const double* Jan, int c, const Eigen::Vector2d& num,
-                     int td) {
-        double a0 = Jan[c], a1 = Jan[td + c];
-        double s = std::max({std::abs(a0), std::abs(a1), std::abs(num[0]), std::abs(num[1]), 1e-8});
-        double e0 = std::abs(a0 - num[0]) / s, e1 = std::abs(a1 - num[1]) / s;
-        if (e0 > tol || e1 > tol) {
-            nbad++;
-        }
-        std::cout << "  " << label << "[col " << c << "] an=[" << a0 << "," << a1 << "] num=["
-                  << num[0] << "," << num[1] << "] err=[" << e0 << "," << e1 << "]"
-                  << ((e0 > tol || e1 > tol) ? " ***" : "") << "\n";
-    };
-
-    std::cout << "\n--- pose_i (2x6) ---\n";
-    for (int c = 0; c < 6; ++c) {
-        check("J_pose_i", J0_tangent.data(), c, num_pose(0, pose_i_, c), 6);
     }
-    std::cout << "--- pose_j (2x6) ---\n";
-    for (int c = 0; c < 6; ++c) {
-        check("J_pose_j", J1_tangent.data(), c, num_pose(1, pose_j_, c), 6);
-    }
-    std::cout << "--- dt (2x1) ---\n";
-    check("J_dt", J2, 0, num_scalar(2, dt_val), 1);
-    std::cout << "--- inv_depth (2x1) ---\n";
-    check("J_inv_depth", J3, 0, num_scalar(3, inv_depth), 1);
-
-    std::cout << "\ntotal bad (>0.5%): " << nbad << "\n";
-    EXPECT_EQ(nbad, 0);
-
-    delete factor;
-}
-
-TEST_F(ReprojectionFactorTest, CeresGradientCheckerContract) {
-    SE3RightManifold manifold;
-    std::vector<const ceres::Manifold*> manifolds = {&manifold, &manifold, nullptr, nullptr};
-    ceres::NumericDiffOptions options;
-    options.relative_step_size = 1e-6;
-    for (size_t k = 0; k < lms_.size(); ++k) {
-        std::unique_ptr<ReprojectionFactor> factor(makeFactor(static_cast<int>(k)));
-        ceres::GradientChecker checker(factor.get(), &manifolds, options);
-        double inv_depth = lms_[k].inv_depth;
-        double delay = td_;
-        const double* parameters[] = {pose_i_, pose_j_, &delay, &inv_depth};
-        ceres::GradientChecker::ProbeResults results;
-        EXPECT_TRUE(checker.Probe(parameters, 5e-5, &results))
-            << "landmark=" << k << " max_relative_error=" << results.maximum_relative_error << "\n"
-            << results.error_log;
-    }
-}
-
-TEST_F(ReprojectionFactorTest, HigherOrderJacobianMatchesAtLargeDelay) {
-    SE3RightManifold manifold;
-    std::vector<const ceres::Manifold*> manifolds = {&manifold, &manifold, nullptr, nullptr};
-    ceres::NumericDiffOptions options;
-    options.relative_step_size = 1e-6;
-    std::unique_ptr<ReprojectionFactor> factor(makeFactor(0));
-    ceres::GradientChecker checker(factor.get(), &manifolds, options);
-    double inv_depth = lms_[0].inv_depth;
-    double delay = 0.2;
-    const double* parameters[] = {pose_i_, pose_j_, &delay, &inv_depth};
-    ceres::GradientChecker::ProbeResults results;
-
-    EXPECT_TRUE(checker.Probe(parameters, 1e-6, &results))
-        << "max_relative_error=" << results.maximum_relative_error << "\n"
-        << results.error_log;
-}
-
-TEST_F(ReprojectionFactorTest, HuberCorrectionMatchesCeres) {
-    for (double delay : {td_, 0.2}) {
-        std::unique_ptr<ReprojectionFactor> factor(makeFactor(0));
-        ceres::HuberLoss loss(1.0);
-        SE3RightManifold manifold;
-        ceres::Problem::Options problem_options;
-        problem_options.cost_function_ownership = ceres::DO_NOT_TAKE_OWNERSHIP;
-        problem_options.loss_function_ownership = ceres::DO_NOT_TAKE_OWNERSHIP;
-        problem_options.manifold_ownership = ceres::DO_NOT_TAKE_OWNERSHIP;
-        ceres::Problem problem(problem_options);
-        double inv_depth = lms_[0].inv_depth;
-        problem.AddParameterBlock(pose_i_, 6, &manifold);
-        problem.AddParameterBlock(pose_j_, 6, &manifold);
-        problem.AddParameterBlock(&delay, 1);
-        problem.AddParameterBlock(&inv_depth, 1);
-        const auto residual_id =
-            problem.AddResidualBlock(factor.get(), &loss, pose_i_, pose_j_, &delay, &inv_depth);
-
-        double ceres_residual[2];
-        double ceres_J0[12], ceres_J1[12], ceres_J2[2], ceres_J3[2];
-        double* ceres_jacobians[] = {ceres_J0, ceres_J1, ceres_J2, ceres_J3};
-        double cost = 0.0;
-        ASSERT_TRUE(problem.EvaluateResidualBlock(
-            residual_id, true, &cost, ceres_residual, ceres_jacobians));
-
-        double raw_residual[2];
-        double raw_J0[12], raw_J1[12], raw_J2[2], raw_J3[2];
-        double* raw_jacobians[] = {raw_J0, raw_J1, raw_J2, raw_J3};
-        const double* parameters[] = {pose_i_, pose_j_, &delay, &inv_depth};
-        factor->Evaluate(parameters, raw_residual, raw_jacobians);
-
-        double plus_i_data[36], plus_j_data[36];
-        manifold.PlusJacobian(pose_i_, plus_i_data);
-        manifold.PlusJacobian(pose_j_, plus_j_data);
-        Eigen::Map<const Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> raw_pose_i(raw_J0);
-        Eigen::Map<const Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> raw_pose_j(raw_J1);
-        Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus_i(plus_i_data);
-        Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> plus_j(plus_j_data);
-        Eigen::Matrix<double, 2, 6, Eigen::RowMajor> expected_J0 = raw_pose_i * plus_i;
-        Eigen::Matrix<double, 2, 6, Eigen::RowMajor> expected_J1 = raw_pose_j * plus_j;
-
-        double rho[3];
-        const Eigen::Map<const Eigen::Vector2d> raw_r(raw_residual);
-        loss.Evaluate(raw_r.squaredNorm(), rho);
-        const double scale = std::sqrt(rho[1]);
-        expected_J0 *= scale;
-        expected_J1 *= scale;
-        Eigen::Map<Eigen::Vector2d>(raw_J2) *= scale;
-        Eigen::Map<Eigen::Vector2d>(raw_J3) *= scale;
-        const Eigen::Vector2d expected_residual = scale * raw_r;
-
-        Eigen::Map<const Eigen::Vector2d> actual_residual(ceres_residual);
-        Eigen::Map<const Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> actual_J0(ceres_J0);
-        Eigen::Map<const Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> actual_J1(ceres_J1);
-        EXPECT_TRUE(actual_residual.isApprox(expected_residual, 1e-12));
-        EXPECT_TRUE(actual_J0.isApprox(expected_J0, 1e-12));
-        EXPECT_TRUE(actual_J1.isApprox(expected_J1, 1e-12));
-        EXPECT_TRUE(Eigen::Map<const Eigen::Vector2d>(ceres_J2).isApprox(
-            Eigen::Map<const Eigen::Vector2d>(raw_J2), 1e-12));
-        EXPECT_TRUE(Eigen::Map<const Eigen::Vector2d>(ceres_J3).isApprox(
-            Eigen::Map<const Eigen::Vector2d>(raw_J3), 1e-12));
-    }
-}
-
-// =============================================================================
-// 测试 2：构建优化问题并验证 td 收敛
-// =============================================================================
-
-TEST_F(ReprojectionFactorTest, TdConvergence) {
-    ceres::Problem problem;
-
-    SE3RightManifold* manifold = new SE3RightManifold();
-    problem.AddParameterBlock(pose_i_, 6, manifold);
-    problem.AddParameterBlock(pose_j_, 6, manifold);
-    problem.SetParameterBlockConstant(pose_i_);
-    problem.SetParameterBlockConstant(pose_j_);
-
-    double td_opt = 0.0;
-    problem.AddParameterBlock(&td_opt, 1);
-
-    ceres::LossFunction* loss = new ceres::HuberLoss(1.0);
-
-    std::vector<double> inv_depths(lms_.size());
-    for (size_t k = 0; k < lms_.size(); ++k) {
-        inv_depths[k] = lms_[k].inv_depth;
-        problem.AddResidualBlock(makeFactor(k), loss, pose_i_, pose_j_, &td_opt, &inv_depths[k]);
-    }
-
-    ceres::Solver::Options opts;
-    opts.linear_solver_type = ceres::DENSE_SCHUR;
-    opts.max_num_iterations = 50;
-    opts.num_threads = 1;
-    opts.minimizer_progress_to_stdout = false;
-
-    ceres::Solver::Summary summary;
-    ceres::Solve(opts, &problem, &summary);
-
-    std::cout << "Td optimization: " << summary.BriefReport() << "\n"
-              << "  initial_cost: " << summary.initial_cost << "\n"
-              << "  final_cost: " << summary.final_cost << "\n"
-              << "  td: initial=0, final=" << td_opt << ", true=" << td_ << "\n";
-
-    EXPECT_NEAR(td_opt, td_, 0.001);
-    EXPECT_LT(summary.final_cost, 1e-10);
 }
 
 }  // namespace

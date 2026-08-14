@@ -37,9 +37,8 @@ public:
     bool addFeatureFrame(
         int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
 
-    bool replaceInitializationCandidate(
-        int accepted_frame_index, int candidate_frame_index,
-        const std::unordered_map<int, FeaturePerFrame>& feature_frame);
+    bool tryAddInitializationKeyframe(
+        int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
 
     void triangulate(const State& state, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);
 
@@ -83,8 +82,14 @@ public:
     std::vector<SFMFeature> collectSFMFeatures(const State& state, int first_frame_index = 0) const;
 
     std::unordered_map<int, Feature>& features() { return features_; }
+    const std::unordered_map<int, Feature>& features() const { return features_; }
 
 private:
+    void appendFrameObservations(
+        int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
+
+    void rememberKeyframe(const std::unordered_map<int, FeaturePerFrame>& feature_frame);
+
     bool shouldCreateKeyframe(const std::unordered_map<int, FeaturePerFrame>& feature_frame) const;
 
     double reproj_err_thres_;

@@ -124,18 +124,24 @@ $\Delta\mathbf R_{ij}$、$\Delta\mathbf v_{ij}$、$\Delta\mathbf p_{ij}$ 表达�
 \simeq\boldsymbol\phi_{ij}.
 ```
 
-堆叠全部相邻帧并求最小二乘：
+堆叠全部相邻帧并直接对 Jacobian 求最小二乘：
 
 ```math
 \boxed{
-\left(\sum_{ij}\mathbf J_{ij}^T\mathbf J_{ij}\right)
 \delta\mathbf b_g
-=\sum_{ij}\mathbf J_{ij}^T\boldsymbol\phi_{ij}
+=\mathop{\arg\min}_{\delta\mathbf b}
+\left\|\mathbf J\delta\mathbf b-\boldsymbol\phi\right\|_2
 }.
 ```
 
-求得的偏置写入全部初始化帧，随后所有预积分重新传播。必须先重传播再做尺度和重力
-对齐，否则 $\Delta\mathbf v$、$\Delta\mathbf p$ 仍对应旧的旋转偏置线性化点。
+窗口内预积分必须共享同一个偏置线性化点 $\bar{\mathbf b}_g$。求解结果是修正量，最终偏置为
+
+```math
+\mathbf b_g=\bar{\mathbf b}_g+\delta\mathbf b_g.
+```
+
+最终偏置写入全部初始化帧，随后所有预积分重新传播。必须先重传播再做尺度和重力对齐，
+否则 $\Delta\mathbf v$、$\Delta\mathbf p$ 仍对应旧的旋转偏置线性化点。
 
 ## 5. 速度、重力和尺度线性系统
 
@@ -183,19 +189,21 @@ $\Delta\mathbf R_{ij}$、$\Delta\mathbf v_{ij}$、$\Delta\mathbf p_{ij}$ 表达�
 \qquad s'=100s.
 ```
 
-尺度使用 $s'=100s$ 只是数值缩放，因此矩阵中的视觉位移列除以 100。每个相邻帧对
-提供 6 条线性方程，堆叠后通过正规方程和 LDLT 求解：
+尺度使用 $s'=100s$ 只是变量缩放，因此矩阵中的视觉位移列除以 100。每个相邻帧对
+提供 6 条线性方程，堆叠成全局 Jacobian 后直接使用 SVD 求解：
 
 ```math
 \boxed{
-(\mathbf A^T\mathbf A)\mathbf x=\mathbf A^T\mathbf b
+\mathbf x=\mathop{\arg\min}_{\mathbf y}
+\|\mathbf A\mathbf y-\mathbf b\|_2
 }.
 ```
 
-实现将正规矩阵和右端同时乘以 1000，该操作不改变理论解，只改变数值量级。线性结果
-必须满足尺度为正、重力有限，且重力模长与配置值之差不超过阈值。
+实现不构造 $\mathbf A^T\mathbf A$，避免平方条件数。求解前要求方程数不少于未知数，并
+检查奇异值条件数；线性结果还必须满足尺度为正、重力有限，且重力模长与配置值之差
+不超过阈值。
 
-## 6. 当前外参常数项待核对
+## 6. 外参常数项
 
 按第 2 节固定的外参约定，从预积分位置方程严格推导得到的常数项是
 
@@ -205,18 +213,9 @@ $\Delta\mathbf R_{ij}$、$\Delta\mathbf v_{ij}$、$\Delta\mathbf p_{ij}$ 表达�
 }.
 ```
 
-当前 `linearAlignment()` 和 `refineGravitySpeeds()` 实际组装的是
-
-```math
-\mathbf C_{ij}\mathbf t_{IC}-\mathbf R_{IC}\mathbf t_{IC}.
-```
-
-但是 `ReprojectionFactor` 和最终状态写回都把 $\mathbf t_{IC}$ 作为 IMU 坐标系向量使用，
-没有再次左乘 $\mathbf R_{IC}$。因此这里存在坐标约定不一致的风险。
-
-本文不把当前实现项解释成理论公式，也不在没有合成测试的情况下直接修改代码。下一步应
-构造非零 `tic`、非单位 `ric` 的无噪声合成轨迹，分别代入两种常数项，检查哪一种能恢复
-真值尺度、重力和速度，然后再决定代码修改。
+`linearAlignment()` 和 `refineGravitySpeeds()` 均按该常数项组装。无噪声合成测试使用
+非单位 `ric` 和非零 `tic`，能够恢复真值尺度、重力和各帧速度，验证其与最终状态写回的
+外参约定一致。
 
 ## 7. 固定重力模长的切空间精化
 
@@ -331,15 +330,16 @@ s\mathbf R_{IC}\mathbf p_{C_k}^v
 - SFM 平移方向错误时，线性系统可能给出负尺度或错误重力。
 - 外参平移较小时，其坐标项错误不容易在普通数据集上暴露，需要专门合成测试。
 
-代码当前通过 LDLT 成功状态、有限性、正尺度和重力模长阈值进行基本拒绝，但没有显式
-检查正规矩阵的条件数。因此“求解成功”不等价于“初始化具有良好可观性”。
+代码直接检查堆叠 Jacobian 的行列数、有限性和奇异值条件数，并继续检查正尺度和重力
+模长。两帧欠定窗口和静止退化窗口会被明确拒绝；条件数阈值仍是工程判据，不能替代对
+实际运动激励的检查。
 
 ## 10. 代码对应关系
 
 | 机制 | 实现位置 |
 | --- | --- |
 | 初始化控制流 | `Estimator::tryInitialize()` |
-| 陀螺仪偏置最小二乘 | `solveGyroBias()` |
+| 陀螺仪偏置修正量最小二乘 | `solveGyroBiasCorrection()` |
 | 偏置重传播 | `IntegratorBase::repropagate()` |
 | 速度、重力、尺度线性解 | `linearAlignment()` |
 | 重力二维切空间精化 | `refineGravitySpeeds()` |

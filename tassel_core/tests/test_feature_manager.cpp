@@ -197,43 +197,23 @@ TEST(FeatureManagerTest, KeepsFrameNonKeyframeWhenConnectionsAreSufficient) {
     EXPECT_FALSE(fm.addFeatureFrame(2, {{1, observation(40.0)}}));
 }
 
-TEST(FeatureManagerTest, ReplacesInitializationCandidateUntilConnectionsAreInsufficient) {
-    FeatureManager fm(3.0, 2, 1e9, 0.5, 0.1, 100.0);
-    EXPECT_TRUE(fm.addFeatureFrame(
-        1, {{1, observation(0.0)}, {2, observation(0.0)}, {3, observation(0.0)}}));
-
-    EXPECT_FALSE(fm.replaceInitializationCandidate(
-        1, 2,
-        {{1, observation(20.0)},
-         {2, observation(20.0)},
-         {3, observation(20.0)},
-         {4, observation(20.0)}}));
-    ASSERT_EQ(fm.features().at(1).observations.size(), 2u);
-    EXPECT_DOUBLE_EQ(fm.features().at(1).observations.back().pt.x, 20.0);
-
-    EXPECT_TRUE(
-        fm.replaceInitializationCandidate(1, 2, {{1, observation(40.0)}, {5, observation(40.0)}}));
-    ASSERT_EQ(fm.features().at(1).observations.size(), 2u);
-    EXPECT_DOUBLE_EQ(fm.features().at(1).observations.back().pt.x, 40.0);
-    EXPECT_FALSE(fm.features().contains(4));
-    EXPECT_TRUE(fm.features().contains(5));
-}
-
-TEST(FeatureManagerTest, AcceptsInitializationCandidateWhenParallaxIsSufficient) {
+TEST(FeatureManagerTest, StoresOnlyAcceptedInitializationKeyframes) {
     FeatureManager fm(3.0, 2, 10.0, 0.5, 0.1, 100.0);
-    EXPECT_TRUE(fm.addFeatureFrame(
+    EXPECT_TRUE(fm.tryAddInitializationKeyframe(
         1, {{1, observation(0.0)}, {2, observation(0.0)}, {3, observation(0.0)}}));
 
-    EXPECT_TRUE(fm.replaceInitializationCandidate(
-        1, 2, {{1, observation(12.0)}, {2, observation(12.0)}, {3, observation(12.0)}}));
-}
+    EXPECT_FALSE(fm.tryAddInitializationKeyframe(
+        2, {{1, observation(5.0)},
+            {2, observation(5.0)},
+            {3, observation(5.0)},
+            {4, observation(5.0)}}));
+    EXPECT_EQ(fm.features().at(1).observations.size(), 1u);
+    EXPECT_FALSE(fm.features().contains(4));
 
-TEST(FeatureManagerTest, AcceptsInitializationCandidateWhenKeyframeConnectionsAreLost) {
-    FeatureManager fm(3.0, 2, 1e9, 0.75, 0.1, 100.0);
-    EXPECT_TRUE(fm.addFeatureFrame(
-        1, {{1, observation()}, {2, observation()}, {3, observation()}, {4, observation()}}));
-
-    EXPECT_TRUE(fm.replaceInitializationCandidate(1, 2, {{1, observation()}, {2, observation()}}));
+    EXPECT_TRUE(fm.tryAddInitializationKeyframe(
+        2, {{1, observation(12.0)}, {2, observation(12.0)}, {3, observation(12.0)}}));
+    ASSERT_EQ(fm.features().at(1).observations.size(), 2u);
+    EXPECT_DOUBLE_EQ(fm.features().at(1).observations.back().pt.x, 12.0);
 }
 
 TEST(FeatureManagerTest, CreatesKeyframeWhenPreviousKeyframeConnectionsAreLost) {
@@ -515,10 +495,10 @@ TEST(FeatureManagerTest, MapsReservedSlotIndicesToCompactSfmIndices) {
 
     const std::vector<SFMFeature> features = fm.collectSFMFeatures(state, 1);
     ASSERT_EQ(features.size(), 1u);
-    ASSERT_EQ(features.front().observation.size(), 3u);
-    EXPECT_EQ(features.front().observation[0].first, 0);
-    EXPECT_EQ(features.front().observation[1].first, 1);
-    EXPECT_EQ(features.front().observation[2].first, 2);
+    ASSERT_EQ(features.front().observations.size(), 3u);
+    EXPECT_EQ(features.front().observations[0].first, 0);
+    EXPECT_EQ(features.front().observations[1].first, 1);
+    EXPECT_EQ(features.front().observations[2].first, 2);
 }
 
 TEST(FeatureManagerTest, ExcludesDepthOutsideConfiguredRange) {

@@ -10,6 +10,8 @@
 #include <opencv2/core/types.hpp>
 #include <stdexcept>
 
+#include "frond_end/feature_manager.h"
+#include "state/state.h"
 #include "tassel_utils/macros.h"
 #include "tassel_utils/triangulation.h"
 
@@ -46,150 +48,77 @@ private:
 
 }  // namespace
 
-int InitialSFM::selectSeedFrame(int frame_num, const std::vector<SFMFeature>& sfm_f) {
-    std::vector<int> feature_count(frame_num, 0);
-    std::vector<int> connectivity_per_frame(frame_num, 0);
-    for (const auto& feature : sfm_f) {
-        for (const auto& [frame_id, _] : feature.observation) {
-            if (frame_id < 0 || frame_id >= frame_num) {
-                continue;
-            }
-            ++feature_count[frame_id];
-            for (const auto& [other_id, __] : feature.observation) {
-                const int distance = std::abs(frame_id - other_id);
-                if (distance > 0 && distance <= 3) {
-                    connectivity_per_frame[frame_id] += 4 - distance;
-                }
-            }
-        }
-    }
-
-    int seed_id = -1;
-    int best_score = -1;
-    for (int i = 0; i < frame_num; ++i) {
-        if (feature_count[i] < min_points_) {
+std::vector<std::pair<int, int>> InitialSFM::scoreBaselineFrames(
+    int first_frame_index, int host_id, const std::vector<Eigen::Quaterniond>& camera_rotations,
+    const FeatureManager& feature_manager) {
+    // 返回 {目标帧局部索引, 旋转补偿后有效视差点数}。
+    std::vector<int> scores(camera_rotations.size(), 0);
+    const int host_frame_index = first_frame_index + host_id;
+    const Eigen::Matrix3d host_rotation = camera_rotations[host_id].toRotationMatrix();
+    for (const auto& [_, feature] : feature_manager.features()) {
+        const int host_observation_index = host_frame_index - feature.host_frame_index;
+        if (host_observation_index < 0 ||
+            host_observation_index >= static_cast<int>(feature.observations.size())) {
             continue;
         }
-        if (connectivity_per_frame[i] > best_score) {
-            best_score = connectivity_per_frame[i];
-            seed_id = i;
+
+        const Eigen::Vector3d host_ray =
+            feature.observations[host_observation_index].uv.normalized();
+        for (size_t observation_index = 0; observation_index < feature.observations.size();
+             ++observation_index) {
+            const int frame_id =
+                feature.observationFrameIndex(observation_index) - first_frame_index;
+            if (frame_id == host_id || frame_id < 0 ||
+                frame_id >= static_cast<int>(camera_rotations.size())) {
+                continue;
+            }
+            const Eigen::Vector3d target_ray =
+                feature.observations[observation_index].uv.normalized();
+            const Eigen::Matrix3d host_to_target =
+                camera_rotations[frame_id].inverse().toRotationMatrix() * host_rotation;
+            const double parallax = (host_to_target * host_ray).cross(target_ray).norm();
+            if (parallax > epipolar_threshold_) {
+                ++scores[frame_id];
+            }
         }
     }
 
-    if (seed_id < 0) {
-        const int max_features = *std::max_element(feature_count.begin(), feature_count.end());
+    std::vector<std::pair<int, int>> candidates;
+    for (int frame_id = 0; frame_id < static_cast<int>(scores.size()); ++frame_id) {
+        if (scores[frame_id] >= min_points_) {
+            candidates.emplace_back(frame_id, scores[frame_id]);
+        }
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.second > rhs.second;
+    });
+    if (candidates.size() > 2) {
+        candidates.resize(2);
+    }
+    if (candidates.empty()) {
+        const int best_score = scores.empty() ? 0 : *std::max_element(scores.begin(), scores.end());
         spdlog::warn(
-            "SFM seed failed: frames={}, max_features={}, required={}", frame_num, max_features,
-            min_points_);
-        return -1;
+            "SFM baseline failed: host={}, rotated_parallax_points={}, required={}", host_id,
+            best_score, min_points_);
+    } else {
+        spdlog::info(
+            "SFM host frame {}: candidates={}, best_score={}", host_id, candidates.size(),
+            candidates.front().second);
     }
-
-    spdlog::info(
-        "SFM mono seed frame {}: features={}, connectivity={}", seed_id, feature_count[seed_id],
-        best_score);
-    return seed_id;
-}
-
-std::vector<std::pair<int, int>> InitialSFM::findParallaxFrames(
-    int seed_id, int frame_num, const std::vector<SFMFeature>& sfm_f) {
-    struct FrameCandidate {
-        int frame_id;
-        int common_count;
-        int frame_distance;
-        double median_parallax;
-    };
-
-    std::vector<FrameCandidate> connected_candidates;
-    int max_common = 0;
-    for (int i = 0; i < frame_num; ++i) {
-        if (i == seed_id) {
-            continue;
-        }
-        int common = 0;
-        std::vector<double> parallaxes;
-        for (const auto& f : sfm_f) {
-            bool in_seed = false, in_other = false;
-            Eigen::Vector2d uv_seed, uv_other;
-            for (const auto& [fid, uv] : f.observation) {
-                if (fid == seed_id) {
-                    in_seed = true;
-                    uv_seed = uv;
-                }
-                if (fid == i) {
-                    in_other = true;
-                    uv_other = uv;
-                }
-            }
-            if (!in_seed || !in_other) {
-                continue;
-            }
-            ++common;
-            parallaxes.push_back((uv_seed - uv_other).norm());
-        }
-        max_common = std::max(max_common, common);
-        if (common < min_points_) {
-            continue;
-        }
-        const size_t mid = parallaxes.size() / 2;
-        std::nth_element(parallaxes.begin(), parallaxes.begin() + mid, parallaxes.end());
-        connected_candidates.push_back({i, common, std::abs(i - seed_id), parallaxes[mid]});
-    }
-
-    std::vector<FrameCandidate> parallax_candidates;
-    for (const auto& candidate : connected_candidates) {
-        if (candidate.median_parallax > epipolar_threshold_) {
-            parallax_candidates.push_back(candidate);
-        }
-    }
-
-    if (parallax_candidates.empty()) {
-        if (connected_candidates.empty()) {
-            spdlog::warn(
-                "SFM baseline failed: seed={}, max_common={}, required={}", seed_id, max_common,
-                min_points_);
-        } else {
-            const auto best = std::max_element(
-                connected_candidates.begin(), connected_candidates.end(),
-                [](const auto& lhs, const auto& rhs) {
-                    return lhs.median_parallax < rhs.median_parallax;
-                });
-            spdlog::warn(
-                "SFM baseline failed: seed={}, max_median_parallax={:.6f}, required>{:.6f}",
-                seed_id, best->median_parallax, epipolar_threshold_);
-        }
-        return {};
-    }
-
-    std::sort(
-        parallax_candidates.begin(), parallax_candidates.end(),
-        [](const auto& lhs, const auto& rhs) {
-            if (lhs.median_parallax != rhs.median_parallax) {
-                return lhs.median_parallax > rhs.median_parallax;
-            }
-            return lhs.common_count > rhs.common_count;
-        });
-
-    std::vector<std::pair<int, int>> other_candidates;
-    const size_t candidate_count = std::min<size_t>(2, parallax_candidates.size());
-    other_candidates.reserve(candidate_count);
-    for (size_t i = 0; i < candidate_count; ++i) {
-        other_candidates.emplace_back(
-            parallax_candidates[i].frame_id, parallax_candidates[i].common_count);
-    }
-    return other_candidates;
+    return candidates;
 }
 
 bool InitialSFM::computeEssential(
-    int seed_id, int other_id, const std::vector<SFMFeature>& sfm_f,
+    int seed_id, int other_id, const std::vector<SFMFeature>& features,
     std::vector<PoseCandidate>& candidates, std::vector<cv::Point2f>& pts_seed,
     std::vector<cv::Point2f>& pts_other, std::unordered_set<int>& inlier_feature_ids) {
     std::vector<int> feature_ids;
-    for (const auto& feature : sfm_f) {
+    for (const auto& feature : features) {
         bool in_seed = false;
         bool in_other = false;
         Eigen::Vector2d uv_seed = Eigen::Vector2d::Zero();
         Eigen::Vector2d uv_other = Eigen::Vector2d::Zero();
-        for (const auto& [frame_id, uv] : feature.observation) {
+        for (const auto& [frame_id, uv] : feature.observations) {
             if (frame_id == seed_id) {
                 in_seed = true;
                 uv_seed = uv;
@@ -253,157 +182,28 @@ bool InitialSFM::computeEssential(
     pts_seed = std::move(inlier_seed);
     pts_other = std::move(inlier_other);
 
-    Eigen::Matrix3d essential_eigen;
-    cv::cv2eigen(essential, essential_eigen);
-    decomposeEssentialMat(essential_eigen, candidates);
+    if (essential.rows != 3 || essential.cols != 3) {
+        throw std::logic_error("Essential matrix must be 3x3");
+    }
+    cv::Mat rotation1_cv;
+    cv::Mat rotation2_cv;
+    cv::Mat translation_cv;
+    cv::decomposeEssentialMat(essential, rotation1_cv, rotation2_cv, translation_cv);
+    Eigen::Matrix3d rotation1;
+    Eigen::Matrix3d rotation2;
+    Eigen::Vector3d translation;
+    cv::cv2eigen(rotation1_cv, rotation1);
+    cv::cv2eigen(rotation2_cv, rotation2);
+    cv::cv2eigen(translation_cv, translation);
+    translation.normalize();
+    candidates = {
+        {rotation1, translation},
+        {rotation1, -translation},
+        {rotation2, translation},
+        {rotation2, -translation}};
     spdlog::info(
         "SFM essential: seed={}, other={}, inliers={}/{}, threshold={:.6f}", seed_id, other_id,
         inlier_count, feature_ids.size(), epipolar_threshold_);
-    return true;
-}
-
-bool InitialSFM::estimateTranslationDirection(
-    int seed_id, int other_id, const Eigen::Matrix3d& rotation_other_seed,
-    const std::vector<SFMFeature>& sfm_f, std::vector<PoseCandidate>& candidates,
-    std::vector<cv::Point2f>& pts_seed, std::vector<cv::Point2f>& pts_other,
-    std::unordered_set<int>& inlier_feature_ids) {
-    std::vector<int> feature_ids;
-    for (const auto& f : sfm_f) {
-        bool in_seed = false, in_other = false;
-        Eigen::Vector2d uv_seed, uv_other;
-        for (const auto& [fid, uv] : f.observation) {
-            if (fid == seed_id) {
-                in_seed = true;
-                uv_seed = uv;
-            }
-            if (fid == other_id) {
-                in_other = true;
-                uv_other = uv;
-            }
-        }
-        if (in_seed && in_other) {
-            pts_seed.emplace_back(uv_seed.x(), uv_seed.y());
-            pts_other.emplace_back(uv_other.x(), uv_other.y());
-            feature_ids.push_back(f.id);
-        }
-    }
-    const int required_correspondences = std::max(5, min_inliers_);
-    if (static_cast<int>(pts_seed.size()) < required_correspondences) {
-        spdlog::warn(
-            "SFM translation failed: seed={}, other={}, correspondences={}, required={}", seed_id,
-            other_id, pts_seed.size(), required_correspondences);
-        return false;
-    }
-
-    if (feature_ids.size() != pts_seed.size()) {
-        throw std::logic_error("Translation correspondences do not match their feature IDs");
-    }
-
-    const int correspondence_count = static_cast<int>(pts_seed.size());
-    Eigen::MatrixXd constraints(correspondence_count, 3);
-    int valid_constraint_count = 0;
-    for (int i = 0; i < correspondence_count; ++i) {
-        const Eigen::Vector3d ray_seed =
-            Eigen::Vector3d(pts_seed[i].x, pts_seed[i].y, 1.0).normalized();
-        const Eigen::Vector3d ray_other =
-            Eigen::Vector3d(pts_other[i].x, pts_other[i].y, 1.0).normalized();
-        Eigen::Vector3d constraint = (rotation_other_seed * ray_seed).cross(ray_other);
-        const double norm = constraint.norm();
-        if (!std::isfinite(norm) || norm < 1e-12) {
-            constraint.setZero();
-        } else {
-            constraint /= norm;
-            ++valid_constraint_count;
-        }
-        constraints.row(i) = constraint.transpose();
-    }
-
-    Eigen::VectorXd weights = Eigen::VectorXd::Ones(correspondence_count);
-    Eigen::Vector3d translation = Eigen::Vector3d::Zero();
-    for (int iteration = 0; iteration < 8; ++iteration) {
-        Eigen::MatrixXd weighted_constraints = constraints;
-        for (int i = 0; i < correspondence_count; ++i) {
-            weighted_constraints.row(i) *= std::sqrt(weights[i]);
-        }
-        const Eigen::JacobiSVD<Eigen::MatrixXd> svd(weighted_constraints, Eigen::ComputeFullV);
-        translation = svd.matrixV().col(2).normalized();
-        if (!translation.allFinite()) {
-            spdlog::warn(
-                "SFM translation failed: seed={}, other={}, non-finite IRLS solution at "
-                "iteration={}, valid_constraints={}/{}",
-                seed_id, other_id, iteration, valid_constraint_count, correspondence_count);
-            return false;
-        }
-        for (int i = 0; i < correspondence_count; ++i) {
-            const double scaled_residual =
-                std::abs(constraints.row(i).dot(translation)) / epipolar_threshold_;
-            // Cauchy IRLS 固定迭代次数和阈值，不依赖随机采样顺序。
-            weights[i] = 1.0 / (1.0 + scaled_residual * scaled_residual);
-        }
-    }
-
-    std::vector<double> residuals;
-    residuals.reserve(correspondence_count);
-    for (int i = 0; i < correspondence_count; ++i) {
-        residuals.push_back(std::abs(constraints.row(i).dot(translation)));
-    }
-    const auto percentile = [&residuals](double fraction) {
-        const size_t index = static_cast<size_t>(fraction * (residuals.size() - 1));
-        std::nth_element(residuals.begin(), residuals.begin() + index, residuals.end());
-        return residuals[index];
-    };
-    const double median_residual = percentile(0.50);
-    const double p90_residual = percentile(0.90);
-    const double max_residual = *std::max_element(residuals.begin(), residuals.end());
-    std::vector<int> inlier_indices;
-    inlier_indices.reserve(correspondence_count);
-    for (int i = 0; i < correspondence_count; ++i) {
-        if (std::abs(constraints.row(i).dot(translation)) <= epipolar_threshold_) {
-            inlier_indices.push_back(i);
-        }
-    }
-    if (static_cast<int>(inlier_indices.size()) < min_inliers_) {
-        spdlog::warn(
-            "SFM translation failed: seed={}, other={}, inliers={}/{}, required={}, "
-            "threshold={:.6f}, residual_median={:.6f}, residual_p90={:.6f}, "
-            "residual_max={:.6f}, rotation_angle={:.3f}deg",
-            seed_id, other_id, inlier_indices.size(), correspondence_count, min_inliers_,
-            epipolar_threshold_, median_residual, p90_residual, max_residual,
-            Eigen::AngleAxisd(rotation_other_seed).angle() * 180.0 / M_PI);
-        return false;
-    }
-
-    Eigen::MatrixXd inlier_constraints(inlier_indices.size(), 3);
-    for (size_t i = 0; i < inlier_indices.size(); ++i) {
-        inlier_constraints.row(i) = constraints.row(inlier_indices[i]);
-    }
-    const Eigen::JacobiSVD<Eigen::MatrixXd> inlier_svd(inlier_constraints, Eigen::ComputeFullV);
-    translation = inlier_svd.matrixV().col(2).normalized();
-    if (!translation.allFinite()) {
-        spdlog::warn(
-            "SFM translation failed: seed={}, other={}, non-finite inlier solution", seed_id,
-            other_id);
-        return false;
-    }
-
-    std::vector<cv::Point2f> inlier_seed;
-    std::vector<cv::Point2f> inlier_other;
-    inlier_seed.reserve(inlier_indices.size());
-    inlier_other.reserve(inlier_indices.size());
-    inlier_feature_ids.clear();
-    inlier_feature_ids.reserve(inlier_indices.size());
-    // 约束行、两组匹配点和 feature ID 严格同序，初始三角化只能使用最终内点。
-    for (const int index : inlier_indices) {
-        inlier_seed.push_back(pts_seed[index]);
-        inlier_other.push_back(pts_other[index]);
-        inlier_feature_ids.insert(feature_ids[index]);
-    }
-    pts_seed = std::move(inlier_seed);
-    pts_other = std::move(inlier_other);
-
-    candidates.clear();
-    candidates.push_back({rotation_other_seed, translation});
-    candidates.push_back({rotation_other_seed, -translation});
     return true;
 }
 
@@ -415,10 +215,9 @@ bool InitialSFM::resolvePose(
     scoreByCheirality(candidates, pts_seed, pts_other, scored);
 
     constexpr int kMinCheiralityPoints = 5;
-    if (scored.empty() || scored.front().score < kMinCheiralityPoints) {
-        const int best_score = scored.empty() ? 0 : scored.front().score;
+    if (scored.empty()) {
         spdlog::warn(
-            "SFM pose failed: cheirality_points={}, required={}, correspondences={}", best_score,
+            "SFM pose failed: cheirality_points=0, required={}, correspondences={}",
             kMinCheiralityPoints, pts_seed.size());
         return false;
     }
@@ -431,6 +230,12 @@ bool InitialSFM::resolvePose(
         }
         return lhs.prior_error < rhs.prior_error;
     });
+    if (scored.front().score < kMinCheiralityPoints) {
+        spdlog::warn(
+            "SFM pose failed: cheirality_points={}, required={}, correspondences={}",
+            scored.front().score, kMinCheiralityPoints, pts_seed.size());
+        return false;
+    }
     selected = scored.front();
     spdlog::debug(
         "SFM pose selected: cheirality={}/{}, gyro_rotation_error={:.3f}deg", selected.score,
@@ -441,128 +246,107 @@ bool InitialSFM::resolvePose(
 bool InitialSFM::reconstructScene(
     int frame_num, int seed_id, int other_id, const Eigen::Vector3d& relative_T,
     std::vector<Eigen::Quaterniond>& q_cam_rel, std::vector<Eigen::Vector3d>& t_arr,
-    const std::unordered_set<int>& initial_feature_ids, std::vector<SFMFeature>& sfm_f) {
-    feature_num_ = static_cast<int>(sfm_f.size());
-    int l = seed_id, last = other_id;
+    const std::unordered_set<int>& initial_feature_ids, std::vector<SFMFeature> features) {
+    t_arr[seed_id].setZero();
+    t_arr[other_id] = relative_T;
 
-    t_arr[l].setZero();
-    t_arr[last] = relative_T;
+    std::vector<Eigen::Matrix3d> camera_rotations(frame_num);
+    std::vector<Eigen::Vector3d> camera_translations(frame_num);
+    std::vector<std::array<double, 4>> rotation_params(frame_num);
+    std::vector<std::array<double, 3>> translation_params(frame_num);
+    std::vector<Eigen::Matrix<double, 3, 4>> poses(frame_num);
 
-    std::vector<Eigen::Matrix3d> c_Rotation(frame_num);
-    std::vector<Eigen::Vector3d> c_Translation(frame_num);
-    std::vector<Eigen::Quaterniond> c_Quat(frame_num);
-    std::vector<std::array<double, 4>> c_rotation(frame_num);
-    std::vector<std::array<double, 3>> c_translation(frame_num);
-    std::vector<Eigen::Matrix<double, 3, 4>> Pose(frame_num);
-
-    c_Quat[l] = q_cam_rel[l].inverse();
-    c_Rotation[l] = c_Quat[l].toRotationMatrix();
-    c_Translation[l] = -1 * (c_Rotation[l] * t_arr[l]);
-    Pose[l].block<3, 3>(0, 0) = c_Rotation[l];
-    Pose[l].block<3, 1>(0, 3) = c_Translation[l];
-
-    c_Quat[last] = q_cam_rel[last].inverse();
-    c_Rotation[last] = c_Quat[last].toRotationMatrix();
-    c_Translation[last] = -1 * (c_Rotation[last] * t_arr[last]);
-    Pose[last].block<3, 3>(0, 0) = c_Rotation[last];
-    Pose[last].block<3, 1>(0, 3) = c_Translation[last];
-
-    triangulateTwoFrames(l, Pose[l], last, Pose[last], sfm_f, &initial_feature_ids);
-
-    for (int j = 0; j < feature_num_; j++) {
-        if (!sfm_f[j].state) {
-            continue;
-        }
-        Eigen::Vector3d X(sfm_f[j].position);
-        if ((X - t_arr[l]).dot(q_cam_rel[l].toRotationMatrix().col(2)) <= 0.1 ||
-            (X - t_arr[last]).dot(q_cam_rel[last].toRotationMatrix().col(2)) <= 0.1) {
-            sfm_f[j].state = false;
-        }
-    }
+    // q_cam_rel/t_arr 为相机到种子世界系位姿，三角化使用世界到相机投影矩阵。
+    const auto initialize_pose = [&](int frame_id) {
+        camera_rotations[frame_id] = q_cam_rel[frame_id].inverse().toRotationMatrix();
+        camera_translations[frame_id] = -(camera_rotations[frame_id] * t_arr[frame_id]);
+        poses[frame_id].leftCols<3>() = camera_rotations[frame_id];
+        poses[frame_id].rightCols<1>() = camera_translations[frame_id];
+    };
+    initialize_pose(seed_id);
+    initialize_pose(other_id);
 
     std::vector<bool> solved(frame_num, false);
-    solved[l] = true;
-    solved[last] = true;
+    solved[seed_id] = true;
+    solved[other_id] = true;
+    triangulateFeatures(solved, poses, features, &initial_feature_ids);
 
-    for (int solved_count = 2; solved_count < frame_num; solved_count++) {
-        int best_i = -1, best_ref = -1;
-        int best_dist = std::numeric_limits<int>::max();
-        for (int i = 0; i < frame_num; i++) {
-            if (solved[i]) {
+    for (int solved_count = 2; solved_count < frame_num; ++solved_count) {
+        int best_frame = -1;
+        int best_point_count = 0;
+        for (int frame_id = 0; frame_id < frame_num; ++frame_id) {
+            if (solved[frame_id]) {
                 continue;
             }
-            for (int r = 0; r < frame_num; r++) {
-                if (!solved[r]) {
+            int point_count = 0;
+            for (const auto& feature : features) {
+                if (!feature.triangulated) {
                     continue;
                 }
-                int d = std::abs(i - r);
-                if (d < best_dist) {
-                    best_dist = d;
-                    best_i = i;
-                    best_ref = r;
+                for (const auto& [observed_frame, _] : feature.observations) {
+                    if (observed_frame == frame_id) {
+                        ++point_count;
+                        break;
+                    }
                 }
             }
+            if (point_count > best_point_count) {
+                best_point_count = point_count;
+                best_frame = frame_id;
+            }
         }
-        if (best_i < 0) {
-            break;
-        }
-
-        Eigen::Matrix3d R_initial = q_cam_rel[best_i].inverse().toRotationMatrix();
-        Eigen::Vector3d P_initial = c_Translation[best_ref];
-        if (!registerFramePnP(R_initial, P_initial, best_i, sfm_f)) {
+        if (best_frame < 0 || best_point_count < min_points_) {
+            spdlog::warn(
+                "SFM failed: no unsolved frame has enough 3D correspondences, "
+                "best_frame={}, points={}, required={}",
+                best_frame, best_point_count, min_points_);
             return false;
         }
-        c_Rotation[best_i] = R_initial;
-        c_Translation[best_i] = P_initial;
-        c_Quat[best_i] = c_Rotation[best_i];
-        Pose[best_i].block<3, 3>(0, 0) = c_Rotation[best_i];
-        Pose[best_i].block<3, 1>(0, 3) = c_Translation[best_i];
-        triangulateTwoFrames(l, Pose[l], best_i, Pose[best_i], sfm_f);
-        triangulateTwoFrames(best_i, Pose[best_i], last, Pose[last], sfm_f);
-        solved[best_i] = true;
-    }
 
-    for (int i = 0; i < frame_num; i++) {
-        if (i == l || i == last) {
-            continue;
+        Eigen::Matrix3d frame_rotation;
+        Eigen::Vector3d frame_translation;
+        if (!solveFramePose(frame_rotation, frame_translation, best_frame, features)) {
+            return false;
         }
-        q_cam_rel[i] = c_Quat[i].inverse();
-        t_arr[i] = -1 * (c_Quat[i] * c_Translation[i]);
+        camera_rotations[best_frame] = frame_rotation;
+        camera_translations[best_frame] = frame_translation;
+        poses[best_frame].leftCols<3>() = frame_rotation;
+        poses[best_frame].rightCols<1>() = frame_translation;
+        solved[best_frame] = true;
+
+        triangulateFeatures(solved, poses, features);
     }
 
     {
         ceres::Problem problem;
         ceres::Manifold* quat_manifold = new ceres::QuaternionManifold();
         for (int i = 0; i < frame_num; i++) {
-            c_translation[i][0] = c_Translation[i].x();
-            c_translation[i][1] = c_Translation[i].y();
-            c_translation[i][2] = c_Translation[i].z();
-            c_rotation[i][0] = c_Quat[i].w();
-            c_rotation[i][1] = c_Quat[i].x();
-            c_rotation[i][2] = c_Quat[i].y();
-            c_rotation[i][3] = c_Quat[i].z();
-            problem.AddParameterBlock(c_rotation[i].data(), 4, quat_manifold);
-            problem.AddParameterBlock(c_translation[i].data(), 3);
-            if (i == l) {
-                problem.SetParameterBlockConstant(c_rotation[i].data());
+            const Eigen::Quaterniond rotation(camera_rotations[i]);
+            rotation_params[i] = {rotation.w(), rotation.x(), rotation.y(), rotation.z()};
+            translation_params[i] = {
+                camera_translations[i].x(), camera_translations[i].y(), camera_translations[i].z()};
+            problem.AddParameterBlock(rotation_params[i].data(), 4, quat_manifold);
+            problem.AddParameterBlock(translation_params[i].data(), 3);
+            if (i == seed_id) {
+                problem.SetParameterBlockConstant(rotation_params[i].data());
             }
             // seed 平移固定世界原点，基线帧平移固定为视觉估计的单位尺度。
-            if (i == l || i == last) {
-                problem.SetParameterBlockConstant(c_translation[i].data());
+            if (i == seed_id || i == other_id) {
+                problem.SetParameterBlockConstant(translation_params[i].data());
             }
         }
 
         int observation_count = 0;
-        for (int i = 0; i < feature_num_; i++) {
-            if (!sfm_f[i].state) {
+        for (auto& feature : features) {
+            if (!feature.triangulated) {
                 continue;
             }
-            problem.AddParameterBlock(sfm_f[i].position, 3);
-            for (const auto& [frame_index, observation] : sfm_f[i].observation) {
+            problem.AddParameterBlock(feature.position.data(), 3);
+            for (const auto& [frame_index, observation] : feature.observations) {
                 problem.AddResidualBlock(
                     SfmReprojectionFactor::Create(observation),
-                    new ceres::HuberLoss(epipolar_threshold_), c_rotation[frame_index].data(),
-                    c_translation[frame_index].data(), sfm_f[i].position);
+                    new ceres::HuberLoss(epipolar_threshold_), rotation_params[frame_index].data(),
+                    translation_params[frame_index].data(), feature.position.data());
                 ++observation_count;
             }
         }
@@ -592,37 +376,15 @@ bool InitialSFM::reconstructScene(
         }
 
         for (int i = 0; i < frame_num; i++) {
-            c_Quat[i] = Eigen::Quaterniond(
-                            c_rotation[i][0], c_rotation[i][1], c_rotation[i][2], c_rotation[i][3])
-                            .normalized();
-            c_Rotation[i] = c_Quat[i].toRotationMatrix();
-            c_Translation[i] =
-                Eigen::Vector3d(c_translation[i][0], c_translation[i][1], c_translation[i][2]);
-            Pose[i].block<3, 3>(0, 0) = c_Rotation[i];
-            Pose[i].block<3, 1>(0, 3) = c_Translation[i];
-            q_cam_rel[i] = c_Quat[i].inverse();
-            t_arr[i] = -1 * (q_cam_rel[i] * c_Translation[i]);
-        }
-
-        for (int i = 0; i < feature_num_; i++) {
-            if (!sfm_f[i].state) {
-                continue;
-            }
-            const Eigen::Vector3d point_3d(sfm_f[i].position);
-            bool ok = true;
-            for (const auto& [frame_index, observation] : sfm_f[i].observation) {
-                (void)observation;
-                const Eigen::Vector3d point_camera =
-                    c_Rotation[frame_index] * point_3d + c_Translation[frame_index];
-                if (!point_camera.allFinite() || point_camera.z() < 0.1) {
-                    ok = false;
-                    break;
-                }
-            }
-            if (!ok) {
-                sfm_f[i].state = false;
-                continue;
-            }
+            const Eigen::Quaterniond world_to_camera =
+                Eigen::Quaterniond(
+                    rotation_params[i][0], rotation_params[i][1], rotation_params[i][2],
+                    rotation_params[i][3])
+                    .normalized();
+            const Eigen::Vector3d translation(
+                translation_params[i][0], translation_params[i][1], translation_params[i][2]);
+            q_cam_rel[i] = world_to_camera.inverse();
+            t_arr[i] = -(q_cam_rel[i] * translation);
         }
     }
 
@@ -639,20 +401,20 @@ void InitialSFM::alignToReference(
     }
 }
 
-bool InitialSFM::registerFramePnP(
-    Eigen::Matrix3d& R_initial, Eigen::Vector3d& P_initial, int i, std::vector<SFMFeature>& sfm_f) {
+bool InitialSFM::solveFramePose(
+    Eigen::Matrix3d& rotation, Eigen::Vector3d& translation, int i,
+    const std::vector<SFMFeature>& features) {
     std::vector<Eigen::Vector2d> observations;
     std::vector<Eigen::Vector3d> world_points;
-    for (int j = 0; j < feature_num_; j++) {
-        if (sfm_f[j].state != true) {
+    for (const auto& feature : features) {
+        if (!feature.triangulated) {
             continue;
         }
-        for (int k = 0; k < static_cast<int>(sfm_f[j].observation.size()); k++) {
-            if (sfm_f[j].observation[k].first == i) {
-                Eigen::Vector2d img_pts = sfm_f[j].observation[k].second;
-                observations.push_back(img_pts);
+        for (const auto& [frame_id, observation] : feature.observations) {
+            if (frame_id == i) {
+                observations.push_back(observation);
                 world_points.emplace_back(
-                    sfm_f[j].position[0], sfm_f[j].position[1], sfm_f[j].position[2]);
+                    feature.position[0], feature.position[1], feature.position[2]);
                 break;
             }
         }
@@ -705,11 +467,11 @@ bool InitialSFM::registerFramePnP(
     }
     cv::Mat rotation_matrix;
     cv::Rodrigues(rotation_vector, rotation_matrix);
-    cv::cv2eigen(rotation_matrix, R_initial);
+    cv::cv2eigen(rotation_matrix, rotation);
     for (int d = 0; d < 3; ++d) {
-        P_initial[d] = translation_vector.at<double>(d);
+        translation[d] = translation_vector.at<double>(d);
     }
-    if (!R_initial.allFinite() || !P_initial.allFinite()) {
+    if (!rotation.allFinite() || !translation.allFinite()) {
         spdlog::warn("SFM PnP failed: frame={}, reason=non_finite_solution", i);
         return false;
     }
@@ -717,7 +479,7 @@ bool InitialSFM::registerFramePnP(
     int pnp_bad = 0;
     double pnp_inlier_error = 0.0;
     for (int k = 0; k < n_pts; ++k) {
-        const Eigen::Vector3d point_camera = R_initial * world_points[k] + P_initial;
+        const Eigen::Vector3d point_camera = rotation * world_points[k] + translation;
         if (!point_camera.allFinite() || point_camera.z() <= 1e-12) {
             ++pnp_bad;
             continue;
@@ -743,70 +505,57 @@ bool InitialSFM::registerFramePnP(
     return true;
 }
 
-void InitialSFM::triangulateTwoFrames(
-    int frame0, Eigen::Matrix<double, 3, 4>& Pose0, int frame1, Eigen::Matrix<double, 3, 4>& Pose1,
-    std::vector<SFMFeature>& sfm_f, const std::unordered_set<int>* allowed_feature_ids) {
-    TASSEL_ASSERT(frame0 != frame1);
-    for (int j = 0; j < feature_num_; j++) {
-        if (sfm_f[j].state == true) {
+void InitialSFM::triangulateFeatures(
+    const std::vector<bool>& solved, const std::vector<Eigen::Matrix<double, 3, 4>>& poses,
+    std::vector<SFMFeature>& features, const std::unordered_set<int>* allowed_feature_ids) {
+    TASSEL_ASSERT(solved.size() == poses.size());
+    for (auto& feature : features) {
+        if (feature.triangulated ||
+            (allowed_feature_ids != nullptr && !allowed_feature_ids->contains(feature.id))) {
             continue;
         }
-        // 空过滤器用于已注册帧扩展地图点；初始基线只使用确定性对极筛选内点。
-        if (allowed_feature_ids != nullptr && !allowed_feature_ids->contains(sfm_f[j].id)) {
-            continue;
-        }
-        bool has_0 = false, has_1 = false;
-        Eigen::Vector2d point0;
-        Eigen::Vector2d point1;
-        for (int k = 0; k < static_cast<int>(sfm_f[j].observation.size()); k++) {
-            if (sfm_f[j].observation[k].first == frame0) {
-                point0 = sfm_f[j].observation[k].second;
-                has_0 = true;
-            }
-            if (sfm_f[j].observation[k].first == frame1) {
-                point1 = sfm_f[j].observation[k].second;
-                has_1 = true;
-            }
-        }
-        if (has_0 && has_1) {
-            Eigen::Vector3d point_3d;
-            point_3d = tassel_utils::dehomogenize(
-                tassel_utils::triangulateTwoView(Pose0, point0, Pose1, point1));
-            if (!point_3d.allFinite()) {
+
+        std::vector<Eigen::Matrix<double, 3, 4>> feature_poses;
+        std::vector<Eigen::Vector2d> observations;
+        for (const auto& [frame_id, uv] : feature.observations) {
+            if (frame_id < 0 || frame_id >= static_cast<int>(solved.size()) || !solved[frame_id]) {
                 continue;
             }
-            sfm_f[j].state = true;
-            sfm_f[j].position[0] = point_3d(0);
-            sfm_f[j].position[1] = point_3d(1);
-            sfm_f[j].position[2] = point_3d(2);
+            feature_poses.push_back(poses[frame_id]);
+            observations.push_back(uv);
         }
-    }
-}
+        if (observations.size() < 2) {
+            continue;
+        }
 
-void InitialSFM::decomposeEssentialMat(
-    const Eigen::Matrix3d& essential, std::vector<PoseCandidate>& candidates) {
-    Eigen::JacobiSVD<Eigen::Matrix3d> svd(essential, Eigen::ComputeFullU | Eigen::ComputeFullV);
-    Eigen::Matrix3d u = svd.matrixU();
-    Eigen::Matrix3d v = svd.matrixV();
-    if (u.determinant() < 0.0) {
-        u.col(2) *= -1.0;
-    }
-    if (v.determinant() < 0.0) {
-        v.col(2) *= -1.0;
-    }
+        double condition = std::numeric_limits<double>::infinity();
+        const Eigen::Vector4d homogeneous =
+            tassel_utils::triangulateMultiView(feature_poses, observations, &condition);
+        if (!std::isfinite(condition) || condition >= 1e6 || !std::isfinite(homogeneous.w()) ||
+            std::abs(homogeneous.w()) <= 1e-12) {
+            continue;
+        }
+        const Eigen::Vector3d point = tassel_utils::dehomogenize(homogeneous);
+        if (!point.allFinite()) {
+            continue;
+        }
+        bool has_positive_depth = true;
+        for (const auto& pose : feature_poses) {
+            const Eigen::Vector3d point_camera = pose.leftCols<3>() * point + pose.rightCols<1>();
+            if (!point_camera.allFinite() || point_camera.z() <= 0.1) {
+                has_positive_depth = false;
+                break;
+            }
+        }
+        if (!has_positive_depth) {
+            continue;
+        }
 
-    Eigen::Matrix3d w;
-    w << 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0;
-    Eigen::Matrix3d r1 = u * w * v.transpose();
-    Eigen::Matrix3d r2 = u * w.transpose() * v.transpose();
-    if (r1.determinant() < 0.0) {
-        r1 = -r1;
+        feature.triangulated = true;
+        feature.position[0] = point.x();
+        feature.position[1] = point.y();
+        feature.position[2] = point.z();
     }
-    if (r2.determinant() < 0.0) {
-        r2 = -r2;
-    }
-    const Eigen::Vector3d t = u.col(2).normalized();
-    candidates = {{r1, t}, {r1, -t}, {r2, t}, {r2, -t}};
 }
 
 void InitialSFM::scoreByCheirality(
@@ -846,52 +595,46 @@ void InitialSFM::scoreByCheirality(
         }
         scored[c].score = valid;
     }
-
-    std::sort(scored.begin(), scored.end(), [](const PoseCandidate& a, const PoseCandidate& b) {
-        return a.score > b.score;
-    });
 }
 
 bool InitialSFM::construct(
-    State& cur_state, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
+    const State& state, const FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
     std::vector<Eigen::Matrix3d>& Rs_out, std::vector<Eigen::Vector3d>& Ps_out,
     int first_frame_index) {
-    if (first_frame_index < 0 || first_frame_index > cur_state.latest_active_frame_index) {
+    if (first_frame_index < 0 || first_frame_index > state.latest_active_frame_index) {
         spdlog::error(
             "SFM input failed: first_frame={}, latest_frame={}", first_frame_index,
-            cur_state.latest_active_frame_index);
+            state.latest_active_frame_index);
         return false;
     }
-    int frame_num = cur_state.latest_active_frame_index - first_frame_index + 1;
+    int frame_num = state.latest_active_frame_index - first_frame_index + 1;
     if (frame_num < 2) {
         spdlog::error("SFM input failed: frames={}, required=2", frame_num);
-        return false;
-    }
-
-    auto sfm_f = feature_manager.collectSFMFeatures(cur_state, first_frame_index);
-
-    int seed_id = selectSeedFrame(frame_num, sfm_f);
-    if (seed_id < 0) {
-        return false;
-    }
-
-    auto other_candidates = findParallaxFrames(seed_id, frame_num, sfm_f);
-    if (other_candidates.empty() || other_candidates[0].second < min_points_) {
         return false;
     }
 
     std::vector<Eigen::Quaterniond> q_cam_i0(frame_num);
     for (int i = 0; i < frame_num; i++) {
         q_cam_i0[i] =
-            Eigen::Quaterniond(cur_state.frames[first_frame_index + i].rot_w_i * ric).normalized();
+            Eigen::Quaterniond(state.frames[first_frame_index + i].rot_w_i * ric).normalized();
     }
 
-    for (const auto& [other_id, common] : other_candidates) {
+    // SFMFeature 的帧索引从 first_frame_index 映射到窗口局部索引。
+    const int seed_id = frame_num / 2;
+    const auto other_candidates =
+        scoreBaselineFrames(first_frame_index, seed_id, q_cam_i0, feature_manager);
+    if (other_candidates.empty()) {
+        return false;
+    }
+    auto features = feature_manager.collectSFMFeatures(state, first_frame_index);
+
+    for (const auto& candidate : other_candidates) {
+        const int other_id = candidate.first;
         std::vector<PoseCandidate> candidates;
         std::vector<cv::Point2f> pts_seed, pts_other;
         std::unordered_set<int> inlier_feature_ids;
         if (!computeEssential(
-                seed_id, other_id, sfm_f, candidates, pts_seed, pts_other, inlier_feature_ids)) {
+                seed_id, other_id, features, candidates, pts_seed, pts_other, inlier_feature_ids)) {
             continue;
         }
 
@@ -902,23 +645,18 @@ bool InitialSFM::construct(
             continue;
         }
 
-        Eigen::Matrix3d R_sel = selected.R;
-        Eigen::Vector3d t_sel = selected.t;
-
-        Eigen::Quaterniond q_cam_seed = q_cam_i0[seed_id];
         std::vector<Eigen::Quaterniond> q_cam_rel(frame_num);
-        for (int i = 0; i < frame_num; i++) {
-            q_cam_rel[i] = q_cam_seed.inverse() * q_cam_i0[i];
-        }
+        q_cam_rel[seed_id] = Eigen::Quaterniond::Identity();
+        // selected.R 为 R_other_seed，q_cam_rel 保存相机到种子世界系的旋转。
+        q_cam_rel[other_id] = Eigen::Quaterniond(selected.R.transpose());
 
-        Eigen::Vector3d T_dir = (-R_sel.transpose() * t_sel).normalized();
+        Eigen::Vector3d T_dir = (-selected.R.transpose() * selected.t).normalized();
 
         std::vector<Eigen::Vector3d> t_arr(frame_num, Eigen::Vector3d::Zero());
-        // reconstructScene 会原地写入三角化状态；失败候选不得污染后续候选。
-        auto candidate_features = sfm_f;
+        // SFM 中间点按候选复制并由 reconstructScene 独占，函数返回后立即释放。
         if (!reconstructScene(
                 frame_num, seed_id, other_id, T_dir, q_cam_rel, t_arr, inlier_feature_ids,
-                candidate_features)) {
+                features)) {
             spdlog::warn(
                 "SFM candidate failed: seed={}, other={}, stage=reconstruction", seed_id, other_id);
             continue;
@@ -933,11 +671,7 @@ bool InitialSFM::construct(
 
         alignToReference(frame_num, Rs_out, Ps_out);
 
-        const int point_count = std::count_if(
-            candidate_features.begin(), candidate_features.end(),
-            [](const SFMFeature& feature) { return feature.state; });
-        spdlog::info(
-            "SFM: {} frames, {} pts, seed={}, other={}", frame_num, point_count, seed_id, other_id);
+        spdlog::info("SFM: {} frames, seed={}, other={}", frame_num, seed_id, other_id);
         return true;
     }
 

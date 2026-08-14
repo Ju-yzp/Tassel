@@ -75,11 +75,26 @@ FeatureManager::FeatureManager(
 bool FeatureManager::addFeatureFrame(
     int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
     const bool is_keyframe = shouldCreateKeyframe(feature_frame);
-    std::unordered_map<int, cv::Point2f> current_observations;
-    current_observations.reserve(feature_frame.size());
+    appendFrameObservations(frame_index, feature_frame);
+    if (is_keyframe) {
+        rememberKeyframe(feature_frame);
+    }
+    return is_keyframe;
+}
 
+bool FeatureManager::tryAddInitializationKeyframe(
+    int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
+    if (!shouldCreateKeyframe(feature_frame)) {
+        return false;
+    }
+    appendFrameObservations(frame_index, feature_frame);
+    rememberKeyframe(feature_frame);
+    return true;
+}
+
+void FeatureManager::appendFrameObservations(
+    int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
     for (const auto& [id, per_frame_feature] : feature_frame) {
-        current_observations.emplace(id, per_frame_feature.pt);
         auto it = features_.find(id);
         FeaturePerFrame observation = per_frame_feature;
 
@@ -96,59 +111,15 @@ bool FeatureManager::addFeatureFrame(
             features_.emplace(id, std::move(feature));
         }
     }
-
-    if (is_keyframe) {
-        latest_keyframe_observations_.swap(current_observations);
-    }
-    return is_keyframe;
 }
 
-bool FeatureManager::replaceInitializationCandidate(
-    int accepted_frame_index, int candidate_frame_index,
+void FeatureManager::rememberKeyframe(
     const std::unordered_map<int, FeaturePerFrame>& feature_frame) {
-    if (!hasLatestKeyframe() || candidate_frame_index != accepted_frame_index + 1) {
-        throw std::logic_error("Invalid initialization candidate replacement");
-    }
-
-    const bool accepted = shouldCreateKeyframe(feature_frame);
-
-    // 候选槽始终是窗口尾部；先删除上一张候选图像，再写入当前图像，已接受帧保持不变。
-    for (auto& [_, feature] : features_) {
-        const int last_frame_index =
-            feature.host_frame_index + static_cast<int>(feature.observations.size()) - 1;
-        if (last_frame_index > candidate_frame_index) {
-            throw std::logic_error("Initialization candidate is not the newest observation");
-        }
-        if (last_frame_index == candidate_frame_index) {
-            feature.removeFrameObservation(candidate_frame_index);
-        }
-    }
-    std::erase_if(features_, [](const auto& item) { return item.second.observations.empty(); });
-
+    latest_keyframe_observations_.clear();
+    latest_keyframe_observations_.reserve(feature_frame.size());
     for (const auto& [id, observation] : feature_frame) {
-        auto feature = features_.find(id);
-        if (feature == features_.end()) {
-            Feature new_feature(candidate_frame_index, 15);
-            new_feature.observations.push_back(observation);
-            features_.emplace(id, std::move(new_feature));
-            continue;
-        }
-        const int expected_frame_index = feature->second.host_frame_index +
-                                         static_cast<int>(feature->second.observations.size());
-        if (expected_frame_index != candidate_frame_index) {
-            throw std::logic_error("Initialization feature observation is not continuous");
-        }
-        feature->second.observations.push_back(observation);
+        latest_keyframe_observations_.emplace(id, observation.pt);
     }
-
-    if (accepted) {
-        latest_keyframe_observations_.clear();
-        latest_keyframe_observations_.reserve(feature_frame.size());
-        for (const auto& [id, observation] : feature_frame) {
-            latest_keyframe_observations_.emplace(id, observation.pt);
-        }
-    }
-    return accepted;
 }
 
 bool FeatureManager::shouldCreateKeyframe(
@@ -435,12 +406,8 @@ std::vector<SFMFeature> FeatureManager::collectSFMFeatures(
     std::vector<SFMFeature> sfm_features;
     sfm_features.reserve(features_.size());
     for (const auto& [id, feature] : features_) {
-        SFMFeature sfm_f;
-        sfm_f.state = false;
-        sfm_f.id = id;
-        sfm_f.position[0] = 0;
-        sfm_f.position[1] = 0;
-        sfm_f.position[2] = 0;
+        SFMFeature sfm_feature;
+        sfm_feature.id = id;
         for (size_t observation_index = 0; observation_index < feature.observations.size();
              ++observation_index) {
             const auto& observation = feature.observations[observation_index];
@@ -449,9 +416,9 @@ std::vector<SFMFeature> FeatureManager::collectSFMFeatures(
                 throw std::logic_error("SFM observation index is outside the active window");
             }
             Eigen::Vector2d uv_norm(observation.uv(0), observation.uv(1));
-            sfm_f.observation.emplace_back(frame_index - first_frame_index, uv_norm);
+            sfm_feature.observations.emplace_back(frame_index - first_frame_index, uv_norm);
         }
-        sfm_features.push_back(std::move(sfm_f));
+        sfm_features.push_back(std::move(sfm_feature));
     }
     return sfm_features;
 }

@@ -2,7 +2,6 @@
 
 #include <spdlog/spdlog.h>
 
-#include <Eigen/Cholesky>
 #include <Eigen/Core>
 #include <Eigen/SVD>
 #include <cmath>
@@ -14,20 +13,60 @@
 #include "tassel_utils/rotation.h"
 
 namespace tassel_core {
+namespace {
+
+constexpr double kMaxAlignmentCondition = 1e8;
+
+bool solveObservableSystem(
+    const Eigen::MatrixXd& jacobian, const Eigen::VectorXd& rhs, const char* stage,
+    Eigen::VectorXd& solution) {
+    if (jacobian.rows() < jacobian.cols() || rhs.size() != jacobian.rows() ||
+        !jacobian.allFinite() || !rhs.allFinite()) {
+        spdlog::warn(
+            "{} solve failed: rows={}, cols={}, rhs={}, finite={}", stage, jacobian.rows(),
+            jacobian.cols(), rhs.size(), jacobian.allFinite() && rhs.allFinite());
+        return false;
+    }
+
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd(
+        jacobian, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    const Eigen::VectorXd& singular_values = svd.singularValues();
+    const double largest = singular_values[0];
+    const double smallest = singular_values[singular_values.size() - 1];
+    const double condition = largest / smallest;
+    if (!std::isfinite(condition) || smallest <= 0.0 || condition > kMaxAlignmentCondition) {
+        spdlog::warn(
+            "{} solve failed: rank-deficient or ill-conditioned system, condition={:.3e}, "
+            "limit={:.3e}",
+            stage, condition, kMaxAlignmentCondition);
+        return false;
+    }
+
+    solution = svd.solve(rhs);
+    if (!solution.allFinite()) {
+        spdlog::warn("{} solve failed: non-finite solution", stage);
+        return false;
+    }
+    spdlog::debug("{} condition={:.3e}", stage, condition);
+    return true;
+}
+
+}  // namespace
 
 bool linearAlignment(
-    std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps,
-    std::vector<Eigen::Vector3d>& Vs, const std::vector<Eigen::Vector3d>& delta_vs,
-    const std::vector<Eigen::Vector3d>& delta_ps, const std::vector<double>& dts,
-    Eigen::Vector3d& final_g, double& s, const Eigen::Matrix3d ric, const Eigen::Vector3d tic,
-    double g_norm_thres, double target_g_norm) {
-    int n_frames = static_cast<int>(Rs.size());
-    if (n_frames < 2 || Ps.size() != Rs.size() || Vs.size() != Rs.size() ||
-        delta_vs.size() != Rs.size() - 1 || delta_ps.size() != Rs.size() - 1 ||
-        dts.size() != Rs.size() - 1) {
+    const std::vector<Eigen::Matrix3d>& rotations, const std::vector<Eigen::Vector3d>& positions,
+    std::vector<Eigen::Vector3d>& velocities, const std::vector<Eigen::Vector3d>& delta_velocities,
+    const std::vector<Eigen::Vector3d>& delta_positions, const std::vector<double>& dts,
+    Eigen::Vector3d& gravity, double& scale, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
+    double gravity_norm_tolerance, double target_gravity_norm) {
+    const int frame_count = static_cast<int>(rotations.size());
+    if (frame_count < 2 || positions.size() != rotations.size() ||
+        velocities.size() != rotations.size() || delta_velocities.size() != rotations.size() - 1 ||
+        delta_positions.size() != rotations.size() - 1 || dts.size() != rotations.size() - 1) {
         spdlog::error(
-            "LinearAlignment input failed: R={}, P={}, V={}, dv={}, dp={}, dt={}", Rs.size(),
-            Ps.size(), Vs.size(), delta_vs.size(), delta_ps.size(), dts.size());
+            "LinearAlignment input failed: R={}, P={}, V={}, dv={}, dp={}, dt={}", rotations.size(),
+            positions.size(), velocities.size(), delta_velocities.size(), delta_positions.size(),
+            dts.size());
         return false;
     }
     for (size_t i = 0; i < dts.size(); ++i) {
@@ -37,265 +76,218 @@ bool linearAlignment(
             return false;
         }
     }
-    int n_state = n_frames * 3 + 4;
+    const int state_size = frame_count * 3 + 4;
 
-    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(n_state, n_state);
-    Eigen::VectorXd b = Eigen::VectorXd::Zero(n_state);
-    for (int i = 0; i < n_frames - 1; ++i) {
-        int j = i + 1;
-        double dt = dts[i];
-        Eigen::Vector3d delta_p = delta_ps[i];
-        Eigen::Vector3d delta_v = delta_vs[i];
+    Eigen::MatrixXd jacobian = Eigen::MatrixXd::Zero(6 * (frame_count - 1), state_size);
+    Eigen::VectorXd rhs = Eigen::VectorXd::Zero(6 * (frame_count - 1));
+    for (int i = 0; i < frame_count - 1; ++i) {
+        const int j = i + 1;
+        const double dt = dts[i];
+        const int velocity_column = i * 3;
 
-        Eigen::Matrix3d Ri = Rs[i];
-        Eigen::Matrix3d Rj = Rs[j];
-        Eigen::Vector3d Pi = Ps[i];
-        Eigen::Vector3d Pj = Ps[j];
+        Eigen::Matrix<double, 6, 10> interval_jacobian;
+        interval_jacobian.setZero();
+        Eigen::Matrix<double, 6, 1> interval_rhs;
+        interval_rhs.setZero();
 
-        int col_Vi = i * 3;
+        interval_jacobian.block<3, 3>(0, 0) =
+            -dt * ric * rotations[i].transpose() * ric.transpose();
+        interval_jacobian.block<3, 3>(0, 6) =
+            0.5 * dt * dt * ric * rotations[i].transpose() * ric.transpose();
+        interval_jacobian.block<3, 1>(0, 9) =
+            ric * rotations[i].transpose() * (positions[j] - positions[i]) / 100.0;
+        interval_rhs.block<3, 1>(0, 0) =
+            ric * rotations[i].transpose() * rotations[j] * ric.transpose() * tic - tic +
+            delta_positions[i];
 
-        Eigen::Matrix<double, 6, 10> tmp_A;
-        tmp_A.setZero();
-        Eigen::Matrix<double, 6, 1> tmp_b;
-        tmp_b.setZero();
+        interval_jacobian.block<3, 3>(3, 0) = -ric * rotations[i].transpose() * ric.transpose();
+        interval_jacobian.block<3, 3>(3, 3) = ric * rotations[i].transpose() * ric.transpose();
+        interval_jacobian.block<3, 3>(3, 6) = ric * rotations[i].transpose() * ric.transpose() * dt;
+        interval_rhs.block<3, 1>(3, 0) = delta_velocities[i];
 
-        tmp_A.block<3, 3>(0, 0) = -dt * ric * Rs[i].transpose() * ric.transpose();
-        tmp_A.block<3, 3>(0, 6) = 0.5 * dt * dt * ric * Rs[i].transpose() * ric.transpose();
-        tmp_A.block<3, 1>(0, 9) = ric * Rs[i].transpose() * (Pj - Pi) / 100.0;
-        tmp_b.block<3, 1>(0, 0) = ric * Ri.transpose() * Rj * ric.transpose() * tic - tic + delta_p;
-
-        tmp_A.block<3, 3>(3, 0) = -ric * Rs[i].transpose() * ric.transpose();
-        tmp_A.block<3, 3>(3, 3) = ric * Rs[i].transpose() * ric.transpose();
-        tmp_A.block<3, 3>(3, 6) = ric * Rs[i].transpose() * ric.transpose() * dt;
-        tmp_b.block<3, 1>(3, 0) = delta_v;
-
-        Eigen::Matrix<double, 10, 10> r_A = tmp_A.transpose() * tmp_A;
-        Eigen::Matrix<double, 10, 1> r_b = tmp_A.transpose() * tmp_b;
-
-        A.block<6, 6>(col_Vi, col_Vi) += r_A.topLeftCorner<6, 6>();
-        b.segment<6>(col_Vi) += r_b.head<6>();
-        A.bottomRightCorner<4, 4>() += r_A.bottomRightCorner<4, 4>();
-        b.tail<4>() += r_b.tail<4>();
-        A.block<6, 4>(col_Vi, n_state - 4) += r_A.topRightCorner<6, 4>();
-        A.block<4, 6>(n_state - 4, col_Vi) += r_A.bottomLeftCorner<4, 6>();
+        const int row = 6 * i;
+        jacobian.block<6, 3>(row, velocity_column) = interval_jacobian.leftCols<3>();
+        jacobian.block<6, 3>(row, velocity_column + 3) = interval_jacobian.middleCols<3>(3);
+        jacobian.block<6, 4>(row, state_size - 4) = interval_jacobian.rightCols<4>();
+        rhs.segment<6>(row) = interval_rhs;
     }
 
-    A = A * 1000.0;
-    b = b * 1000.0;
-
-    Eigen::LDLT<Eigen::MatrixXd> ldlt(A);
-    if (ldlt.info() != Eigen::Success) {
-        spdlog::warn(
-            "LinearAlignment solve failed: LDLT factorization status={}",
-            static_cast<int>(ldlt.info()));
-        return false;
-    }
-    Eigen::VectorXd x = ldlt.solve(b);
-    if (ldlt.info() != Eigen::Success || !x.allFinite()) {
-        spdlog::warn(
-            "LinearAlignment solve failed: LDLT solve status={}, finite={}",
-            static_cast<int>(ldlt.info()), x.allFinite());
+    Eigen::VectorXd solution;
+    if (!solveObservableSystem(jacobian, rhs, "LinearAlignment", solution)) {
         return false;
     }
 
-    s = x(n_state - 1) / 100.0;
-    final_g = x.segment<3>(n_state - 4);
+    scale = solution(state_size - 1) / 100.0;
+    gravity = solution.segment<3>(state_size - 4);
 
     spdlog::info(
-        "LinearAlignment: |g|={:.4f} g=({:.3f},{:.3f},{:.3f}) s={:.4f}", final_g.norm(),
-        final_g.x(), final_g.y(), final_g.z(), s);
-    if (!std::isfinite(s) || !final_g.allFinite() || s <= 0 ||
-        std::abs(final_g.norm() - target_g_norm) > g_norm_thres) {
+        "LinearAlignment: |g|={:.4f} g=({:.3f},{:.3f},{:.3f}) s={:.4f}", gravity.norm(),
+        gravity.x(), gravity.y(), gravity.z(), scale);
+    if (!std::isfinite(scale) || !gravity.allFinite() || scale <= 0 ||
+        std::abs(gravity.norm() - target_gravity_norm) > gravity_norm_tolerance) {
         spdlog::warn(
             "LinearAlignment validity failed: scale={}, gravity_norm={}, target={}, tolerance={}",
-            s, final_g.norm(), target_g_norm, g_norm_thres);
+            scale, gravity.norm(), target_gravity_norm, gravity_norm_tolerance);
         return false;
     }
 
-    for (int i = 0; i < n_frames; ++i) {
-        Vs[i] = x.segment<3>(i * 3);
+    for (int i = 0; i < frame_count; ++i) {
+        velocities[i] = solution.segment<3>(i * 3);
     }
 
     return true;
 }
 
 bool refineGravitySpeeds(
-    std::vector<Eigen::Vector3d>& Vs, const std::vector<Eigen::Matrix3d>& Rs,
-    const std::vector<Eigen::Vector3d>& Ps, const std::vector<Eigen::Vector3d>& delta_vs,
-    const std::vector<Eigen::Vector3d>& delta_ps, const std::vector<double>& dts,
-    Eigen::Vector3d& G, double& s, const Eigen::Matrix3d ric, const Eigen::Vector3d tic,
-    double g_mag) {
-    int n_frames = static_cast<int>(Vs.size());
-    if (n_frames < 2 || Rs.size() != Vs.size() || Ps.size() != Vs.size() ||
-        delta_vs.size() != Vs.size() - 1 || delta_ps.size() != Vs.size() - 1 ||
-        dts.size() != Vs.size() - 1 || !G.allFinite() || G.norm() < 1e-12) {
+    std::vector<Eigen::Vector3d>& velocities, const std::vector<Eigen::Matrix3d>& rotations,
+    const std::vector<Eigen::Vector3d>& positions,
+    const std::vector<Eigen::Vector3d>& delta_velocities,
+    const std::vector<Eigen::Vector3d>& delta_positions, const std::vector<double>& dts,
+    Eigen::Vector3d& gravity, double& scale, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
+    double gravity_norm) {
+    const int frame_count = static_cast<int>(velocities.size());
+    if (frame_count < 2 || rotations.size() != velocities.size() ||
+        positions.size() != velocities.size() || delta_velocities.size() != velocities.size() - 1 ||
+        delta_positions.size() != velocities.size() - 1 || dts.size() != velocities.size() - 1 ||
+        !gravity.allFinite() || gravity.norm() < 1e-12) {
         spdlog::error(
             "GravityRefinement input failed: R={}, P={}, V={}, dv={}, dp={}, dt={}, "
             "gravity_norm={}",
-            Rs.size(), Ps.size(), Vs.size(), delta_vs.size(), delta_ps.size(), dts.size(),
-            G.norm());
+            rotations.size(), positions.size(), velocities.size(), delta_velocities.size(),
+            delta_positions.size(), dts.size(), gravity.norm());
         return false;
     }
-    int n_state = n_frames * 3 + 3;
-    int col_dg = n_frames * 3;
-    int col_s = n_frames * 3 + 2;
+    const int state_size = frame_count * 3 + 3;
+    const int gravity_column = frame_count * 3;
+    const int scale_column = frame_count * 3 + 2;
 
-    Eigen::Vector3d g0_dir = G.normalized();
+    Eigen::Vector3d gravity_direction = gravity.normalized();
 
     for (int iter = 0; iter < 4; ++iter) {
-        Eigen::Matrix<double, 2, 3> T = tassel_utils::tangentBasis(g0_dir);
-        Eigen::Matrix<double, 3, 2> L = g_mag * T.transpose();
-        Eigen::Vector3d g0 = g_mag * g0_dir;
+        const Eigen::Matrix<double, 2, 3> tangent_basis =
+            tassel_utils::tangentBasis(gravity_direction);
+        const Eigen::Matrix<double, 3, 2> gravity_jacobian =
+            gravity_norm * tangent_basis.transpose();
+        const Eigen::Vector3d linearized_gravity = gravity_norm * gravity_direction;
 
-        Eigen::MatrixXd A = Eigen::MatrixXd::Zero(n_state, n_state);
-        Eigen::VectorXd b = Eigen::VectorXd::Zero(n_state);
+        Eigen::MatrixXd jacobian = Eigen::MatrixXd::Zero(6 * (frame_count - 1), state_size);
+        Eigen::VectorXd rhs = Eigen::VectorXd::Zero(6 * (frame_count - 1));
 
-        for (int i = 0; i < n_frames - 1; ++i) {
-            int j = i + 1;
-            double dt = dts[i];
+        for (int i = 0; i < frame_count - 1; ++i) {
+            const int j = i + 1;
+            const double dt = dts[i];
             if (!std::isfinite(dt) || dt <= 0.0) {
                 spdlog::error(
                     "GravityRefinement input failed: iteration={}, interval={}, dt={}", iter, i,
                     dt);
                 return false;
             }
-            double dt2 = 0.5 * dt * dt;
+            const double half_dt_squared = 0.5 * dt * dt;
 
-            Eigen::Matrix3d R = ric * Rs[i].transpose() * ric.transpose();
-            Eigen::Matrix3d R_trans = ric * Rs[i].transpose();
-            Eigen::Matrix<double, 3, 2> R_L = R * L;
+            const Eigen::Matrix3d rotation_i = ric * rotations[i].transpose() * ric.transpose();
+            const Eigen::Matrix3d camera_to_body_i = ric * rotations[i].transpose();
+            const Eigen::Matrix<double, 3, 2> projected_gravity_jacobian =
+                rotation_i * gravity_jacobian;
 
-            int col_Vi = i * 3;
-            int col_Vj = j * 3;
+            const int velocity_i_column = i * 3;
+            const int velocity_j_column = j * 3;
 
-            Eigen::Matrix<double, 6, 9> tmp_A;
-            tmp_A.setZero();
+            Eigen::Matrix<double, 6, 9> interval_jacobian;
+            interval_jacobian.setZero();
 
-            tmp_A.block<3, 3>(0, 0) = -dt * R;
-            tmp_A.block<3, 2>(0, 6) = dt2 * R_L;
-            tmp_A.block<3, 1>(0, 8) = R_trans * (Ps[j] - Ps[i]) / 100.0;
+            interval_jacobian.block<3, 3>(0, 0) = -dt * rotation_i;
+            interval_jacobian.block<3, 2>(0, 6) = half_dt_squared * projected_gravity_jacobian;
+            interval_jacobian.block<3, 1>(0, 8) =
+                camera_to_body_i * (positions[j] - positions[i]) / 100.0;
 
-            tmp_A.block<3, 3>(3, 0) = -R;
-            tmp_A.block<3, 3>(3, 3) = R;
-            tmp_A.block<3, 2>(3, 6) = dt * R_L;
+            interval_jacobian.block<3, 3>(3, 0) = -rotation_i;
+            interval_jacobian.block<3, 3>(3, 3) = rotation_i;
+            interval_jacobian.block<3, 2>(3, 6) = dt * projected_gravity_jacobian;
 
-            Eigen::Matrix<double, 6, 1> tmp_b;
-            tmp_b.block<3, 1>(0, 0) =
-                delta_ps[i] + R_trans * Rs[j] * ric.transpose() * tic - tic - dt2 * R * g0;
-            tmp_b.block<3, 1>(3, 0) = delta_vs[i] - dt * R * g0;
+            Eigen::Matrix<double, 6, 1> interval_rhs;
+            interval_rhs.block<3, 1>(0, 0) =
+                delta_positions[i] + camera_to_body_i * rotations[j] * ric.transpose() * tic - tic -
+                half_dt_squared * rotation_i * linearized_gravity;
+            interval_rhs.block<3, 1>(3, 0) =
+                delta_velocities[i] - dt * rotation_i * linearized_gravity;
 
-            Eigen::Matrix<double, 9, 9> r_A = tmp_A.transpose() * tmp_A;
-            Eigen::Matrix<double, 9, 1> r_b = tmp_A.transpose() * tmp_b;
-
-            A.block<3, 3>(col_Vi, col_Vi) += r_A.block<3, 3>(0, 0);
-            A.block<3, 3>(col_Vj, col_Vj) += r_A.block<3, 3>(3, 3);
-            b.segment<3>(col_Vi) += r_b.segment<3>(0);
-            b.segment<3>(col_Vj) += r_b.segment<3>(3);
-            A.block<3, 3>(col_Vi, col_Vj) += r_A.block<3, 3>(0, 3);
-            A.block<3, 3>(col_Vj, col_Vi) += r_A.block<3, 3>(3, 0);
-
-            A.block<2, 2>(col_dg, col_dg) += r_A.block<2, 2>(6, 6);
-            A(col_s, col_s) += r_A(8, 8);
-            A.block<2, 1>(col_dg, col_s) += r_A.block<2, 1>(6, 8);
-            A.block<1, 2>(col_s, col_dg) += r_A.block<1, 2>(8, 6);
-            b.segment<2>(col_dg) += r_b.segment<2>(6);
-            b(col_s) += r_b(8);
-
-            A.block<3, 2>(col_Vi, col_dg) += r_A.block<3, 2>(0, 6);
-            A.block<2, 3>(col_dg, col_Vi) += r_A.block<2, 3>(6, 0);
-            A.block<3, 1>(col_Vi, col_s) += r_A.block<3, 1>(0, 8);
-            A.block<1, 3>(col_s, col_Vi) += r_A.block<1, 3>(8, 0);
-            A.block<3, 2>(col_Vj, col_dg) += r_A.block<3, 2>(3, 6);
-            A.block<2, 3>(col_dg, col_Vj) += r_A.block<2, 3>(6, 3);
-            A.block<3, 1>(col_Vj, col_s) += r_A.block<3, 1>(3, 8);
-            A.block<1, 3>(col_s, col_Vj) += r_A.block<1, 3>(8, 3);
+            const int row = 6 * i;
+            jacobian.block<6, 3>(row, velocity_i_column) = interval_jacobian.leftCols<3>();
+            jacobian.block<6, 3>(row, velocity_j_column) = interval_jacobian.middleCols<3>(3);
+            jacobian.block<6, 2>(row, gravity_column) = interval_jacobian.middleCols<2>(6);
+            jacobian.block<6, 1>(row, scale_column) = interval_jacobian.rightCols<1>();
+            rhs.segment<6>(row) = interval_rhs;
         }
 
-        A = A * 1000.0;
-        b = b * 1000.0;
-        Eigen::LDLT<Eigen::MatrixXd> ldlt(A);
-        if (ldlt.info() != Eigen::Success) {
-            spdlog::warn(
-                "GravityRefinement solve failed: iteration={}, LDLT factorization status={}", iter,
-                static_cast<int>(ldlt.info()));
-            return false;
-        }
-        Eigen::VectorXd x = ldlt.solve(b);
-        if (ldlt.info() != Eigen::Success || !x.allFinite()) {
-            spdlog::warn(
-                "GravityRefinement solve failed: iteration={}, LDLT solve status={}, finite={}",
-                iter, static_cast<int>(ldlt.info()), x.allFinite());
+        Eigen::VectorXd solution;
+        if (!solveObservableSystem(jacobian, rhs, "GravityRefinement", solution)) {
             return false;
         }
 
-        Eigen::Vector2d w(x[col_dg], x[col_dg + 1]);
-        Eigen::Vector3d dg = T.transpose() * w;
-        g0_dir = (g0_dir + dg).normalized();
-        if (!g0_dir.allFinite()) {
+        const Eigen::Vector2d tangent_update = solution.segment<2>(gravity_column);
+        gravity_direction =
+            (gravity_direction + tangent_basis.transpose() * tangent_update).normalized();
+        if (!gravity_direction.allFinite()) {
             spdlog::warn(
                 "GravityRefinement validity failed: iteration={}, non-finite gravity direction",
                 iter);
             return false;
         }
 
-        for (int i = 0; i < n_frames; ++i) {
-            Vs[i] = x.segment<3>(i * 3);
+        for (int i = 0; i < frame_count; ++i) {
+            velocities[i] = solution.segment<3>(i * 3);
         }
-        s = x(col_s) / 100.0;
+        scale = solution(scale_column) / 100.0;
     }
 
-    G = g_mag * g0_dir;
-    if (!G.allFinite() || !std::isfinite(s)) {
-        spdlog::warn("GravityRefinement validity failed: gravity_norm={}, scale={}", G.norm(), s);
+    gravity = gravity_norm * gravity_direction;
+    if (!gravity.allFinite() || !std::isfinite(scale)) {
+        spdlog::warn(
+            "GravityRefinement validity failed: gravity_norm={}, scale={}", gravity.norm(), scale);
         return false;
     }
     return true;
 }
 
-Eigen::Vector3d solveGyroBias(
-    std::vector<Eigen::Matrix3d> Rs, std::vector<Eigen::Matrix3d> dq_dbgs,
-    std::vector<Eigen::Matrix3d> delta_qs, Eigen::Matrix3d ric) {
-    if (dq_dbgs.empty() || Rs.size() != dq_dbgs.size() + 1 || delta_qs.size() != dq_dbgs.size()) {
+Eigen::Vector3d solveGyroBiasCorrection(
+    const std::vector<Eigen::Matrix3d>& rotations,
+    const std::vector<Eigen::Matrix3d>& rotation_bias_jacobians,
+    const std::vector<Eigen::Matrix3d>& delta_rotations, const Eigen::Matrix3d& ric) {
+    const size_t interval_count = rotation_bias_jacobians.size();
+    if (interval_count == 0 || rotations.size() != interval_count + 1 ||
+        delta_rotations.size() != interval_count) {
         spdlog::error(
-            "GyroBias input failed: R={}, dq_dbg={}, delta_q={}, expected_R={}", Rs.size(),
-            dq_dbgs.size(), delta_qs.size(), dq_dbgs.size() + 1);
+            "GyroBias input failed: R={}, dq_dbg={}, delta_q={}, expected_R={}", rotations.size(),
+            rotation_bias_jacobians.size(), delta_rotations.size(), interval_count + 1);
         return Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
     }
 
-    Eigen::Matrix3d A;
-    Eigen::Vector3d b;
-    A.setZero();
-    b.setZero();
+    Eigen::MatrixXd jacobian(3 * interval_count, 3);
+    Eigen::VectorXd residual(3 * interval_count);
 
-    for (size_t i = 0; i < dq_dbgs.size(); ++i) {
-        Eigen::Matrix3d R_Bi_Bj_vis = ric * Rs[i].transpose() * Rs[i + 1] * ric.transpose();
-        Eigen::Quaterniond q_ij(R_Bi_Bj_vis);
+    for (size_t i = 0; i < interval_count; ++i) {
+        Eigen::Matrix3d visual_rotation =
+            ric * rotations[i].transpose() * rotations[i + 1] * ric.transpose();
+        Eigen::Quaterniond q_ij(visual_rotation);
         q_ij.normalize();
-        R_Bi_Bj_vis = q_ij.toRotationMatrix();
+        visual_rotation = q_ij.toRotationMatrix();
 
-        Eigen::Quaterniond q_delta(delta_qs[i]);
+        Eigen::Quaterniond q_delta(delta_rotations[i]);
         q_delta.normalize();
-        Eigen::Matrix3d delta_q = q_delta.toRotationMatrix();
-
-        Eigen::Matrix3d R_diff = delta_q.transpose() * R_Bi_Bj_vis;
-        Eigen::Quaterniond q_diff(R_diff);
-        q_diff.normalize();
-        Eigen::Vector3d phi = Sophus::SO3d(q_diff).log();
-
-        A += dq_dbgs[i].transpose() * dq_dbgs[i];
-        b += dq_dbgs[i].transpose() * phi;
+        const Eigen::Matrix3d rotation_error =
+            q_delta.toRotationMatrix().transpose() * visual_rotation;
+        jacobian.block<3, 3>(3 * i, 0) = rotation_bias_jacobians[i];
+        residual.segment<3>(3 * i) = Sophus::SO3d(rotation_error).log();
     }
 
-    Eigen::LDLT<Eigen::Matrix3d> ldlt(A);
-    Eigen::Vector3d bg = ldlt.solve(b);
-    if (ldlt.info() != Eigen::Success || !bg.allFinite()) {
-        spdlog::warn(
-            "GyroBias solve failed: intervals={}, LDLT status={}, finite={}", dq_dbgs.size(),
-            static_cast<int>(ldlt.info()), bg.allFinite());
+    Eigen::VectorXd correction;
+    if (!solveObservableSystem(jacobian, residual, "GyroBiasCorrection", correction)) {
         return Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
     }
-    spdlog::info("Gyro bias: ({:.6f}, {:.6f}, {:.6f})", bg.x(), bg.y(), bg.z());
-    return bg;
+    spdlog::info(
+        "Gyro bias correction: ({:.6f}, {:.6f}, {:.6f})", correction.x(), correction.y(),
+        correction.z());
+    return correction;
 }
 
 }  // namespace tassel_core

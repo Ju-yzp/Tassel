@@ -4,6 +4,8 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
+#include <stdexcept>
+
 #include <sophus/so3.hpp>
 
 namespace tassel_utils {
@@ -20,11 +22,14 @@ inline Eigen::Vector3d rotDiff(const Eigen::Matrix3d& R1, const Eigen::Matrix3d&
 }
 
 inline Eigen::Matrix<double, 2, 3> tangentBasis(const Eigen::Vector3d& direction) {
-    const Eigen::Vector3d axis = direction.normalized();
-    Eigen::Vector3d reference = Eigen::Vector3d::UnitZ();
-    if (axis.isApprox(reference)) {
-        reference = Eigen::Vector3d::UnitX();
+    if (!direction.allFinite() || direction.norm() < 1e-12) {
+        throw std::invalid_argument("Tangent basis direction must be finite and nonzero");
     }
+    const Eigen::Vector3d axis = direction.normalized();
+    Eigen::Index reference_axis = 0;
+    axis.cwiseAbs().minCoeff(&reference_axis);
+    Eigen::Vector3d reference = Eigen::Vector3d::Zero();
+    reference[reference_axis] = 1.0;
     const Eigen::Vector3d b1 = (reference - axis * axis.dot(reference)).normalized();
     Eigen::Matrix<double, 2, 3> basis;
     basis.row(0) = b1.transpose();

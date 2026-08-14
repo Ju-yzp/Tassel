@@ -2,21 +2,23 @@
 #define TASSEL_CORE_INITIAL_INITIAL_SFM_H_
 
 #include <Eigen/Core>
+#include <Eigen/Geometry>
+#include <array>
 #include <unordered_set>
 #include <vector>
 
 #include <opencv2/core/types.hpp>
 
-#include "frond_end/feature_manager.h"
-#include "state/state.h"
-
 namespace tassel_core {
 
+class FeatureManager;
+struct State;
+
 struct SFMFeature {
-    bool state;
-    int id;
-    std::vector<std::pair<int, Eigen::Vector2d>> observation;
-    double position[3];
+    bool triangulated = false;
+    int id = -1;
+    std::vector<std::pair<int, Eigen::Vector2d>> observations;
+    std::array<double, 3> position{};
 };
 
 class InitialSFM {
@@ -31,7 +33,7 @@ public:
           ba_iterations_(ba_iterations) {}
 
     bool construct(
-        State& cur_state, FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
+        const State& state, const FeatureManager& feature_manager, const Eigen::Matrix3d& ric,
         std::vector<Eigen::Matrix3d>& Rs_out, std::vector<Eigen::Vector3d>& Ps_out,
         int first_frame_index = 0);
 
@@ -43,24 +45,14 @@ private:
         double prior_error = 0.0;
     };
 
-    int selectSeedFrame(int frame_num, const std::vector<SFMFeature>& sfm_f);
-
-    std::vector<std::pair<int, int>> findParallaxFrames(
-        int seed_id, int frame_num, const std::vector<SFMFeature>& sfm_f);
+    std::vector<std::pair<int, int>> scoreBaselineFrames(
+        int first_frame_index, int host_id, const std::vector<Eigen::Quaterniond>& camera_rotations,
+        const FeatureManager& feature_manager);
 
     bool computeEssential(
-        int seed_id, int other_id, const std::vector<SFMFeature>& sfm_f,
+        int seed_id, int other_id, const std::vector<SFMFeature>& features,
         std::vector<PoseCandidate>& candidates, std::vector<cv::Point2f>& pts_seed,
         std::vector<cv::Point2f>& pts_other, std::unordered_set<int>& inlier_feature_ids);
-
-    void decomposeEssentialMat(
-        const Eigen::Matrix3d& essential, std::vector<PoseCandidate>& candidates);
-
-    bool estimateTranslationDirection(
-        int seed_id, int other_id, const Eigen::Matrix3d& rotation_other_seed,
-        const std::vector<SFMFeature>& sfm_f, std::vector<PoseCandidate>& candidates,
-        std::vector<cv::Point2f>& pts_seed, std::vector<cv::Point2f>& pts_other,
-        std::unordered_set<int>& inlier_feature_ids);
 
     bool resolvePose(
         const std::vector<PoseCandidate>& candidates, const std::vector<cv::Point2f>& pts_seed,
@@ -70,18 +62,18 @@ private:
     bool reconstructScene(
         int frame_num, int seed_id, int other_id, const Eigen::Vector3d& relative_T,
         std::vector<Eigen::Quaterniond>& q_cam_rel, std::vector<Eigen::Vector3d>& t_arr,
-        const std::unordered_set<int>& initial_feature_ids, std::vector<SFMFeature>& sfm_f);
+        const std::unordered_set<int>& initial_feature_ids, std::vector<SFMFeature> features);
 
     void alignToReference(
         int frame_num, std::vector<Eigen::Matrix3d>& Rs, std::vector<Eigen::Vector3d>& Ps);
 
-    bool registerFramePnP(
-        Eigen::Matrix3d& R_initial, Eigen::Vector3d& P_initial, int frame_idx,
-        std::vector<SFMFeature>& sfm_f);
+    bool solveFramePose(
+        Eigen::Matrix3d& rotation, Eigen::Vector3d& translation, int frame_id,
+        const std::vector<SFMFeature>& features);
 
-    void triangulateTwoFrames(
-        int frame0, Eigen::Matrix<double, 3, 4>& Pose0, int frame1,
-        Eigen::Matrix<double, 3, 4>& Pose1, std::vector<SFMFeature>& sfm_f,
+    void triangulateFeatures(
+        const std::vector<bool>& solved, const std::vector<Eigen::Matrix<double, 3, 4>>& poses,
+        std::vector<SFMFeature>& features,
         const std::unordered_set<int>* allowed_feature_ids = nullptr);
 
     void scoreByCheirality(
@@ -92,7 +84,6 @@ private:
     double epipolar_threshold_;
     double pnp_threshold_;
     int ba_iterations_;
-    int feature_num_ = 0;
 };
 
 }  // namespace tassel_core

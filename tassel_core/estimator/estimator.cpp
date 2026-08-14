@@ -131,10 +131,9 @@ void Estimator::processMeasurement(
     const bool is_first_initial_frame =
         !initialized_ && frame_count == kFirstActiveFrameIndex &&
         state_->frames[kRetainedFrameIndex].frame_id == tassel_utils::kInvalidFrameId;
-    const bool is_keyframe = initialized_ || is_first_initial_frame
-                                 ? feature_manager_->addFeatureFrame(frame_count, feature_frame)
-                                 : feature_manager_->replaceInitializationCandidate(
-                                       frame_count - 1, frame_count, feature_frame);
+    const bool is_keyframe =
+        initialized_ ? feature_manager_->addFeatureFrame(frame_count, feature_frame)
+                     : feature_manager_->tryAddInitializationKeyframe(frame_count, feature_frame);
     state_->frames[frame_count].frame_type =
         is_keyframe ? FrameType::KeyFrame : FrameType::NonKeyFrame;
     last_measurement_was_keyframe_ = is_keyframe;
@@ -149,11 +148,11 @@ void Estimator::processMeasurement(
         state_->frames[frame_count].imu_acc);
     if (!initialized_) {
         if (!is_keyframe) {
-            // 低视差图像只更新尾部候选槽，状态和 IMU 预积分持续累计，不占用新的窗口帧。
+            // 初始化只保存关键帧；候选期间状态和 IMU 预积分继续在当前槽累计。
             return;
         }
 
-        // 只有达到初始化视差的候选图像才固定为独立 VIO 状态并推进窗口。
+        // 接受的关键帧固定为独立 VIO 状态并推进窗口。
         if (frame_count < state_->max_frame_count - 1) {
             ++frame_count;
             state_->copyFrameState(frame_count - 1, frame_count);
@@ -243,7 +242,7 @@ void Estimator::predictFrameState(
                     !calibrated_imu.gyro.isApprox(boundary.gyro, 1e-12)) {
                     throw std::runtime_error("Shared IMU boundary has inconsistent measurements");
                 }
-                // 初始化候选槽累计多个同步包时，相邻包会共享同一个边界样本。
+                // 同一预积分器连续接收同步包时，相邻包会共享同一个边界样本。
                 continue;
             }
             if (!preintegrator.propagate(calibrated_imu)) {
@@ -741,19 +740,36 @@ bool Estimator::tryInitialize() {
 
     {
         std::vector<Eigen::Matrix3d> dq_dbgs, delta_qs;
+        Eigen::Vector3d bias_linearization = Eigen::Vector3d::Zero();
+        bool has_bias_linearization = false;
         visitPreintegrators([&](const auto& preintegrators) {
             for (int i = kFirstActiveFrameIndex; i < last_frame_index; ++i) {
+                if (!has_bias_linearization) {
+                    bias_linearization = preintegrators[i].bg_linearized;
+                    has_bias_linearization = true;
+                } else if (!preintegrators[i].bg_linearized.isApprox(bias_linearization, 1e-12)) {
+                    // 单个三维修正量要求窗口内预积分共享同一偏置线性化点。
+                    throw std::logic_error(
+                        "Initialization preintegrators use inconsistent gyro bias linearization");
+                }
                 dq_dbgs.push_back(preintegrators[i].get_dq_dbg());
                 delta_qs.push_back(preintegrators[i].final_delta_q);
             }
         });
-        Eigen::Vector3d bg = solveGyroBias(Rs_, dq_dbgs, delta_qs, params_.ric);
-        if (!bg.allFinite()) {
+        const Eigen::Vector3d correction =
+            solveGyroBiasCorrection(Rs_, dq_dbgs, delta_qs, params_.ric);
+        if (!correction.allFinite()) {
             spdlog::warn("VIO initialization failed: gyro bias solve rejected the window");
             return false;
         }
+        const Eigen::Vector3d gyro_bias = bias_linearization + correction;
+        spdlog::info(
+            "Gyro bias initialized: linearization=({:.6f}, {:.6f}, {:.6f}), "
+            "bias=({:.6f}, {:.6f}, {:.6f})",
+            bias_linearization.x(), bias_linearization.y(), bias_linearization.z(), gyro_bias.x(),
+            gyro_bias.y(), gyro_bias.z());
         for (int i = kFirstActiveFrameIndex; i <= last_frame_index; ++i) {
-            state_->frames[i].gyro_bias = bg;
+            state_->frames[i].gyro_bias = gyro_bias;
         }
     }
 

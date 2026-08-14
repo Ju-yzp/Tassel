@@ -37,7 +37,7 @@ keyframe_min_connection_ratio: 0.70
 
 # 滑窗优化
 num_iterations: 7
-max_solver_time: 0.020
+max_solver_time: 0.015
 max_frame_count: 9
 visual_factor_weight: 9.7
 num_threads: 1
