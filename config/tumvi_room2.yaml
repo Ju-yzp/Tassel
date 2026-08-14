@@ -15,15 +15,15 @@ cam0:
 # 图像与特征跟踪
 rows: 1024
 cols: 1024
-per_grid_rows: 64
-per_grid_cols: 64
+per_grid_rows: 70
+per_grid_cols: 70
 valid_mask_path: config/tumvi_room2_valid_mask.png
-mask_radius: 25.0
-min_feature_num: 150
+mask_radius: 36.0
+min_feature_num: 100
 
 flow_back: true
-max_square_move_dist: 1.0
-min_gradient: 15.0
+max_square_move_dist: 0.5
+min_gradient: 10.01
 enable_statistics: true
 
 # 特征与关键帧管理
@@ -37,9 +37,9 @@ keyframe_min_connection_ratio: 0.75
 
 # 滑窗优化
 num_iterations: 6
-max_solver_time: 0.0
-max_frame_count: 7
-visual_factor_weight: 70.0
+max_solver_time: 0.02
+max_frame_count: 9
+visual_factor_weight: 10
 num_threads: 1
 trust_region_strategy: levenberg_marquardt
 
@@ -59,16 +59,14 @@ imu_repropagate_ba_threshold: 0.02
 imu_repropagate_bg_threshold: 0.006
 
 # 视觉惯性初始化
-gravity_diff_threshold: 0.21
+init_gravity_tolerance: 0.21
 init_min_scale: 0.01
-sfm_min_correspondences: 10
-sfm_min_e_inliers: 8
-sfm_e_ransac_threshold: 0.004
-sfm_pnp_reproj_threshold: 0.03
-sfm_max_bad_pnp_ratio: 0.3
-sfm_ba_max_iterations: 10
-sfm_ba_num_threads: 5
+sfm_min_points: 10
+sfm_min_inliers: 8
+sfm_epipolar_threshold: 0.008
+sfm_pnp_threshold: 0.005
+sfm_ba_iterations: 10
 
 # 可视化
 viewer:
-    path_max_poses: 600
+    path_max_poses: 4000

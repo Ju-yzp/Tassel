@@ -1,6 +1,7 @@
 #include "initial/initial_sfm.h"
 
 #include <spdlog/spdlog.h>
+#include <algorithm>
 
 #include <ceres/ceres.h>
 #include <ceres/rotation.h>
@@ -10,7 +11,6 @@
 #include <stdexcept>
 
 #include "tassel_utils/macros.h"
-#include "tassel_utils/rotation.h"
 #include "tassel_utils/triangulation.h"
 
 namespace tassel_core {
@@ -67,7 +67,7 @@ int InitialSFM::selectSeedFrame(int frame_num, const std::vector<SFMFeature>& sf
     int seed_id = -1;
     int best_score = -1;
     for (int i = 0; i < frame_num; ++i) {
-        if (feature_count[i] < min_seed_pts_) {
+        if (feature_count[i] < min_points_) {
             continue;
         }
         if (connectivity_per_frame[i] > best_score) {
@@ -77,7 +77,10 @@ int InitialSFM::selectSeedFrame(int frame_num, const std::vector<SFMFeature>& sf
     }
 
     if (seed_id < 0) {
-        spdlog::info("SFM: no frame has enough tracked features for a seed");
+        const int max_features = *std::max_element(feature_count.begin(), feature_count.end());
+        spdlog::warn(
+            "SFM seed failed: frames={}, max_features={}, required={}", frame_num, max_features,
+            min_points_);
         return -1;
     }
 
@@ -97,6 +100,7 @@ std::vector<std::pair<int, int>> InitialSFM::findParallaxFrames(
     };
 
     std::vector<FrameCandidate> connected_candidates;
+    int max_common = 0;
     for (int i = 0; i < frame_num; ++i) {
         if (i == seed_id) {
             continue;
@@ -122,7 +126,8 @@ std::vector<std::pair<int, int>> InitialSFM::findParallaxFrames(
             ++common;
             parallaxes.push_back((uv_seed - uv_other).norm());
         }
-        if (common < min_seed_pts_) {
+        max_common = std::max(max_common, common);
+        if (common < min_points_) {
             continue;
         }
         const size_t mid = parallaxes.size() / 2;
@@ -132,16 +137,25 @@ std::vector<std::pair<int, int>> InitialSFM::findParallaxFrames(
 
     std::vector<FrameCandidate> parallax_candidates;
     for (const auto& candidate : connected_candidates) {
-        if (candidate.median_parallax > e_ransac_threshold_) {
+        if (candidate.median_parallax > epipolar_threshold_) {
             parallax_candidates.push_back(candidate);
         }
     }
 
     if (parallax_candidates.empty()) {
         if (connected_candidates.empty()) {
-            spdlog::info("SFM: no frame has enough visual connection to seed {}", seed_id);
+            spdlog::warn(
+                "SFM baseline failed: seed={}, max_common={}, required={}", seed_id, max_common,
+                min_points_);
         } else {
-            spdlog::info("SFM: no frame has enough parallax from seed {}", seed_id);
+            const auto best = std::max_element(
+                connected_candidates.begin(), connected_candidates.end(),
+                [](const auto& lhs, const auto& rhs) {
+                    return lhs.median_parallax < rhs.median_parallax;
+                });
+            spdlog::warn(
+                "SFM baseline failed: seed={}, max_median_parallax={:.6f}, required>{:.6f}",
+                seed_id, best->median_parallax, epipolar_threshold_);
         }
         return {};
     }
@@ -168,7 +182,92 @@ std::vector<std::pair<int, int>> InitialSFM::findParallaxFrames(
 bool InitialSFM::computeEssential(
     int seed_id, int other_id, const std::vector<SFMFeature>& sfm_f,
     std::vector<PoseCandidate>& candidates, std::vector<cv::Point2f>& pts_seed,
-    std::vector<cv::Point2f>& pts_other) {
+    std::vector<cv::Point2f>& pts_other, std::unordered_set<int>& inlier_feature_ids) {
+    std::vector<int> feature_ids;
+    for (const auto& feature : sfm_f) {
+        bool in_seed = false;
+        bool in_other = false;
+        Eigen::Vector2d uv_seed = Eigen::Vector2d::Zero();
+        Eigen::Vector2d uv_other = Eigen::Vector2d::Zero();
+        for (const auto& [frame_id, uv] : feature.observation) {
+            if (frame_id == seed_id) {
+                in_seed = true;
+                uv_seed = uv;
+            }
+            if (frame_id == other_id) {
+                in_other = true;
+                uv_other = uv;
+            }
+        }
+        if (in_seed && in_other) {
+            pts_seed.emplace_back(uv_seed.x(), uv_seed.y());
+            pts_other.emplace_back(uv_other.x(), uv_other.y());
+            feature_ids.push_back(feature.id);
+        }
+    }
+
+    const int required_correspondences = std::max(5, min_inliers_);
+    if (static_cast<int>(pts_seed.size()) < required_correspondences) {
+        spdlog::warn(
+            "SFM essential failed: seed={}, other={}, correspondences={}, required={}", seed_id,
+            other_id, pts_seed.size(), required_correspondences);
+        return false;
+    }
+
+    const cv::Mat camera_matrix = cv::Mat::eye(3, 3, CV_64F);
+    cv::Mat inlier_mask;
+    const cv::Mat essential = cv::findEssentialMat(
+        pts_seed, pts_other, camera_matrix, cv::RANSAC, 0.99, epipolar_threshold_, inlier_mask);
+    if (essential.empty() || inlier_mask.empty()) {
+        spdlog::warn(
+            "SFM essential failed: seed={}, other={}, reason=no_model, correspondences={}", seed_id,
+            other_id, pts_seed.size());
+        return false;
+    }
+    const int inlier_count = cv::countNonZero(inlier_mask);
+    if (inlier_count < min_inliers_) {
+        spdlog::warn(
+            "SFM essential failed: seed={}, other={}, inliers={}/{}, required={}, threshold={:.6f}",
+            seed_id, other_id, inlier_count, pts_seed.size(), min_inliers_, epipolar_threshold_);
+        return false;
+    }
+    if (inlier_mask.total() != pts_seed.size() || !inlier_mask.isContinuous()) {
+        throw std::logic_error("Essential inlier mask does not match correspondences");
+    }
+
+    std::vector<cv::Point2f> inlier_seed;
+    std::vector<cv::Point2f> inlier_other;
+    inlier_seed.reserve(inlier_count);
+    inlier_other.reserve(inlier_count);
+    inlier_feature_ids.clear();
+    inlier_feature_ids.reserve(inlier_count);
+    const uchar* mask = inlier_mask.ptr<uchar>();
+    for (size_t i = 0; i < pts_seed.size(); ++i) {
+        if (mask[i] == 0) {
+            continue;
+        }
+        inlier_seed.push_back(pts_seed[i]);
+        inlier_other.push_back(pts_other[i]);
+        inlier_feature_ids.insert(feature_ids[i]);
+    }
+    pts_seed = std::move(inlier_seed);
+    pts_other = std::move(inlier_other);
+
+    Eigen::Matrix3d essential_eigen;
+    cv::cv2eigen(essential, essential_eigen);
+    decomposeEssentialMat(essential_eigen, candidates);
+    spdlog::info(
+        "SFM essential: seed={}, other={}, inliers={}/{}, threshold={:.6f}", seed_id, other_id,
+        inlier_count, feature_ids.size(), epipolar_threshold_);
+    return true;
+}
+
+bool InitialSFM::estimateTranslationDirection(
+    int seed_id, int other_id, const Eigen::Matrix3d& rotation_other_seed,
+    const std::vector<SFMFeature>& sfm_f, std::vector<PoseCandidate>& candidates,
+    std::vector<cv::Point2f>& pts_seed, std::vector<cv::Point2f>& pts_other,
+    std::unordered_set<int>& inlier_feature_ids) {
+    std::vector<int> feature_ids;
     for (const auto& f : sfm_f) {
         bool in_seed = false, in_other = false;
         Eigen::Vector2d uv_seed, uv_other;
@@ -185,63 +284,164 @@ bool InitialSFM::computeEssential(
         if (in_seed && in_other) {
             pts_seed.emplace_back(uv_seed.x(), uv_seed.y());
             pts_other.emplace_back(uv_other.x(), uv_other.y());
+            feature_ids.push_back(f.id);
         }
     }
-    if (static_cast<int>(pts_seed.size()) < std::max(5, min_e_inliers_)) {
+    const int required_correspondences = std::max(5, min_inliers_);
+    if (static_cast<int>(pts_seed.size()) < required_correspondences) {
+        spdlog::warn(
+            "SFM translation failed: seed={}, other={}, correspondences={}, required={}", seed_id,
+            other_id, pts_seed.size(), required_correspondences);
         return false;
     }
 
-    cv::Mat K_cv = cv::Mat::eye(3, 3, CV_64F);
-    cv::Mat inlier_mask;
-    cv::Mat E = cv::findEssentialMat(
-        pts_seed, pts_other, K_cv, cv::RANSAC, 0.99, e_ransac_threshold_, inlier_mask);
-    const int inlier_count = cv::countNonZero(inlier_mask);
-    if (inlier_count < min_e_inliers_) {
+    if (feature_ids.size() != pts_seed.size()) {
+        throw std::logic_error("Translation correspondences do not match their feature IDs");
+    }
+
+    const int correspondence_count = static_cast<int>(pts_seed.size());
+    Eigen::MatrixXd constraints(correspondence_count, 3);
+    int valid_constraint_count = 0;
+    for (int i = 0; i < correspondence_count; ++i) {
+        const Eigen::Vector3d ray_seed =
+            Eigen::Vector3d(pts_seed[i].x, pts_seed[i].y, 1.0).normalized();
+        const Eigen::Vector3d ray_other =
+            Eigen::Vector3d(pts_other[i].x, pts_other[i].y, 1.0).normalized();
+        Eigen::Vector3d constraint = (rotation_other_seed * ray_seed).cross(ray_other);
+        const double norm = constraint.norm();
+        if (!std::isfinite(norm) || norm < 1e-12) {
+            constraint.setZero();
+        } else {
+            constraint /= norm;
+            ++valid_constraint_count;
+        }
+        constraints.row(i) = constraint.transpose();
+    }
+
+    Eigen::VectorXd weights = Eigen::VectorXd::Ones(correspondence_count);
+    Eigen::Vector3d translation = Eigen::Vector3d::Zero();
+    for (int iteration = 0; iteration < 8; ++iteration) {
+        Eigen::MatrixXd weighted_constraints = constraints;
+        for (int i = 0; i < correspondence_count; ++i) {
+            weighted_constraints.row(i) *= std::sqrt(weights[i]);
+        }
+        const Eigen::JacobiSVD<Eigen::MatrixXd> svd(weighted_constraints, Eigen::ComputeFullV);
+        translation = svd.matrixV().col(2).normalized();
+        if (!translation.allFinite()) {
+            spdlog::warn(
+                "SFM translation failed: seed={}, other={}, non-finite IRLS solution at "
+                "iteration={}, valid_constraints={}/{}",
+                seed_id, other_id, iteration, valid_constraint_count, correspondence_count);
+            return false;
+        }
+        for (int i = 0; i < correspondence_count; ++i) {
+            const double scaled_residual =
+                std::abs(constraints.row(i).dot(translation)) / epipolar_threshold_;
+            // Cauchy IRLS 固定迭代次数和阈值，不依赖随机采样顺序。
+            weights[i] = 1.0 / (1.0 + scaled_residual * scaled_residual);
+        }
+    }
+
+    std::vector<double> residuals;
+    residuals.reserve(correspondence_count);
+    for (int i = 0; i < correspondence_count; ++i) {
+        residuals.push_back(std::abs(constraints.row(i).dot(translation)));
+    }
+    const auto percentile = [&residuals](double fraction) {
+        const size_t index = static_cast<size_t>(fraction * (residuals.size() - 1));
+        std::nth_element(residuals.begin(), residuals.begin() + index, residuals.end());
+        return residuals[index];
+    };
+    const double median_residual = percentile(0.50);
+    const double p90_residual = percentile(0.90);
+    const double max_residual = *std::max_element(residuals.begin(), residuals.end());
+    std::vector<int> inlier_indices;
+    inlier_indices.reserve(correspondence_count);
+    for (int i = 0; i < correspondence_count; ++i) {
+        if (std::abs(constraints.row(i).dot(translation)) <= epipolar_threshold_) {
+            inlier_indices.push_back(i);
+        }
+    }
+    if (static_cast<int>(inlier_indices.size()) < min_inliers_) {
+        spdlog::warn(
+            "SFM translation failed: seed={}, other={}, inliers={}/{}, required={}, "
+            "threshold={:.6f}, residual_median={:.6f}, residual_p90={:.6f}, "
+            "residual_max={:.6f}, rotation_angle={:.3f}deg",
+            seed_id, other_id, inlier_indices.size(), correspondence_count, min_inliers_,
+            epipolar_threshold_, median_residual, p90_residual, max_residual,
+            Eigen::AngleAxisd(rotation_other_seed).angle() * 180.0 / M_PI);
         return false;
     }
-    if (inlier_mask.total() != pts_seed.size() || !inlier_mask.isContinuous()) {
-        throw std::logic_error("Essential inlier mask does not match the input correspondences");
+
+    Eigen::MatrixXd inlier_constraints(inlier_indices.size(), 3);
+    for (size_t i = 0; i < inlier_indices.size(); ++i) {
+        inlier_constraints.row(i) = constraints.row(inlier_indices[i]);
+    }
+    const Eigen::JacobiSVD<Eigen::MatrixXd> inlier_svd(inlier_constraints, Eigen::ComputeFullV);
+    translation = inlier_svd.matrixV().col(2).normalized();
+    if (!translation.allFinite()) {
+        spdlog::warn(
+            "SFM translation failed: seed={}, other={}, non-finite inlier solution", seed_id,
+            other_id);
+        return false;
     }
 
     std::vector<cv::Point2f> inlier_seed;
     std::vector<cv::Point2f> inlier_other;
-    inlier_seed.reserve(inlier_count);
-    inlier_other.reserve(inlier_count);
-    const uchar* mask = inlier_mask.ptr<uchar>();
-    // OpenCV 掩码行与两组匹配点严格同序；位姿分解后的正深度评分只能使用这些内点。
-    for (size_t i = 0; i < pts_seed.size(); ++i) {
-        if (mask[i] == 0) {
-            continue;
-        }
-        inlier_seed.push_back(pts_seed[i]);
-        inlier_other.push_back(pts_other[i]);
+    inlier_seed.reserve(inlier_indices.size());
+    inlier_other.reserve(inlier_indices.size());
+    inlier_feature_ids.clear();
+    inlier_feature_ids.reserve(inlier_indices.size());
+    // 约束行、两组匹配点和 feature ID 严格同序，初始三角化只能使用最终内点。
+    for (const int index : inlier_indices) {
+        inlier_seed.push_back(pts_seed[index]);
+        inlier_other.push_back(pts_other[index]);
+        inlier_feature_ids.insert(feature_ids[index]);
     }
     pts_seed = std::move(inlier_seed);
     pts_other = std::move(inlier_other);
 
-    Eigen::Matrix3d E_eigen;
-    cv::cv2eigen(E, E_eigen);
-    decomposeEssentialMat(E_eigen, candidates);
+    candidates.clear();
+    candidates.push_back({rotation_other_seed, translation});
+    candidates.push_back({rotation_other_seed, -translation});
     return true;
 }
 
 bool InitialSFM::resolvePose(
     const std::vector<PoseCandidate>& candidates, const std::vector<cv::Point2f>& pts_seed,
-    const std::vector<cv::Point2f>& pts_other, PoseCandidate& selected) {
+    const std::vector<cv::Point2f>& pts_other, const Eigen::Matrix3d& rotation_prior,
+    PoseCandidate& selected) {
     std::vector<PoseCandidate> scored;
     scoreByCheirality(candidates, pts_seed, pts_other, scored);
 
-    if (scored.empty() || scored.front().score < 5) {
+    constexpr int kMinCheiralityPoints = 5;
+    if (scored.empty() || scored.front().score < kMinCheiralityPoints) {
+        const int best_score = scored.empty() ? 0 : scored.front().score;
+        spdlog::warn(
+            "SFM pose failed: cheirality_points={}, required={}, correspondences={}", best_score,
+            kMinCheiralityPoints, pts_seed.size());
         return false;
     }
+    for (auto& candidate : scored) {
+        candidate.prior_error = Eigen::AngleAxisd(rotation_prior.transpose() * candidate.R).angle();
+    }
+    std::stable_sort(scored.begin(), scored.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.score != rhs.score) {
+            return lhs.score > rhs.score;
+        }
+        return lhs.prior_error < rhs.prior_error;
+    });
     selected = scored.front();
+    spdlog::debug(
+        "SFM pose selected: cheirality={}/{}, gyro_rotation_error={:.3f}deg", selected.score,
+        pts_seed.size(), selected.prior_error * 180.0 / 3.141592653589793);
     return true;
 }
 
 bool InitialSFM::reconstructScene(
     int frame_num, int seed_id, int other_id, const Eigen::Vector3d& relative_T,
     std::vector<Eigen::Quaterniond>& q_cam_rel, std::vector<Eigen::Vector3d>& t_arr,
-    std::vector<SFMFeature>& sfm_f, std::map<int, Eigen::Vector3d>& tracked_pts) {
+    const std::unordered_set<int>& initial_feature_ids, std::vector<SFMFeature>& sfm_f) {
     feature_num_ = static_cast<int>(sfm_f.size());
     int l = seed_id, last = other_id;
 
@@ -267,7 +467,7 @@ bool InitialSFM::reconstructScene(
     Pose[last].block<3, 3>(0, 0) = c_Rotation[last];
     Pose[last].block<3, 1>(0, 3) = c_Translation[last];
 
-    triangulateTwoFrames(l, Pose[l], last, Pose[last], sfm_f);
+    triangulateTwoFrames(l, Pose[l], last, Pose[last], sfm_f, &initial_feature_ids);
 
     for (int j = 0; j < feature_num_; j++) {
         if (!sfm_f[j].state) {
@@ -307,7 +507,7 @@ bool InitialSFM::reconstructScene(
             break;
         }
 
-        Eigen::Matrix3d R_initial = c_Rotation[best_ref];
+        Eigen::Matrix3d R_initial = q_cam_rel[best_i].inverse().toRotationMatrix();
         Eigen::Vector3d P_initial = c_Translation[best_ref];
         if (!registerFramePnP(R_initial, P_initial, best_i, sfm_f)) {
             return false;
@@ -346,7 +546,7 @@ bool InitialSFM::reconstructScene(
             if (i == l) {
                 problem.SetParameterBlockConstant(c_rotation[i].data());
             }
-            // seed 平移固定世界原点，基线帧平移固定 Essential 给出的单位尺度。
+            // seed 平移固定世界原点，基线帧平移固定为视觉估计的单位尺度。
             if (i == l || i == last) {
                 problem.SetParameterBlockConstant(c_translation[i].data());
             }
@@ -361,20 +561,20 @@ bool InitialSFM::reconstructScene(
             for (const auto& [frame_index, observation] : sfm_f[i].observation) {
                 problem.AddResidualBlock(
                     SfmReprojectionFactor::Create(observation),
-                    new ceres::HuberLoss(e_ransac_threshold_), c_rotation[frame_index].data(),
+                    new ceres::HuberLoss(epipolar_threshold_), c_rotation[frame_index].data(),
                     c_translation[frame_index].data(), sfm_f[i].position);
                 ++observation_count;
             }
         }
 
         if (observation_count == 0) {
-            spdlog::info("SFM BA: no valid observations");
+            spdlog::warn("SFM BA failed: no valid observations");
             return false;
         }
 
         ceres::Solver::Options options;
         options.linear_solver_type = ceres::DENSE_SCHUR;
-        options.max_num_iterations = ba_max_iterations_;
+        options.max_num_iterations = ba_iterations_;
         // 初始化 BA 规模较小，固定单线程避免并行调度成本。
         options.num_threads = 1;
         options.logging_type = ceres::SILENT;
@@ -385,6 +585,9 @@ bool InitialSFM::reconstructScene(
             summary.termination_type == ceres::CONVERGENCE ? "CONV" : "NOCONV",
             summary.iterations.size(), summary.final_cost);
         if (!summary.IsSolutionUsable()) {
+            spdlog::warn(
+                "SFM BA failed: termination={}, message={}",
+                static_cast<int>(summary.termination_type), summary.message);
             return false;
         }
 
@@ -423,13 +626,6 @@ bool InitialSFM::reconstructScene(
         }
     }
 
-    for (int i = 0; i < static_cast<int>(sfm_f.size()); i++) {
-        if (sfm_f[i].state) {
-            tracked_pts[sfm_f[i].id] =
-                Eigen::Vector3d(sfm_f[i].position[0], sfm_f[i].position[1], sfm_f[i].position[2]);
-        }
-    }
-
     return true;
 }
 
@@ -445,8 +641,8 @@ void InitialSFM::alignToReference(
 
 bool InitialSFM::registerFramePnP(
     Eigen::Matrix3d& R_initial, Eigen::Vector3d& P_initial, int i, std::vector<SFMFeature>& sfm_f) {
-    std::vector<cv::Point2f> pts_2_vector;
-    std::vector<cv::Point3f> pts_3_vector;
+    std::vector<Eigen::Vector2d> observations;
+    std::vector<Eigen::Vector3d> world_points;
     for (int j = 0; j < feature_num_; j++) {
         if (sfm_f[j].state != true) {
             continue;
@@ -454,70 +650,109 @@ bool InitialSFM::registerFramePnP(
         for (int k = 0; k < static_cast<int>(sfm_f[j].observation.size()); k++) {
             if (sfm_f[j].observation[k].first == i) {
                 Eigen::Vector2d img_pts = sfm_f[j].observation[k].second;
-                pts_2_vector.emplace_back(img_pts(0), img_pts(1));
-                pts_3_vector.emplace_back(
+                observations.push_back(img_pts);
+                world_points.emplace_back(
                     sfm_f[j].position[0], sfm_f[j].position[1], sfm_f[j].position[2]);
                 break;
             }
         }
     }
-    int n_pts = static_cast<int>(pts_2_vector.size());
-    if (n_pts < min_pnp_pts_) {
-        spdlog::info("SFM PnP frame {}: only {} pts", i, n_pts);
+    const int n_pts = static_cast<int>(observations.size());
+    if (n_pts < min_points_) {
+        spdlog::warn("SFM PnP failed: frame={}, points={}, required={}", i, n_pts, min_points_);
         return false;
     }
 
-    cv::Mat r, rvec, t, D, tmp_r;
-    cv::eigen2cv(R_initial, tmp_r);
-    cv::Rodrigues(tmp_r, rvec);
-    cv::eigen2cv(P_initial, t);
-    cv::Mat K = (cv::Mat_<double>(3, 3) << 1, 0, 0, 0, 1, 0, 0, 0, 1);
-    if (!cv::solvePnP(pts_3_vector, pts_2_vector, K, D, rvec, t, true)) {
-        spdlog::info("SFM PnP frame {}: solvePnP failed", i);
-        return false;
-    }
-
-    cv::Rodrigues(rvec, r);
-    Eigen::MatrixXd R_pnp, T_pnp;
-    cv::cv2eigen(r, R_pnp);
-    cv::cv2eigen(t, T_pnp);
-
-    int bad = 0;
-    double sum_err = 0;
+    std::vector<cv::Point3f> pnp_world_points;
+    std::vector<cv::Point2f> pnp_observations;
+    pnp_world_points.reserve(n_pts);
+    pnp_observations.reserve(n_pts);
     for (int k = 0; k < n_pts; ++k) {
-        Eigen::Vector3d p3e(pts_3_vector[k].x, pts_3_vector[k].y, pts_3_vector[k].z);
-        Eigen::Vector3d p3_proj = R_pnp * p3e + T_pnp;
-        if (!p3_proj.allFinite() || p3_proj.z() <= 1e-12) {
-            ++bad;
-            sum_err += pnp_reproj_threshold_ * 2.0;
+        pnp_world_points.emplace_back(
+            static_cast<float>(world_points[k].x()), static_cast<float>(world_points[k].y()),
+            static_cast<float>(world_points[k].z()));
+        pnp_observations.emplace_back(
+            static_cast<float>(observations[k].x()), static_cast<float>(observations[k].y()));
+    }
+    cv::Mat rotation_vector;
+    cv::Mat translation_vector = cv::Mat::zeros(3, 1, CV_64F);
+    std::vector<int> pnp_inliers;
+    if (!cv::solvePnPRansac(
+            pnp_world_points, pnp_observations, cv::Mat::eye(3, 3, CV_64F), cv::noArray(),
+            rotation_vector, translation_vector, false, 200, pnp_threshold_, 0.99, pnp_inliers,
+            cv::SOLVEPNP_EPNP) ||
+        static_cast<int>(pnp_inliers.size()) < min_points_) {
+        spdlog::warn(
+            "SFM PnP failed: frame={}, reason=insufficient_ransac_inliers, inliers={}/{}, "
+            "required={}, threshold={:.6f}",
+            i, pnp_inliers.size(), n_pts, min_points_, pnp_threshold_);
+        return false;
+    }
+
+    std::vector<cv::Point3f> inlier_world_points;
+    std::vector<cv::Point2f> inlier_observations;
+    inlier_world_points.reserve(pnp_inliers.size());
+    inlier_observations.reserve(pnp_inliers.size());
+    for (const int inlier : pnp_inliers) {
+        inlier_world_points.push_back(pnp_world_points[inlier]);
+        inlier_observations.push_back(pnp_observations[inlier]);
+    }
+    if (!cv::solvePnP(
+            inlier_world_points, inlier_observations, cv::Mat::eye(3, 3, CV_64F), cv::noArray(),
+            rotation_vector, translation_vector, true, cv::SOLVEPNP_ITERATIVE)) {
+        spdlog::warn("SFM PnP failed: frame={}, reason=no_solution, points={}", i, n_pts);
+        return false;
+    }
+    cv::Mat rotation_matrix;
+    cv::Rodrigues(rotation_vector, rotation_matrix);
+    cv::cv2eigen(rotation_matrix, R_initial);
+    for (int d = 0; d < 3; ++d) {
+        P_initial[d] = translation_vector.at<double>(d);
+    }
+    if (!R_initial.allFinite() || !P_initial.allFinite()) {
+        spdlog::warn("SFM PnP failed: frame={}, reason=non_finite_solution", i);
+        return false;
+    }
+
+    int pnp_bad = 0;
+    double pnp_inlier_error = 0.0;
+    for (int k = 0; k < n_pts; ++k) {
+        const Eigen::Vector3d point_camera = R_initial * world_points[k] + P_initial;
+        if (!point_camera.allFinite() || point_camera.z() <= 1e-12) {
+            ++pnp_bad;
             continue;
         }
-        double u = p3_proj(0) / p3_proj(2);
-        double v = p3_proj(1) / p3_proj(2);
-        double err = std::sqrt(
-            (u - pts_2_vector[k].x) * (u - pts_2_vector[k].x) +
-            (v - pts_2_vector[k].y) * (v - pts_2_vector[k].y));
-        sum_err += err;
-        if (err > pnp_reproj_threshold_) {
-            ++bad;
+        const double error = (point_camera.head<2>() / point_camera.z() - observations[k]).norm();
+        if (error > pnp_threshold_) {
+            ++pnp_bad;
+        } else {
+            pnp_inlier_error += error;
         }
     }
-    if (sum_err / n_pts > pnp_reproj_threshold_ || bad > n_pts * max_bad_pnp_ratio_) {
-        spdlog::info("SFM PnP frame {}: high reproj err mean={:.4f}", i, sum_err / n_pts);
+    const int pnp_inlier_count = n_pts - pnp_bad;
+    if (pnp_inlier_count < min_points_) {
+        spdlog::warn(
+            "SFM PnP failed: frame={}, inliers={}/{}, required={}, mean_inlier_error={:.6f}, "
+            "threshold={:.6f}",
+            i, pnp_inlier_count, n_pts, min_points_,
+            pnp_inlier_count > 0 ? pnp_inlier_error / pnp_inlier_count
+                                 : std::numeric_limits<double>::infinity(),
+            pnp_threshold_);
         return false;
     }
-
-    R_initial = R_pnp;
-    P_initial = T_pnp;
     return true;
 }
 
 void InitialSFM::triangulateTwoFrames(
     int frame0, Eigen::Matrix<double, 3, 4>& Pose0, int frame1, Eigen::Matrix<double, 3, 4>& Pose1,
-    std::vector<SFMFeature>& sfm_f) {
+    std::vector<SFMFeature>& sfm_f, const std::unordered_set<int>* allowed_feature_ids) {
     TASSEL_ASSERT(frame0 != frame1);
     for (int j = 0; j < feature_num_; j++) {
         if (sfm_f[j].state == true) {
+            continue;
+        }
+        // 空过滤器用于已注册帧扩展地图点；初始基线只使用确定性对极筛选内点。
+        if (allowed_feature_ids != nullptr && !allowed_feature_ids->contains(sfm_f[j].id)) {
             continue;
         }
         bool has_0 = false, has_1 = false;
@@ -549,40 +784,29 @@ void InitialSFM::triangulateTwoFrames(
 }
 
 void InitialSFM::decomposeEssentialMat(
-    const Eigen::Matrix3d& E, std::vector<PoseCandidate>& candidates) {
-    candidates.clear();
-    candidates.reserve(4);
-
-    Eigen::JacobiSVD<Eigen::Matrix3d> svd(E, Eigen::ComputeFullU | Eigen::ComputeFullV);
-    Eigen::Matrix3d U = svd.matrixU();
-    Eigen::Matrix3d V = svd.matrixV();
-
-    if (U.determinant() < 0) {
-        U.col(2) *= -1;
+    const Eigen::Matrix3d& essential, std::vector<PoseCandidate>& candidates) {
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(essential, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Matrix3d u = svd.matrixU();
+    Eigen::Matrix3d v = svd.matrixV();
+    if (u.determinant() < 0.0) {
+        u.col(2) *= -1.0;
     }
-    if (V.determinant() < 0) {
-        V.col(2) *= -1;
+    if (v.determinant() < 0.0) {
+        v.col(2) *= -1.0;
     }
 
-    Eigen::Matrix3d W;
-    W << 0, -1, 0, 1, 0, 0, 0, 0, 1;
-
-    Eigen::Matrix3d R1 = U * W * V.transpose();
-    if (R1.determinant() < 0) {
-        R1 = -R1;
+    Eigen::Matrix3d w;
+    w << 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0;
+    Eigen::Matrix3d r1 = u * w * v.transpose();
+    Eigen::Matrix3d r2 = u * w.transpose() * v.transpose();
+    if (r1.determinant() < 0.0) {
+        r1 = -r1;
     }
-
-    Eigen::Matrix3d R2 = U * W.transpose() * V.transpose();
-    if (R2.determinant() < 0) {
-        R2 = -R2;
+    if (r2.determinant() < 0.0) {
+        r2 = -r2;
     }
-
-    Eigen::Vector3d t = U.col(2).normalized();
-
-    candidates.push_back({R1, t});
-    candidates.push_back({R1, -t});
-    candidates.push_back({R2, t});
-    candidates.push_back({R2, -t});
+    const Eigen::Vector3d t = u.col(2).normalized();
+    candidates = {{r1, t}, {r1, -t}, {r2, t}, {r2, -t}};
 }
 
 void InitialSFM::scoreByCheirality(
@@ -633,10 +857,14 @@ bool InitialSFM::construct(
     std::vector<Eigen::Matrix3d>& Rs_out, std::vector<Eigen::Vector3d>& Ps_out,
     int first_frame_index) {
     if (first_frame_index < 0 || first_frame_index > cur_state.latest_active_frame_index) {
+        spdlog::error(
+            "SFM input failed: first_frame={}, latest_frame={}", first_frame_index,
+            cur_state.latest_active_frame_index);
         return false;
     }
     int frame_num = cur_state.latest_active_frame_index - first_frame_index + 1;
     if (frame_num < 2) {
+        spdlog::error("SFM input failed: frames={}, required=2", frame_num);
         return false;
     }
 
@@ -648,7 +876,7 @@ bool InitialSFM::construct(
     }
 
     auto other_candidates = findParallaxFrames(seed_id, frame_num, sfm_f);
-    if (other_candidates.empty() || other_candidates[0].second < min_seed_pts_) {
+    if (other_candidates.empty() || other_candidates[0].second < min_points_) {
         return false;
     }
 
@@ -661,12 +889,16 @@ bool InitialSFM::construct(
     for (const auto& [other_id, common] : other_candidates) {
         std::vector<PoseCandidate> candidates;
         std::vector<cv::Point2f> pts_seed, pts_other;
-        if (!computeEssential(seed_id, other_id, sfm_f, candidates, pts_seed, pts_other)) {
+        std::unordered_set<int> inlier_feature_ids;
+        if (!computeEssential(
+                seed_id, other_id, sfm_f, candidates, pts_seed, pts_other, inlier_feature_ids)) {
             continue;
         }
 
+        const Eigen::Matrix3d rotation_prior =
+            (q_cam_i0[other_id].inverse() * q_cam_i0[seed_id]).toRotationMatrix();
         PoseCandidate selected;
-        if (!resolvePose(candidates, pts_seed, pts_other, selected)) {
+        if (!resolvePose(candidates, pts_seed, pts_other, rotation_prior, selected)) {
             continue;
         }
 
@@ -679,16 +911,16 @@ bool InitialSFM::construct(
             q_cam_rel[i] = q_cam_seed.inverse() * q_cam_i0[i];
         }
 
-        q_cam_rel[other_id] = Eigen::Quaterniond(tassel_utils::normalizeRot(R_sel.transpose()));
         Eigen::Vector3d T_dir = (-R_sel.transpose() * t_sel).normalized();
 
         std::vector<Eigen::Vector3d> t_arr(frame_num, Eigen::Vector3d::Zero());
-        std::map<int, Eigen::Vector3d> tracked_pts;
         // reconstructScene 会原地写入三角化状态；失败候选不得污染后续候选。
         auto candidate_features = sfm_f;
         if (!reconstructScene(
-                frame_num, seed_id, other_id, T_dir, q_cam_rel, t_arr, candidate_features,
-                tracked_pts)) {
+                frame_num, seed_id, other_id, T_dir, q_cam_rel, t_arr, inlier_feature_ids,
+                candidate_features)) {
+            spdlog::warn(
+                "SFM candidate failed: seed={}, other={}, stage=reconstruction", seed_id, other_id);
             continue;
         }
 
@@ -701,13 +933,15 @@ bool InitialSFM::construct(
 
         alignToReference(frame_num, Rs_out, Ps_out);
 
+        const int point_count = std::count_if(
+            candidate_features.begin(), candidate_features.end(),
+            [](const SFMFeature& feature) { return feature.state; });
         spdlog::info(
-            "SFM: {} frames, {} pts, seed={}, other={}", frame_num, tracked_pts.size(), seed_id,
-            other_id);
+            "SFM: {} frames, {} pts, seed={}, other={}", frame_num, point_count, seed_id, other_id);
         return true;
     }
 
-    spdlog::info("SFM: all candidates failed");
+    spdlog::warn("SFM failed: all candidates were rejected");
     return false;
 }
 

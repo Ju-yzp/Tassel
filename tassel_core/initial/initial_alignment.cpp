@@ -25,10 +25,15 @@ bool linearAlignment(
     if (n_frames < 2 || Ps.size() != Rs.size() || Vs.size() != Rs.size() ||
         delta_vs.size() != Rs.size() - 1 || delta_ps.size() != Rs.size() - 1 ||
         dts.size() != Rs.size() - 1) {
+        spdlog::error(
+            "LinearAlignment input failed: R={}, P={}, V={}, dv={}, dp={}, dt={}", Rs.size(),
+            Ps.size(), Vs.size(), delta_vs.size(), delta_ps.size(), dts.size());
         return false;
     }
-    for (double dt : dts) {
+    for (size_t i = 0; i < dts.size(); ++i) {
+        const double dt = dts[i];
         if (!std::isfinite(dt) || dt <= 0.0) {
+            spdlog::error("LinearAlignment input failed: interval={}, dt={}", i, dt);
             return false;
         }
     }
@@ -80,10 +85,16 @@ bool linearAlignment(
 
     Eigen::LDLT<Eigen::MatrixXd> ldlt(A);
     if (ldlt.info() != Eigen::Success) {
+        spdlog::warn(
+            "LinearAlignment solve failed: LDLT factorization status={}",
+            static_cast<int>(ldlt.info()));
         return false;
     }
     Eigen::VectorXd x = ldlt.solve(b);
     if (ldlt.info() != Eigen::Success || !x.allFinite()) {
+        spdlog::warn(
+            "LinearAlignment solve failed: LDLT solve status={}, finite={}",
+            static_cast<int>(ldlt.info()), x.allFinite());
         return false;
     }
 
@@ -95,6 +106,9 @@ bool linearAlignment(
         final_g.x(), final_g.y(), final_g.z(), s);
     if (!std::isfinite(s) || !final_g.allFinite() || s <= 0 ||
         std::abs(final_g.norm() - target_g_norm) > g_norm_thres) {
+        spdlog::warn(
+            "LinearAlignment validity failed: scale={}, gravity_norm={}, target={}, tolerance={}",
+            s, final_g.norm(), target_g_norm, g_norm_thres);
         return false;
     }
 
@@ -115,6 +129,11 @@ bool refineGravitySpeeds(
     if (n_frames < 2 || Rs.size() != Vs.size() || Ps.size() != Vs.size() ||
         delta_vs.size() != Vs.size() - 1 || delta_ps.size() != Vs.size() - 1 ||
         dts.size() != Vs.size() - 1 || !G.allFinite() || G.norm() < 1e-12) {
+        spdlog::error(
+            "GravityRefinement input failed: R={}, P={}, V={}, dv={}, dp={}, dt={}, "
+            "gravity_norm={}",
+            Rs.size(), Ps.size(), Vs.size(), delta_vs.size(), delta_ps.size(), dts.size(),
+            G.norm());
         return false;
     }
     int n_state = n_frames * 3 + 3;
@@ -135,6 +154,9 @@ bool refineGravitySpeeds(
             int j = i + 1;
             double dt = dts[i];
             if (!std::isfinite(dt) || dt <= 0.0) {
+                spdlog::error(
+                    "GravityRefinement input failed: iteration={}, interval={}, dt={}", iter, i,
+                    dt);
                 return false;
             }
             double dt2 = 0.5 * dt * dt;
@@ -193,16 +215,28 @@ bool refineGravitySpeeds(
         b = b * 1000.0;
         Eigen::LDLT<Eigen::MatrixXd> ldlt(A);
         if (ldlt.info() != Eigen::Success) {
+            spdlog::warn(
+                "GravityRefinement solve failed: iteration={}, LDLT factorization status={}", iter,
+                static_cast<int>(ldlt.info()));
             return false;
         }
         Eigen::VectorXd x = ldlt.solve(b);
         if (ldlt.info() != Eigen::Success || !x.allFinite()) {
+            spdlog::warn(
+                "GravityRefinement solve failed: iteration={}, LDLT solve status={}, finite={}",
+                iter, static_cast<int>(ldlt.info()), x.allFinite());
             return false;
         }
 
         Eigen::Vector2d w(x[col_dg], x[col_dg + 1]);
         Eigen::Vector3d dg = T.transpose() * w;
         g0_dir = (g0_dir + dg).normalized();
+        if (!g0_dir.allFinite()) {
+            spdlog::warn(
+                "GravityRefinement validity failed: iteration={}, non-finite gravity direction",
+                iter);
+            return false;
+        }
 
         for (int i = 0; i < n_frames; ++i) {
             Vs[i] = x.segment<3>(i * 3);
@@ -211,12 +245,23 @@ bool refineGravitySpeeds(
     }
 
     G = g_mag * g0_dir;
-    return G.allFinite() && std::isfinite(s);
+    if (!G.allFinite() || !std::isfinite(s)) {
+        spdlog::warn("GravityRefinement validity failed: gravity_norm={}, scale={}", G.norm(), s);
+        return false;
+    }
+    return true;
 }
 
 Eigen::Vector3d solveGyroBias(
     std::vector<Eigen::Matrix3d> Rs, std::vector<Eigen::Matrix3d> dq_dbgs,
     std::vector<Eigen::Matrix3d> delta_qs, Eigen::Matrix3d ric) {
+    if (dq_dbgs.empty() || Rs.size() != dq_dbgs.size() + 1 || delta_qs.size() != dq_dbgs.size()) {
+        spdlog::error(
+            "GyroBias input failed: R={}, dq_dbg={}, delta_q={}, expected_R={}", Rs.size(),
+            dq_dbgs.size(), delta_qs.size(), dq_dbgs.size() + 1);
+        return Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
+    }
+
     Eigen::Matrix3d A;
     Eigen::Vector3d b;
     A.setZero();
@@ -244,6 +289,9 @@ Eigen::Vector3d solveGyroBias(
     Eigen::LDLT<Eigen::Matrix3d> ldlt(A);
     Eigen::Vector3d bg = ldlt.solve(b);
     if (ldlt.info() != Eigen::Success || !bg.allFinite()) {
+        spdlog::warn(
+            "GyroBias solve failed: intervals={}, LDLT status={}, finite={}", dq_dbgs.size(),
+            static_cast<int>(ldlt.info()), bg.allFinite());
         return Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
     }
     spdlog::info("Gyro bias: ({:.6f}, {:.6f}, {:.6f})", bg.x(), bg.y(), bg.z());

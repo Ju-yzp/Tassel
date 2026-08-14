@@ -170,7 +170,7 @@ void Estimator::processMeasurement(
         }
 
         if (!tryInitialize()) {
-            spdlog::info("VI initialization not ready; sliding initialization window");
+            spdlog::debug("VI initialization not ready; sliding initialization window");
             feature_manager_->removeFrameObservations(
                 kFirstActiveFrameIndex, *state_, params_.ric, params_.tic);
             slideInitializationWindow();
@@ -729,13 +729,12 @@ bool Estimator::tryInitialize() {
     const int n_frames = last_frame_index - kFirstActiveFrameIndex + 1;
 
     InitialSFM sfm(
-        params_.sfm_min_correspondences, params_.sfm_min_e_inliers, params_.sfm_e_ransac_threshold,
-        params_.sfm_min_correspondences, params_.sfm_pnp_reproj_threshold,
-        params_.sfm_max_bad_pnp_ratio, params_.sfm_ba_max_iterations, params_.sfm_ba_num_threads);
+        params_.sfm_min_points, params_.sfm_min_inliers, params_.sfm_epipolar_threshold,
+        params_.sfm_pnp_threshold, params_.sfm_ba_iterations);
     const bool sfm_succeeded =
         sfm.construct(*state_, *feature_manager_, params_.ric, Rs_, Ps_, kFirstActiveFrameIndex);
     if (!sfm_succeeded) {
-        spdlog::info("VIO initialization: SFM failed");
+        spdlog::warn("VIO initialization failed: SFM stage rejected all candidates");
         return false;
     }
     Vs_.assign(n_frames, Eigen::Vector3d::Zero());
@@ -750,7 +749,7 @@ bool Estimator::tryInitialize() {
         });
         Eigen::Vector3d bg = solveGyroBias(Rs_, dq_dbgs, delta_qs, params_.ric);
         if (!bg.allFinite()) {
-            spdlog::info("VIO initialization: gyro bias solve failed");
+            spdlog::warn("VIO initialization failed: gyro bias solve rejected the window");
             return false;
         }
         for (int i = kFirstActiveFrameIndex; i <= last_frame_index; ++i) {
@@ -779,19 +778,19 @@ bool Estimator::tryInitialize() {
     double s;
     if (!linearAlignment(
             Rs_, Ps_, Vs_, delta_vs, delta_ps, dts, g, s, params_.ric, params_.tic,
-            params_.gravity_diff_threshold, params_.g_norm)) {
-        spdlog::info("VI initialization: linear alignment failed");
+            params_.init_gravity_tolerance, params_.g_norm)) {
+        spdlog::warn("VIO initialization failed: linear alignment rejected the window");
         return false;
     }
 
     if (!refineGravitySpeeds(
             Vs_, Rs_, Ps_, delta_vs, delta_ps, dts, g, s, params_.ric, params_.tic,
             params_.g_norm)) {
-        spdlog::info("VI initialization: gravity refinement failed");
+        spdlog::warn("VIO initialization failed: gravity refinement rejected the window");
         return false;
     }
     if (!std::isfinite(s) || s < params_.init_min_scale) {
-        spdlog::info("VI initialization: degenerate or invalid scale {:.6f}", s);
+        spdlog::warn("VIO initialization failed: invalid scale {:.6f}", s);
         return false;
     }
 

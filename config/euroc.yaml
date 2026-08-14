@@ -60,15 +60,13 @@ imu_repropagate_ba_threshold: 0.05
 imu_repropagate_bg_threshold: 0.01
 
 # 视觉惯性初始化
-gravity_diff_threshold: 0.30
+init_gravity_tolerance: 0.30
 init_min_scale: 0.01
-sfm_min_correspondences: 10
-sfm_min_e_inliers: 8
-sfm_e_ransac_threshold: 0.004
-sfm_pnp_reproj_threshold: 0.05
-sfm_max_bad_pnp_ratio: 0.3
-sfm_ba_max_iterations: 10
-sfm_ba_num_threads: 2
+sfm_min_points: 10
+sfm_min_inliers: 8
+sfm_epipolar_threshold: 0.005
+sfm_pnp_threshold: 0.007
+sfm_ba_iterations: 10
 
 # 可视化
 viewer:

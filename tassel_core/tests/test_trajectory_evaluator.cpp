@@ -2,6 +2,9 @@
 
 #include <Eigen/Geometry>
 
+#include <limits>
+#include <stdexcept>
+
 #include "evaluation/trajectory_evaluator.h"
 
 namespace tassel_core::evaluation {
@@ -14,11 +17,36 @@ TEST(TrajectoryEvaluator, InterpolatesPositionAndRotationAtRequestedTimestamp) {
         Eigen::Vector3d(2.0, 4.0, 6.0));
     const std::vector<TimedPose> poses{{10.0, start}, {12.0, end}};
 
-    const auto pose = interpolatePose(poses, 10.5);
+    const auto pose = interpolatePose(poses, 10.5, 2.0);
 
     ASSERT_TRUE(pose.has_value());
     EXPECT_TRUE(pose->translation().isApprox(Eigen::Vector3d(0.5, 1.0, 1.5), 1e-12));
     EXPECT_NEAR(pose->so3().log().norm(), M_PI / 4.0, 1e-12);
+}
+
+TEST(TrajectoryEvaluator, RejectsInterpolationAcrossGroundTruthGap) {
+    const std::vector<TimedPose> poses{{10.0, Sophus::SE3d()}, {12.0, Sophus::SE3d()}};
+
+    EXPECT_FALSE(interpolatePose(poses, 11.0, 0.05).has_value());
+}
+
+TEST(TrajectoryEvaluator, AcceptsExactSampleBesideGroundTruthGap) {
+    const Sophus::SE3d expected(Eigen::Matrix3d::Identity(), Eigen::Vector3d(1.0, 2.0, 3.0));
+    const std::vector<TimedPose> poses{{10.0, Sophus::SE3d()}, {12.0, expected}};
+
+    const auto pose = interpolatePose(poses, 12.0, 0.05);
+
+    ASSERT_TRUE(pose.has_value());
+    EXPECT_TRUE(pose->matrix().isApprox(expected.matrix(), 1e-12));
+}
+
+TEST(TrajectoryEvaluator, RejectsInvalidMaximumInterpolationInterval) {
+    const std::vector<TimedPose> poses{{10.0, Sophus::SE3d()}, {12.0, Sophus::SE3d()}};
+
+    EXPECT_THROW(interpolatePose(poses, 11.0, 0.0), std::invalid_argument);
+    EXPECT_THROW(
+        interpolatePose(poses, std::numeric_limits<double>::quiet_NaN(), 0.05),
+        std::invalid_argument);
 }
 
 TEST(TrajectoryEvaluator, RemovesKnownYawAndTranslationWithoutChangingScale) {

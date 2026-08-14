@@ -25,6 +25,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -52,6 +53,9 @@
 namespace fs = std::filesystem;
 
 namespace {
+
+// 20 Hz 轨迹评估只允许在不超过一个图像周期的连续真值之间插值。
+constexpr double kMaxGroundTruthInterval = 0.05;
 
 struct ImageEntry {
     tassel_utils::FrameId frame_id = tassel_utils::kInvalidFrameId;
@@ -324,19 +328,25 @@ std::vector<TimedPose> loadGroundTruthCsv(const fs::path& csv_path) {
     return poses;
 }
 
-void reportTrajectoryError(const std::vector<PosePair>& poses) {
+void reportTrajectoryError(const std::vector<PosePair>& poses, size_t skipped_truth_samples) {
     if (poses.empty()) {
-        std::cout << "[EuRoC] no synchronized ground-truth poses for evaluation\n";
+        std::cout << "[EuRoC] no synchronized ground-truth poses for evaluation"
+                  << " skipped_truth_samples=" << skipped_truth_samples
+                  << " max_truth_interval=" << kMaxGroundTruthInterval << " s\n";
         return;
     }
 
     const auto error = tassel_core::evaluation::evaluateTrajectory(poses);
-    std::cout << "[EuRoC] trajectory evaluation (single global yaw+translation alignment): "
-              << "samples=" << poses.size() << " time_range=[" << poses.front().timestamp << ", "
-              << poses.back().timestamp << "] s"
-              << " ATE_RMSE=" << error.position_rmse << " m"
-              << " terminal_position_error=" << error.terminal_position_error << " m"
-              << " rotation_RMSE=" << error.rotation_rmse << " rad\n";
+    std::ostringstream report;
+    report << std::setprecision(12)
+           << "[EuRoC] trajectory evaluation (single global yaw+translation alignment): "
+           << "samples=" << poses.size() << " skipped_truth_samples=" << skipped_truth_samples
+           << " max_truth_interval=" << kMaxGroundTruthInterval << " s"
+           << " time_range=[" << poses.front().timestamp << ", " << poses.back().timestamp << "] s"
+           << " ATE_RMSE=" << error.position_rmse << " m"
+           << " terminal_position_error=" << error.terminal_position_error << " m"
+           << " rotation_RMSE=" << error.rotation_rmse << " rad";
+    std::cout << report.str() << "\n";
 }
 
 fs::path resolveSequenceDir(const fs::path& sequence_dir) {
@@ -486,9 +496,10 @@ int main(int argc, char** argv) {
     std::optional<Sophus::SE3d> ground_truth_alignment;
     std::vector<PosePair> evaluated_poses;
     evaluated_poses.reserve(frame_limit);
+    size_t skipped_truth_samples = 0;
     std::optional<Sophus::SE3d> latest_optimized_pose;
     estimator.setPoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment,
-                               &evaluated_poses, &params,
+                               &evaluated_poses, &skipped_truth_samples, &params,
                                &latest_optimized_pose](double ts, const Sophus::SE3d& pose) {
         latest_optimized_pose = pose;
         const FrameState& frame = state->frames[state->latest_active_frame_index];
@@ -511,8 +522,9 @@ int main(int argc, char** argv) {
         }
         // R/P/V 位于图像时间加同步延迟的 IMU 时刻；视觉因子另行补偿 time_delay-sync_delay。
         const double evaluation_ts = ts + frame.image_sync_delay;
-        if (const auto truth =
-                tassel_core::evaluation::interpolatePose(ground_truth, evaluation_ts)) {
+        const auto truth = tassel_core::evaluation::interpolatePose(
+            ground_truth, evaluation_ts, kMaxGroundTruthInterval);
+        if (truth) {
             evaluated_poses.push_back({evaluation_ts, pose, *truth});
             if (!ground_truth_alignment) {
                 // 仅用于 Foxglove 叠加显示；正式评估在所有样本收集后统一对齐。
@@ -524,6 +536,8 @@ int main(int argc, char** argv) {
                     "ground_truth/path", aligned_truth.translation(),
                     aligned_truth.unit_quaternion(), ts);
             }
+        } else {
+            ++skipped_truth_samples;
         }
         const Eigen::Vector3d& velocity = state->frames[state->latest_active_frame_index].vel_w;
         if (viewer) {
@@ -825,7 +839,7 @@ int main(int argc, char** argv) {
 
     std::cout << "\n[EuRoC] done. processed=" << processed
               << ", newest frame_index=" << state->latest_active_frame_index << "\n";
-    reportTrajectoryError(evaluated_poses);
+    reportTrajectoryError(evaluated_poses, skipped_truth_samples);
     if (state->latest_active_frame_index > 0) {
         int idx = state->latest_active_frame_index;
         std::cout << "Final pose:\n"

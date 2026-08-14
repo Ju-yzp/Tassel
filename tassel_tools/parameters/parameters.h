@@ -106,15 +106,13 @@ struct Parameters {
     Eigen::Vector3d acc_bias = Eigen::Vector3d::Zero();
 
     // 视觉惯性初始化和 SFM：用于 Estimator::tryInitialize。
-    double gravity_diff_threshold = 0.17;
+    double init_gravity_tolerance = 0.17;
     double init_min_scale = 0.01;
-    int sfm_min_correspondences = 10;
-    int sfm_min_e_inliers = 8;
-    double sfm_e_ransac_threshold = 0.004;
-    double sfm_pnp_reproj_threshold = 0.03;
-    double sfm_max_bad_pnp_ratio = 0.3;
-    int sfm_ba_max_iterations = 30;
-    int sfm_ba_num_threads = 5;
+    int sfm_min_points = 10;
+    int sfm_min_inliers = 8;
+    double sfm_epipolar_threshold = 0.004;
+    double sfm_pnp_threshold = 0.03;
+    int sfm_ba_iterations = 30;
 
     // 可视化：用于 Viewer 发布器。
     size_t viewer_path_max_poses = 300;
@@ -217,15 +215,13 @@ private:
     }
 
     void loadInitialization(ParamsParser& parser) {
-        gravity_diff_threshold = parser.as<double>("gravity_diff_threshold");
+        init_gravity_tolerance = parser.as<double>("init_gravity_tolerance");
         init_min_scale = parser.as<double>("init_min_scale");
-        sfm_min_correspondences = parser.as<int>("sfm_min_correspondences");
-        sfm_min_e_inliers = parser.as<int>("sfm_min_e_inliers");
-        sfm_e_ransac_threshold = parser.as<double>("sfm_e_ransac_threshold");
-        sfm_pnp_reproj_threshold = parser.as<double>("sfm_pnp_reproj_threshold");
-        sfm_max_bad_pnp_ratio = parser.as<double>("sfm_max_bad_pnp_ratio");
-        sfm_ba_max_iterations = parser.as<int>("sfm_ba_max_iterations");
-        sfm_ba_num_threads = parser.as<int>("sfm_ba_num_threads");
+        sfm_min_points = parser.as<int>("sfm_min_points");
+        sfm_min_inliers = parser.as<int>("sfm_min_inliers");
+        sfm_epipolar_threshold = parser.as<double>("sfm_epipolar_threshold");
+        sfm_pnp_threshold = parser.as<double>("sfm_pnp_threshold");
+        sfm_ba_iterations = parser.as<int>("sfm_ba_iterations");
     }
 
     void loadViewer(ParamsParser& parser) {

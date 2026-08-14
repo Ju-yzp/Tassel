@@ -8,7 +8,14 @@
 
 namespace tassel_core::evaluation {
 
-std::optional<Sophus::SE3d> interpolatePose(const std::vector<TimedPose>& poses, double timestamp) {
+std::optional<Sophus::SE3d> interpolatePose(
+    const std::vector<TimedPose>& poses, double timestamp, double max_interval) {
+    if (!std::isfinite(timestamp)) {
+        throw std::invalid_argument("Interpolation timestamp must be finite");
+    }
+    if (!std::isfinite(max_interval) || max_interval <= 0.0) {
+        throw std::invalid_argument("Maximum interpolation interval must be finite and positive");
+    }
     if (poses.empty() || timestamp < poses.front().timestamp ||
         timestamp > poses.back().timestamp) {
         return std::nullopt;
@@ -17,6 +24,9 @@ std::optional<Sophus::SE3d> interpolatePose(const std::vector<TimedPose>& poses,
     const auto upper = std::lower_bound(
         poses.begin(), poses.end(), timestamp,
         [](const TimedPose& pose, double value) { return pose.timestamp < value; });
+    if (upper != poses.end() && upper->timestamp == timestamp) {
+        return upper->pose;
+    }
     if (upper == poses.begin()) {
         return upper->pose;
     }
@@ -28,6 +38,10 @@ std::optional<Sophus::SE3d> interpolatePose(const std::vector<TimedPose>& poses,
     const double duration = upper->timestamp - lower->timestamp;
     if (duration <= 0.0) {
         throw std::logic_error("Ground-truth timestamps must be strictly increasing");
+    }
+    // 只允许在连续真值样本之间插值，避免跨越跟踪范围外的大段空缺。
+    if (duration > max_interval) {
+        return std::nullopt;
     }
     const double alpha = (timestamp - lower->timestamp) / duration;
     const Eigen::Vector3d position =
