@@ -14,7 +14,6 @@ add_library(tassel_tools SHARED ${TASSEL_TOOLS_SRCS})
 target_link_libraries(
   tassel_tools
   PUBLIC tassel_core
-         tassel_deps
          rclcpp::rclcpp
          sensor_msgs::sensor_msgs__rosidl_generator_cpp
          sensor_msgs::sensor_msgs__rosidl_typesupport_cpp
@@ -36,12 +35,6 @@ target_include_directories(
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
          $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
          $<INSTALL_INTERFACE:include>)
-
-include(TasselTest)
-
-find_package(GTest REQUIRED)
-
-include(GoogleTest)
 
 message(STATUS "tassel_tools tests:")
 tassel_add_tests(

@@ -1,5 +1,8 @@
 include_guard(GLOBAL)
 
+find_package(GTest REQUIRED)
+include(GoogleTest)
+
 # TasselTest — 从 tests/ 目录自动发现测试目标。
 #
 # 用法: tassel_add_tests( TEST_DIR <dir> LINK_LIBS <libraries...> INCLUDE_DIRS

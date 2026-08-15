@@ -21,6 +21,7 @@
 #include <opencv2/core.hpp>
 #include <string>
 
+#include "parameters/parameters.h"
 #include "parameters/params_parser.h"
 
 namespace fs = std::filesystem;
@@ -144,4 +145,18 @@ TEST_F(ParamsParserTest, ThrowsOnWrongType) {
 
 TEST_F(ParamsParserTest, ThrowsOnMissingNestedKey) {
     EXPECT_THROW(parser_->as<int>("cam0", "nonexistent"), std::runtime_error);
+}
+
+TEST(TrustRegionStrategyTest, ParsesSupportedStrategies) {
+    EXPECT_EQ(
+        tassel_tools::parseTrustRegionStrategy(" levenberg_marquardt "),
+        tassel_tools::TrustRegionStrategy::LevenbergMarquardt);
+    EXPECT_EQ(
+        tassel_tools::parseTrustRegionStrategy("DOGLEG"),
+        tassel_tools::TrustRegionStrategy::Dogleg);
+}
+
+TEST(TrustRegionStrategyTest, RejectsUnsupportedStrategy) {
+    EXPECT_THROW(tassel_tools::parseTrustRegionStrategy(""), std::runtime_error);
+    EXPECT_THROW(tassel_tools::parseTrustRegionStrategy("gauss_newton"), std::runtime_error);
 }

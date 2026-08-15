@@ -13,6 +13,7 @@ include(TasselDependencies)
 
 tassel_setup_project_options()
 tassel_configure_dependencies()
+include(TasselTest)
 
 option(TASSEL_WITH_RTABMAP "Build the RTAB-Map backend" ON)
 option(TASSEL_WITH_RTABMAP_VIEWER "Build the RTAB-Map DatabaseViewer" OFF)
@@ -30,11 +31,6 @@ if(TASSEL_WITH_RTABMAP)
     set(RTABMAP_EMBEDDED_MINIMAL_OPENCV
         OFF
         CACHE BOOL "Use full OpenCV for RTAB-Map GUI" FORCE)
-    # The viewer is an in-tree executable; do not export RTAB-Map targets that
-    # depend on Tassel's private specialized Ceres target.
-    set(RTABMAP_EMBEDDED_NO_EXPORT
-        ON
-        CACHE BOOL "Disable RTAB-Map package exports" FORCE)
   else()
     set(BUILD_TOOLS
         OFF
@@ -45,10 +41,11 @@ if(TASSEL_WITH_RTABMAP)
     set(RTABMAP_EMBEDDED_MINIMAL_OPENCV
         ON
         CACHE BOOL "Use Tassel OpenCV subset" FORCE)
-    set(RTABMAP_EMBEDDED_NO_EXPORT
-        ON
-        CACHE BOOL "Disable embedded RTAB-Map exports" FORCE)
   endif()
+  # Embedded RTAB-Map targets depend on Tassel's private specialized Ceres.
+  set(RTABMAP_EMBEDDED_NO_EXPORT
+      ON
+      CACHE BOOL "Disable embedded RTAB-Map exports" FORCE)
   set(BUILD_EXAMPLES
       OFF
       CACHE BOOL "Disable RTAB-Map examples" FORCE)

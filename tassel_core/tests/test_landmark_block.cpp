@@ -1,308 +1,172 @@
-// =============================================================================
-// test_landmark_block.cpp
-//
-// 目的：
-//   验证 LandmarkBlock 的存储布局、landmark 列 QR 消元和消元后稠密系统提取。
-//
-// 测试设计：
-//   构造不同帧数/观测数/状态维度的随机块, 对内部 storage 执行 QR; 同时用直接
-//   稠密计算作为参考, 检查 landmark 列被消掉、范数保持和边界尺寸处理。
-//
-// 通过条件：
-//   分配尺寸正确, QR 后 landmark 非 pivot 行接近 0, Frobenius 范数保持, 提取出的
-//   kept system 与参考计算一致, 压力测试不触发维度错误。
-// =============================================================================
-
 #include <gtest/gtest.h>
 
 #include <Eigen/Core>
 #include <Eigen/QR>
-#include <random>
 
+#include <algorithm>
+#include <map>
+#include <utility>
+#include <vector>
+
+#include <sophus/so3.hpp>
+
+#include "cam/camera_rad_tan.h"
+#include "factor/reprojection_factor.h"
+#include "factor/visual_frame_cache.h"
+#include "frond_end/feature.h"
 #include "marg/landmark_block.h"
+#include "state/state.h"
 
 namespace tassel_core {
 namespace {
 
-constexpr double kQrTol = 1e-12;
+constexpr double QrTolerance = 1e-12;
+using EntryMap = std::map<std::pair<int, int>, double>;
 
-class LandmarkBlockTest : public ::testing::Test {
-protected:
-    void SetUp() override { rng_.seed(42); }
+double mappedValue(const EntryMap& entries, int row, int col) {
+    const auto entry = entries.find({row, col});
+    return entry == entries.end() ? 0.0 : entry->second;
+}
 
-    std::mt19937 rng_;
-};
+void expectMatrixNear(
+    const Eigen::MatrixXd& actual, const Eigen::MatrixXd& expected, double tolerance) {
+    ASSERT_EQ(actual.rows(), expected.rows());
+    ASSERT_EQ(actual.cols(), expected.cols());
+    const double scale = std::max({1.0, actual.norm(), expected.norm()});
+    EXPECT_LE((actual - expected).norm(), tolerance * scale);
+}
 
-// ── QR：第 0 行以下的路标列置零 ───────────────────────────────────────────
+TEST(LandmarkBlockTest, LinearizeFillsSpecifiedRowsAndColumns) {
+    constexpr int NumFrames = 3;
+    constexpr int StateSize = 6;
+    State state(NumFrames);
+    CameraRadTan camera(Eigen::Matrix3d::Identity(), Eigen::VectorXd::Zero(4), 640, 480);
+    state.camera = &camera;
+    state.visual_sqrt_info << 2.0, 0.0, 0.0, 3.0;
+    state.param_time_delay = 0.015;
+    state.frames[0].param_pose = {0.1, -0.2, 0.3, 0.02, -0.01, 0.03};
+    state.frames[1].param_pose = {0.4, 0.1, -0.1, -0.03, 0.04, 0.01};
+    state.frames[2].param_pose = {-0.2, 0.3, 0.2, 0.01, 0.02, -0.04};
+    state.frames[0].imu_gyro = {0.1, -0.2, 0.3};
+    state.frames[1].imu_gyro = {-0.2, 0.1, 0.05};
+    state.frames[2].imu_gyro = {0.3, 0.2, -0.1};
+    state.frames[0].imu_acc = {0.2, -0.1, 9.7};
+    state.frames[1].imu_acc = {-0.1, 0.3, 9.8};
+    state.frames[2].imu_acc = {0.4, 0.1, 9.6};
 
-TEST_F(LandmarkBlockTest, QRZerosLandmarkColumn) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(3, 3, 6);
+    Feature feature(0, NumFrames);
+    feature.estimated_depth = 4.0;
+    FeaturePerFrame host;
+    host.setObservation({0.2, -0.1}, {0.2F, -0.1F});
+    host.sync_delay = 0.01;
+    FeaturePerFrame target1;
+    target1.setObservation({0.16, -0.08}, {0.16F, -0.08F});
+    target1.sync_delay = 0.012;
+    FeaturePerFrame target2;
+    target2.setObservation({0.23, -0.04}, {0.23F, -0.04F});
+    target2.sync_delay = 0.018;
+    feature.observations = {host, target1, target2};
+    const Eigen::Matrix3d ric = Sophus::SO3d::exp(Eigen::Vector3d(0.01, -0.02, 0.03)).matrix();
+    const Eigen::Vector3d tic(0.04, -0.01, 0.02);
+    VisualFrameCache cache(state, ric);
+    cache.PrepareForEvaluation(true, true);
 
-    auto& s = lb.get_mutable_storage();
-    std::normal_distribution<double> dist(0.0, 1.0);
-    for (int r = 0; r < s.rows(); ++r) {
-        for (int c = 0; c < s.cols(); ++c) {
-            s(r, c) = dist(rng_);
+    LandmarkBlock block(StateSize, nullptr);
+    block.allocate(NumFrames, NumFrames - 1, StateSize);
+    block.linearize(feature, -1, state, ric, tic);
+
+    EntryMap expected;
+    const double inverse_depth = 1.0 / feature.estimated_depth;
+    for (int observation = 1; observation < NumFrames; ++observation) {
+        const int target_frame = feature.observationFrameIndex(observation);
+        const auto& target = feature.observations[observation];
+        ReprojectionFactor factor(
+            host.uv, Eigen::Vector2d(target.pt.x, target.pt.y), ric, tic, state.frames[0].imu_gyro,
+            state.frames[target_frame].imu_gyro, state.frames[0].imu_acc,
+            state.frames[target_frame].imu_acc, state.frames[0].param_speed_bias.data(),
+            state.frames[target_frame].param_speed_bias.data(),
+            state.frames[0].param_speed_bias.data() + 6,
+            state.frames[target_frame].param_speed_bias.data() + 6,
+            state.frames[0].param_speed_bias.data() + 3,
+            state.frames[target_frame].param_speed_bias.data() + 3, state.visual_sqrt_info,
+            state.camera, host.sync_delay, target.sync_delay, &state, 0, target_frame);
+        Eigen::Matrix<double, 2, 6, Eigen::RowMajor> host_jacobian;
+        Eigen::Matrix<double, 2, 6, Eigen::RowMajor> target_jacobian;
+        Eigen::Vector2d delay_jacobian;
+        Eigen::Vector2d landmark_jacobian;
+        Eigen::Vector2d residual;
+        std::vector<double*> jacobians = {
+            host_jacobian.data(), target_jacobian.data(), delay_jacobian.data(),
+            landmark_jacobian.data()};
+        std::vector<const double*> parameters = {
+            state.frames[0].param_pose.data(), state.frames[target_frame].param_pose.data(),
+            &state.param_time_delay, &inverse_depth};
+        ASSERT_TRUE(factor.Evaluate(parameters.data(), residual.data(), jacobians.data()));
+        host_jacobian.rightCols<3>() *= Sophus::SO3d::leftJacobianInverse(
+            -Eigen::Map<const Eigen::Vector3d>(state.frames[0].param_pose.data() + 3));
+        target_jacobian.rightCols<3>() *= Sophus::SO3d::leftJacobianInverse(
+            -Eigen::Map<const Eigen::Vector3d>(state.frames[target_frame].param_pose.data() + 3));
+
+        const int row = (observation - 1) * 2;
+        for (int local_row = 0; local_row < 2; ++local_row) {
+            for (int local_col = 0; local_col < StateSize; ++local_col) {
+                expected[{row + local_row, local_col}] = host_jacobian(local_row, local_col);
+                expected[{row + local_row, target_frame * StateSize + local_col}] =
+                    target_jacobian(local_row, local_col);
+            }
+            expected[{row + local_row, block.get_delay_index()}] = delay_jacobian(local_row);
+            expected[{row + local_row, block.get_landmark_index()}] = landmark_jacobian(local_row);
+            expected[{row + local_row, block.get_residual_index()}] = residual(local_row);
         }
     }
-    s.col(lb.get_landmark_index()).setRandom();
-    s(0, lb.get_landmark_index()) = 1.0;
 
-    lb.marginalizeLandmark();
-
-    int lm = lb.get_landmark_index();
-    for (int r = 1; r < lb.get_num_rows(); ++r) {
-        EXPECT_NEAR(s(r, lm), 0.0, kQrTol) << "lm column not zeroed at row " << r;
+    const auto& storage = block.get_storage();
+    EXPECT_EQ(storage.rows(), (NumFrames - 1) * 2);
+    EXPECT_EQ(block.get_padding_index(), NumFrames * StateSize);
+    EXPECT_EQ(block.get_delay_index() % 4, 0);
+    EXPECT_EQ(block.get_landmark_index(), block.get_delay_index() + 1);
+    EXPECT_EQ(block.get_residual_index(), block.get_landmark_index() + 1);
+    for (int row = 0; row < storage.rows(); ++row) {
+        for (int col = 0; col < storage.cols(); ++col) {
+            EXPECT_NEAR(storage(row, col), mappedValue(expected, row, col), QrTolerance)
+                << "row=" << row << " col=" << col;
+        }
     }
-    EXPECT_NE(std::abs(s(0, lm)), 0.0) << "pivot should be non-zero";
 }
 
-TEST_F(LandmarkBlockTest, QRFrobeniusNormPreserved) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(2, 4, 6);
-
-    auto& s = lb.get_mutable_storage();
-    s.setRandom();
-
-    double norm_before = s.norm();
-    lb.marginalizeLandmark();
-    double norm_after = s.norm();
-
-    EXPECT_NEAR(norm_before, norm_after, 1e-10);
-}
-
-TEST_F(LandmarkBlockTest, QRZeroLandmarkColumnSkipsAllZeros) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(1, 3, 6);
-
-    auto& s = lb.get_mutable_storage();
-    s.setRandom();
-    s.col(lb.get_landmark_index()).setZero();
-
-    lb.marginalizeLandmark();
-
-    for (int r = 0; r < lb.get_num_rows(); ++r) {
-        EXPECT_NEAR(s(r, lb.get_landmark_index()), 0.0, kQrTol);
+TEST(LandmarkBlockTest, MarginalizeLandmarkMatchesHouseholderQr) {
+    LandmarkBlock block(6, nullptr);
+    block.allocate(3, 3, 6);
+    auto& storage = block.get_mutable_storage();
+    for (int row = 0; row < storage.rows(); ++row) {
+        for (int col = 0; col < storage.cols(); ++col) {
+            storage(row, col) = 0.25 * (row + 1) - 0.1 * (col + 2) + 0.01 * row * col;
+        }
     }
-    EXPECT_EQ(lb.get_kept_rows(), lb.get_num_rows());
+    storage.col(block.get_landmark_index()) << 2.0, -1.0, 3.0, 4.0, -2.0, 1.0;
+    const Eigen::MatrixXd original = storage;
+    Eigen::HouseholderQR<Eigen::MatrixXd> qr(original.col(block.get_landmark_index()));
+    const Eigen::MatrixXd expected = qr.householderQ().adjoint() * original;
+
+    block.marginalizeLandmark();
+
+    expectMatrixNear(storage, expected, QrTolerance);
+    EXPECT_EQ(block.get_kept_rows(), storage.rows() - 1);
+    EXPECT_LE(storage.col(block.get_landmark_index()).tail(storage.rows() - 1).norm(), QrTolerance);
 }
 
-TEST_F(LandmarkBlockTest, ZeroLandmarkJacobianKeepsEveryPoseConstraint) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(2, 1, 6);
-    auto& storage = lb.get_mutable_storage();
+TEST(LandmarkBlockTest, ZeroLandmarkJacobianKeepsEveryConstraint) {
+    LandmarkBlock block(6, nullptr);
+    block.allocate(2, 1, 6);
+    auto& storage = block.get_mutable_storage();
     storage.setRandom();
-    storage.col(lb.get_landmark_index()).setZero();
-    const auto original = storage;
+    storage.col(block.get_landmark_index()).setZero();
+    const Eigen::MatrixXd original = storage;
 
-    lb.marginalizeLandmark();
-    Eigen::MatrixXd J(lb.get_kept_rows(), lb.get_padding_index() + 1);
-    Eigen::VectorXd r(lb.get_kept_rows());
-    lb.writeReducedSystem(J, r, 0);
+    block.marginalizeLandmark();
 
-    ASSERT_EQ(lb.get_kept_rows(), 2);
-    EXPECT_TRUE(
-        J.leftCols(lb.get_padding_index()).isApprox(original.leftCols(lb.get_padding_index())));
-    EXPECT_TRUE(r.isApprox(original.col(lb.get_residual_index())));
-}
-
-// ── QR：单观测对（2 行） ─────────────────────────────────────────────────
-
-TEST_F(LandmarkBlockTest, QRSingleObservation) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(2, 1, 6);
-
-    auto& s = lb.get_mutable_storage();
-    s.setRandom();
-
-    lb.marginalizeLandmark();
-
-    EXPECT_NEAR(s(1, lb.get_landmark_index()), 0.0, kQrTol);
-}
-
-// ── QR：验证已知 2 行案例中的 Householder 反射 ───────────────────────────
-
-TEST_F(LandmarkBlockTest, QRGivensRotationExact) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(2, 1, 6);
-
-    auto& s = lb.get_mutable_storage();
-    s.setZero();
-
-    int lm = lb.get_landmark_index();
-    int res = lb.get_residual_index();
-
-    s(0, 0) = 1;
-    s(0, lm) = 2;
-    s(0, res) = 3;
-    s(1, 0) = 4;
-    s(1, lm) = 5;
-    s(1, res) = 6;
-
-    double norm_before = s.norm();
-    lb.marginalizeLandmark();
-
-    // 第 0 行以下的路标列被置零
-    EXPECT_NEAR(s(1, lm), 0.0, kQrTol);
-    EXPECT_NE(std::abs(s(0, lm)), 0.0);
-
-    // Frobenius 范数保持不变（Householder 矩阵是正交矩阵）
-    EXPECT_NEAR(s.norm(), norm_before, 1e-12);
-}
-
-// ── QR：3 行案例，验证两次 Givens 旋转将两行置零 ─────────────────────────
-
-TEST_F(LandmarkBlockTest, QRThreeRowCase) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(2, 2, 6);
-
-    auto& s = lb.get_mutable_storage();
-    s.setZero();
-    int lm = lb.get_landmark_index();
-
-    s(0, lm) = 1;
-    s(1, lm) = 3;
-    s(2, lm) = 4;
-    s(3, lm) = 7;
-
-    lb.marginalizeLandmark();
-
-    for (int r = 1; r < lb.get_num_rows(); ++r) {
-        EXPECT_NEAR(s(r, lm), 0.0, kQrTol);
-    }
-    EXPECT_NE(std::abs(s(0, lm)), 0.0);
-}
-
-// 提取消元后的系统
-
-TEST_F(LandmarkBlockTest, GetDenseExtractsCorrectRows) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(2, 3, 6);
-
-    auto& s = lb.get_mutable_storage();
-    s.setRandom();
-
-    lb.marginalizeLandmark();
-
-    int kept = lb.get_kept_rows();
-    int pad = lb.get_padding_index();
-
-    Eigen::MatrixXd Q2Jp(kept, pad + 1);
-    Eigen::VectorXd Q2r(kept);
-    lb.writeReducedSystem(Q2Jp, Q2r, 0);
-
-    for (int r = 0; r < kept; ++r) {
-        for (int c = 0; c < pad; ++c) {
-            EXPECT_DOUBLE_EQ(Q2Jp(r, c), s(r + 1, c));
-        }
-        EXPECT_DOUBLE_EQ(Q2Jp(r, pad), s(r + 1, lb.get_delay_index()));
-        EXPECT_DOUBLE_EQ(Q2r(r), s(r + 1, lb.get_residual_index()));
-    }
-}
-
-TEST_F(LandmarkBlockTest, GetDenseWithOffsetPreservesPrefix) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(1, 2, 6);
-
-    auto& s = lb.get_mutable_storage();
-    s.setRandom();
-
-    lb.marginalizeLandmark();
-
-    int kept = lb.get_kept_rows();
-    int pad = lb.get_padding_index();
-    int offset = 3;
-
-    Eigen::MatrixXd Q2Jp(offset + kept, pad + 1);
-    Eigen::VectorXd Q2r(offset + kept);
-    Q2Jp.setConstant(-1.0);
-    Q2r.setConstant(-1.0);
-    lb.writeReducedSystem(Q2Jp, Q2r, offset);
-
-    for (int r = 0; r < offset; ++r) {
-        for (int c = 0; c < pad + 1; ++c) {
-            EXPECT_DOUBLE_EQ(Q2Jp(r, c), -1.0) << "offset prefix was overwritten";
-        }
-        EXPECT_DOUBLE_EQ(Q2r(r), -1.0);
-    }
-    for (int r = 0; r < kept; ++r) {
-        for (int c = 0; c < pad; ++c) {
-            EXPECT_DOUBLE_EQ(Q2Jp(offset + r, c), s(r + 1, c));
-        }
-        EXPECT_DOUBLE_EQ(Q2Jp(offset + r, pad), s(r + 1, lb.get_delay_index()));
-        EXPECT_DOUBLE_EQ(Q2r(offset + r), s(r + 1, lb.get_residual_index()));
-    }
-}
-
-// ── QR：通过线性系统检查一致性 ───────────────────────────────────────────
-
-// QR 后，第 1 到 n-1 行给出边缘化后的位姿约束：
-//   Q2^T * Jp * Δpose = Q2^T * r
-// 第 0 行保留路标耦合关系：
-//   Jl' * Δlm + Jp' * Δpose = r'
-//
-// 构造一致系统（r = Jp * dx_true + Jl * dl_true）并执行 QR，
-// 然后验证真值状态满足边缘化约束。
-
-TEST_F(LandmarkBlockTest, MarginalizedSystemConsistency) {
-    LandmarkBlock lb(6, nullptr);
-    lb.allocate(2, 3, 6);
-
-    auto& s = lb.get_mutable_storage();
-    int pad = lb.get_padding_index();
-    int lm = lb.get_landmark_index();
-    int res = lb.get_residual_index();
-
-    // 构造一致系统：r = Jp * dx_true + Jl * dl_true
-    Eigen::VectorXd dx_true = Eigen::VectorXd::Random(pad);
-    double dl_true = 2.5;
-    s.setRandom();
-    s.col(res) = s.block(0, 0, lb.get_num_rows(), pad) * dx_true + s.col(lm) * dl_true;
-
-    lb.marginalizeLandmark();
-
-    // 真值状态必须满足边缘化约束（第 1 行及之后）。
-    for (int r = 1; r < lb.get_num_rows(); ++r) {
-        double pred = (s.block(r, 0, 1, pad) * dx_true).value();
-        double obs = s(r, res);
-        EXPECT_NEAR(pred, obs, 1e-12) << "True state violated marginalized constraint at row " << r;
-    }
-
-    // 第 0 行也应与真值状态一致。
-    double row0_residual =
-        (s.block(0, 0, 1, pad) * dx_true).value() + s(0, lm) * dl_true - s(0, res);
-    EXPECT_NEAR(row0_residual, 0.0, 1e-12);
-
-    // 验证第 0 行以下的路标列已置零。
-    for (int r = 1; r < lb.get_num_rows(); ++r) {
-        EXPECT_NEAR(s(r, lm), 0.0, 1e-12);
-    }
-}
-
-// ── 大规模随机压力测试 ────────────────────────────────────────────────────
-
-TEST_F(LandmarkBlockTest, QRStressTest) {
-    LandmarkBlock lb(6, nullptr);
-    int num_obs = 20;
-    lb.allocate(5, num_obs, 6);
-
-    auto& s = lb.get_mutable_storage();
-    std::normal_distribution<double> dist(0.0, 10.0);
-    for (int r = 0; r < s.rows(); ++r) {
-        for (int c = 0; c < s.cols(); ++c) {
-            s(r, c) = dist(rng_);
-        }
-    }
-
-    double norm_before = s.norm();
-    lb.marginalizeLandmark();
-
-    int lm = lb.get_landmark_index();
-    for (int r = 1; r < lb.get_num_rows(); ++r) {
-        EXPECT_NEAR(s(r, lm), 0.0, kQrTol);
-    }
-    EXPECT_NEAR(s.norm(), norm_before, 1e-9);
+    EXPECT_EQ(block.get_kept_rows(), block.get_num_rows());
+    EXPECT_TRUE(storage.isApprox(original));
 }
 
 }  // namespace

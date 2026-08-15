@@ -115,7 +115,6 @@ function(tassel_configure_dependencies)
     endif()
   endif()
   find_package(GTSAM REQUIRED)
-  find_package(fastcdr REQUIRED)
 
   if(NOT TARGET tassel_deps)
     add_library(tassel_deps INTERFACE)
