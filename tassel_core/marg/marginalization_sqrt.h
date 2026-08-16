@@ -8,6 +8,7 @@
 #include <memory>
 #include <sophus/so3.hpp>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -69,6 +70,18 @@ public:
 
     void linearize() {
         num_cols_ = state_->max_frame_count * 15 + 1;
+        if (!retiring_features_.empty()) {
+            // 边缘化必须在同一组冻结坐标中建立；current delay 不能冒充冻结点。
+            state_->getLinearizedTimeDelay();
+            for (const auto& [feature_id, feature] : retiring_features_) {
+                if (!feature.has_linearized_depth || !std::isfinite(feature.linearized_depth) ||
+                    feature.linearized_depth <= 0.0) {
+                    throw std::logic_error(
+                        "Marginalized feature " + std::to_string(feature_id) +
+                        " has no valid linearized depth");
+                }
+            }
+        }
         prepareVisualCache();
         for (size_t idx = 0; idx < retiring_features_.size(); ++idx) {
             auto& landmark_block = landmark_blocks_[idx];
@@ -80,13 +93,19 @@ public:
             auto& imu_block = imu_blocks_[i];
             const int state_i = first_imu_factor_index_ + static_cast<int>(i);
             const int state_j = state_i + 1;
-            const Eigen::Vector3d Q_i = Sophus::SO3d(state_->frames[state_i].rot_w_i).log();
-            const Eigen::Vector3d Q_j = Sophus::SO3d(state_->frames[state_j].rot_w_i).log();
+            const Frame& frame_i = state_->frames[state_i];
+            const Frame& frame_j = state_->frames[state_j];
+            if (!frame_i.has_linearized || !frame_j.has_linearized) {
+                throw std::logic_error("IMU frozen frame linearization point is unavailable");
+            }
+            const std::array<double, 6> current_pose_i = frame_i.param_pose;
+            const std::array<double, 9> current_speed_bias_i = frame_i.param_speed_bias;
+            const std::array<double, 6> current_pose_j = frame_j.param_pose;
+            const std::array<double, 9> current_speed_bias_j = frame_j.param_speed_bias;
             imu_block.linearize(
-                state_->frames[state_i].vel_w, state_->frames[state_j].vel_w,
-                state_->frames[state_i].pos_w_i, state_->frames[state_j].pos_w_i, Q_i, Q_j,
-                state_->frames[state_i].accel_bias, state_->frames[state_j].accel_bias,
-                state_->frames[state_i].gyro_bias, state_->frames[state_j].gyro_bias);
+                current_pose_i, current_speed_bias_i, current_pose_j, current_speed_bias_j,
+                frame_i.linearized_pose, frame_i.linearized_speed_bias, frame_j.linearized_pose,
+                frame_j.linearized_speed_bias);
         }
     }
 
@@ -127,9 +146,34 @@ public:
         }
 
         if (prior_) {
-            // 旧先验使用当前残差和边缘化时冻结的雅各比。
             prior_->validate();
+            if (!state_->has_linearized_delay ||
+                std::abs(prior_->linearization_delay_time - state_->linearized_time_delay) >
+                    1e-12) {
+                throw std::logic_error("Prior and state use different delay linearization points");
+            }
             for (int frame_index = 0; frame_index < prior_->stateCount(); ++frame_index) {
+                const Frame& frame = state_->frames[frame_index];
+                if (!frame.has_linearized) {
+                    throw std::logic_error(
+                        "Prior frame has no matching state linearization point at index " +
+                        std::to_string(frame_index));
+                }
+                const Eigen::Map<const Eigen::Matrix<double, 6, 1>> prior_pose(
+                    prior_->linearization_poses[static_cast<size_t>(frame_index)].data());
+                const Eigen::Map<const Eigen::Matrix<double, 6, 1>> state_pose(
+                    frame.linearized_pose.data());
+                const Eigen::Map<const Eigen::Matrix<double, 9, 1>> prior_speed_bias(
+                    prior_->linearization_speed_bias[static_cast<size_t>(frame_index)].data());
+                const Eigen::Map<const Eigen::Matrix<double, 9, 1>> state_speed_bias(
+                    frame.linearized_speed_bias.data());
+                if (!prior_pose.isApprox(state_pose, 1e-12) ||
+                    !prior_speed_bias.isApprox(state_speed_bias, 1e-12)) {
+                    // 同一列只能表达一个 FEJ 身份；错位后速度、偏置增量会被解释到错误状态。
+                    throw std::logic_error(
+                        "Prior and state use different frame linearization points at index " +
+                        std::to_string(frame_index));
+                }
                 const int compact_pose = prior_->poseColumn(frame_index);
                 const int window_pose = frame_index * MargLinData::StateSize;
                 jacobian.block(rows, window_pose, prior_rows, MargLinData::PoseSize) =
@@ -144,6 +188,8 @@ public:
             }
             jacobian.col(state_->max_frame_count * MargLinData::StateSize)
                 .segment(rows, prior_rows) = prior_->H.col(prior_->delayColumn());
+            // QR 的列变量是相对 FEJ 点的全局增量，因此这里写入仿射截距 b；
+            // 在 delta_current 处，H * delta_current + b 才是旧先验的当前残差。
             residual.segment(rows, prior_rows) = prior_->b;
         }
     }

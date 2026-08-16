@@ -13,6 +13,7 @@
 #include "factor/imu_factor.h"
 #include "factor/integrator_base.h"
 #include "imu_test_utils.h"
+#include "marg/imu_block.h"
 #include "tassel_utils/se3_right_manifold.h"
 
 namespace tassel_core {
@@ -104,6 +105,50 @@ TEST_F(ImuFactorTest, AnalyticJacobiansMatchNumericDifferentiation) {
             << " max_absolute_error=" << maximum_absolute_error << '\n'
             << results.error_log;
     }
+}
+
+TEST_F(ImuFactorTest, LinearizationReconstructsCurrentResidual) {
+    IMUBlock<MidPointIntegrator> block;
+    block.allocate(preintegrators_[0].get());
+    const auto linearized_pose_i = poses_[0];
+    const auto linearized_speed_bias_i = speed_biases_[0];
+    const auto linearized_pose_j = poses_[1];
+    const auto linearized_speed_bias_j = speed_biases_[1];
+    auto current_pose_i = linearized_pose_i;
+    auto current_speed_bias_i = linearized_speed_bias_i;
+    auto current_pose_j = linearized_pose_j;
+    auto current_speed_bias_j = linearized_speed_bias_j;
+    current_pose_i[0] += 0.01;
+    current_pose_j[3] += 0.002;
+    current_speed_bias_i[3] += 0.004;
+    current_speed_bias_j[6] -= 0.003;
+
+    block.linearize(
+        current_pose_i, current_speed_bias_i, current_pose_j, current_speed_bias_j,
+        linearized_pose_i, linearized_speed_bias_i, linearized_pose_j, linearized_speed_bias_j);
+
+    IMUFactor<MidPointIntegrator> factor(preintegrators_[0]);
+    const double* parameters[] = {
+        current_pose_i.data(), current_speed_bias_i.data(), current_pose_j.data(),
+        current_speed_bias_j.data()};
+    Eigen::Matrix<double, 15, 1> current_residual;
+    ASSERT_TRUE(factor.Evaluate(parameters, current_residual.data(), nullptr));
+
+    Eigen::Matrix<double, 30, 1> delta = Eigen::Matrix<double, 30, 1>::Zero();
+    delta.segment<6>(0) = rightTangentDelta(
+        Eigen::Map<const Eigen::Matrix<double, 6, 1>>(linearized_pose_i.data()),
+        Eigen::Map<const Eigen::Matrix<double, 6, 1>>(current_pose_i.data()));
+    delta.segment<9>(6) =
+        Eigen::Map<const Eigen::Matrix<double, 9, 1>>(current_speed_bias_i.data()) -
+        Eigen::Map<const Eigen::Matrix<double, 9, 1>>(linearized_speed_bias_i.data());
+    delta.segment<6>(15) = rightTangentDelta(
+        Eigen::Map<const Eigen::Matrix<double, 6, 1>>(linearized_pose_j.data()),
+        Eigen::Map<const Eigen::Matrix<double, 6, 1>>(current_pose_j.data()));
+    delta.segment<9>(21) =
+        Eigen::Map<const Eigen::Matrix<double, 9, 1>>(current_speed_bias_j.data()) -
+        Eigen::Map<const Eigen::Matrix<double, 9, 1>>(linearized_speed_bias_j.data());
+    const Eigen::VectorXd reconstructed = block.residual() + block.jacobian() * delta;
+    EXPECT_NEAR((reconstructed - current_residual).norm(), 0.0, 1e-10);
 }
 
 }  // namespace

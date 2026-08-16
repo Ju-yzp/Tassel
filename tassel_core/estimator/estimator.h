@@ -24,7 +24,6 @@
 namespace tassel_core {
 
 class CameraBase;
-class WindowOptimizer;
 
 // 整帧优化和窗口搬迁完成后复制发布；跨线程使用时不得再引用 FeatureManager 内部对象。
 struct TrackingPredictionSnapshot {
@@ -109,9 +108,9 @@ private:
 
     void migrateMarginalizedData(RetainedHostAction action);
 
-    void normalizeGaugeAfterOptimization(int reference_frame_index);
-
-    bool isStationaryWindow() const;
+    void normalizeCurrentGauge(
+        int reference_frame_index, const Eigen::Matrix3d& reference_rotation,
+        const Eigen::Vector3d& reference_position);
 
     bool tryInitialize();
 
@@ -131,7 +130,6 @@ private:
     std::shared_ptr<State> state_;
     std::shared_ptr<FeatureManager> feature_manager_;
     const CameraBase* camera_ = nullptr;
-    std::unique_ptr<WindowOptimizer> window_optimizer_;
 
     Eigen::Matrix<double, 18, 18> noise_;
 

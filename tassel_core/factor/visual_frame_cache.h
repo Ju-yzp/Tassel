@@ -58,7 +58,8 @@ public:
 
 private:
     void updateFrames() {
-        if (!std::isfinite(state_->param_time_delay)) {
+        const double time_delay = *state_->getCurrentTimeDelay();
+        if (!std::isfinite(time_delay)) {
             throw std::runtime_error("Visual frame cache delay parameter must be finite");
         }
         const Eigen::Matrix3d ric_transpose = ric_.transpose();
@@ -69,7 +70,7 @@ private:
             const Eigen::Map<const Eigen::Vector3d> velocity(frame.param_speed_bias.data());
             const Eigen::Map<const Eigen::Vector3d> accel_bias(frame.param_speed_bias.data() + 3);
             const Eigen::Map<const Eigen::Vector3d> gyro_bias(frame.param_speed_bias.data() + 6);
-            const double dt = state_->param_time_delay - frame.image_sync_delay;
+            const double dt = time_delay - frame.image_sync_delay;
             if (!position.allFinite() || !phi.allFinite() || !velocity.allFinite() ||
                 !accel_bias.allFinite() || !gyro_bias.allFinite() || !frame.imu_gyro.allFinite() ||
                 !frame.imu_acc.allFinite() || !std::isfinite(dt)) {

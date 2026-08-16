@@ -26,7 +26,6 @@
 #include <vector>
 
 #include "cam/camera_base.h"
-#include "estimator/window_optimizer.h"
 #include "factor/integrator_base.h"
 #include "frond_end/reprojection.h"
 #include "imu_interpolation.h"
@@ -42,8 +41,6 @@ namespace tassel_core {
 namespace {
 constexpr int kRetainedFrameIndex = 0;
 constexpr int kFirstActiveFrameIndex = 1;
-constexpr double kStationarySpeed = 0.05;
-
 constexpr double kGaugeHeadingMinNorm = 1e-8;
 constexpr double kRotationTolerance = 1e-8;
 
@@ -80,7 +77,6 @@ Estimator::Estimator(
     tassel_utils::G = Eigen::Vector3d(0, 0, params_.g_norm);
     noise_ = initNoise();
     state_->visual_sqrt_info = Eigen::Matrix2d::Identity() * params_.visual_factor_weight;
-    window_optimizer_ = std::make_unique<WindowOptimizer>(params_, state_);
     reset();
 }
 
@@ -134,6 +130,8 @@ void Estimator::processMeasurement(
     const bool is_keyframe =
         initialized_ ? feature_manager_->addFeatureFrame(frame_count, feature_frame)
                      : feature_manager_->tryAddInitializationKeyframe(frame_count, feature_frame);
+    state_->frames.replaceType(
+        static_cast<size_t>(frame_count), state_->frames[frame_count], is_keyframe);
     state_->frames[frame_count].frame_type =
         is_keyframe ? FrameType::KeyFrame : FrameType::NonKeyFrame;
     last_measurement_was_keyframe_ = is_keyframe;
@@ -155,7 +153,7 @@ void Estimator::processMeasurement(
         // 接受的关键帧固定为独立 VIO 状态并推进窗口。
         if (frame_count < state_->max_frame_count - 1) {
             ++frame_count;
-            state_->copyFrameState(frame_count - 1, frame_count);
+            state_->seedFrameState(frame_count - 1, frame_count);
             state_->frames[frame_count].frame_id = tassel_utils::kInvalidFrameId;
             int next_idx = frame_count - 1;
             visitPreintegrators([&](auto& preintegrators) {
@@ -384,82 +382,6 @@ std::unordered_map<int, cv::Point2f> Estimator::predictLandmarkPixels(
         snapshot, target_frame_id, imu_measurements, sync_delay, *camera_, params_);
 }
 
-void Estimator::optimize() {
-    const int latest_id = state_->latest_active_frame_index;
-    const int gauge_frame_index =
-        marginalization_prior_ ? kRetainedFrameIndex : kFirstActiveFrameIndex;
-    const bool hold_accel_bias = isStationaryWindow();
-    state_->stateToParams();
-    auto features = feature_manager_->collectLandmarks();
-    WindowOptimizationResult result;
-    try {
-        result = visitPreintegrators([&](auto& preintegrators) {
-            return window_optimizer_->solve(
-                features, preintegrators, marginalization_prior_.get(), hold_accel_bias);
-        });
-    } catch (...) {
-        state_->stateToParams();
-        throw;
-    }
-
-    if (visual_factor_callback_) {
-        visual_factor_callback_(
-            tassel_utils::frameIdToSeconds(state_->frames[latest_id].frame_id),
-            result.visual_factors_per_frame);
-    }
-
-    // 先验先迁移到优化状态，再与窗口状态一起执行同一 gauge 变换；顺序不可交换。
-    state_->paramsToState();
-    if (marginalization_prior_) {
-        const int num_kept = static_cast<int>(marginalization_prior_->linearization_poses.size());
-        std::vector<std::array<double, 6>> current_poses(num_kept);
-        std::vector<std::array<double, 9>> current_speed_bias(num_kept);
-        for (int i = 0; i < num_kept; ++i) {
-            current_poses[i] = state_->frames[i].param_pose;
-            current_speed_bias[i] = state_->frames[i].param_speed_bias;
-        }
-        MargHelper::recenterPrior(
-            *marginalization_prior_, current_poses, current_speed_bias, state_->param_time_delay);
-    }
-    if (state_->gauge_reference) {
-        normalizeGaugeAfterOptimization(gauge_frame_index);
-    } else {
-        state_->captureGauge(gauge_frame_index);
-    }
-
-    feature_manager_->updateFeatureDepths(result.feature_depths);
-
-    visitPreintegrators([&](auto& preintegrators) {
-        const int first_imu_index = marginalization_prior_ ? 1 : 0;
-        for (int i = first_imu_index; i < state_->latest_active_frame_index; ++i) {
-            const double delta_ba =
-                (state_->frames[i].accel_bias - preintegrators[i].ba_linearized).norm();
-            const double delta_bg =
-                (state_->frames[i].gyro_bias - preintegrators[i].bg_linearized).norm();
-            if (delta_ba > params_.imu_repropagate_ba_threshold ||
-                delta_bg > params_.imu_repropagate_bg_threshold) {
-                preintegrators[i].repropagate(
-                    state_->frames[i].accel_bias, state_->frames[i].gyro_bias, noise_);
-            }
-        }
-    });
-}
-
-bool Estimator::isStationaryWindow() const {
-    if (state_->latest_active_frame_index < kFirstActiveFrameIndex) {
-        throw std::logic_error("Stationary detection requires an active window");
-    }
-    for (int i = kFirstActiveFrameIndex; i <= state_->latest_active_frame_index; ++i) {
-        if (!state_->frames[i].vel_w.allFinite()) {
-            throw std::logic_error("Stationary detection encountered a non-finite velocity");
-        }
-        if (state_->frames[i].vel_w.norm() > kStationarySpeed) {
-            return false;
-        }
-    }
-    return true;
-}
-
 RetainedHostAction Estimator::selectMarginalizationAction() const {
     if (!initialized_) {
         throw std::logic_error("Marginalization action requested before VIO initialization");
@@ -484,17 +406,7 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
     state_->stateToParams();
     const double visual_huber_delta = params_.reproj_huber_thres * params_.visual_factor_weight;
 
-    const bool initializes_retained_slot = action == RetainedHostAction::InitializeRetainedSlot;
-    if (initializes_retained_slot) {
-        if (marginalization_prior_ ||
-            state_->frames[kRetainedFrameIndex].frame_id != tassel_utils::kInvalidFrameId) {
-            throw std::logic_error("Retained slot can only be initialized once");
-        }
-    } else if (!marginalization_prior_) {
-        throw std::logic_error("Marginalization action requires an initialized retained slot");
-    }
-    const MargLinData* prior_to_linearize = marginalization_prior_.get();
-    if (prior_to_linearize) {
+    if (marginalization_prior_) {
         const int num_kept = static_cast<int>(marginalization_prior_->linearization_poses.size());
         TASSEL_ASSERT(num_kept == window_capacity - 1);
     }
@@ -509,23 +421,17 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
         landmark_host_frame_index, landmark_target_frame_index);
     visitPreintegrators([&](auto& preintegrators) {
         using Integrator = typename std::decay_t<decltype(preintegrators)>::value_type;
-        std::vector<IntegratorBase<Integrator>*> imu_preintegrators;
-        const int first_imu_index = 1;
-        const int imu_factor_count = 1;
-        for (int i = 0; i < imu_factor_count; ++i) {
-            const int imu_index = first_imu_index + i;
-            if (preintegrators[imu_index].buffer.size() < 2) {
-                throw std::logic_error(
-                    "Marginalization IMU interval has fewer than two measurements at index " +
-                    std::to_string(imu_index));
-            }
-            imu_preintegrators.push_back(&preintegrators[imu_index]);
+        constexpr int imu_index = 1;
+        if (preintegrators[imu_index].buffer.size() < 2) {
+            throw std::logic_error(
+                "Marginalization IMU interval has fewer than two measurements at index 1");
         }
+        std::vector<IntegratorBase<Integrator>*> imu_preintegrators = {&preintegrators[imu_index]};
 
         auto linearizer = MarginalizationSqrt<Integrator>(
             std::move(retiring_features), landmark_target_frame_index,
             std::make_unique<ceres::HuberLoss>(visual_huber_delta), state_, imu_preintegrators,
-            params_.ric, params_.tic, prior_to_linearize, first_imu_index);
+            params_.ric, params_.tic, marginalization_prior_.get(), imu_index);
         linearizer.allocate();
         linearizer.linearize();
         linearizer.marginalizeLandmarks();
@@ -590,17 +496,21 @@ void Estimator::updateMarginalizationPrior(RetainedHostAction action) {
         updated_prior->b = std::move(prior_residual);
         updated_prior->linearization_poses.resize(window_capacity - 1);
         updated_prior->linearization_speed_bias.resize(window_capacity - 1);
-        updated_prior->linearization_delay_time = state_->param_time_delay;
-        const int retained_host_source_index = action == RetainedHostAction::MarginalizeOldestFrame
-                                                   ? kRetainedFrameIndex
-                                                   : kFirstActiveFrameIndex;
-        updated_prior->linearization_poses[0] =
-            state_->frames[retained_host_source_index].param_pose;
-        updated_prior->linearization_speed_bias[0] =
-            state_->frames[retained_host_source_index].param_speed_bias;
+        updated_prior->linearization_delay_time = *state_->getLinearizedTimeDelay();
+        if (action == RetainedHostAction::MarginalizeOldestFrame) {
+            updated_prior->linearization_poses[0] = state_->retainedFrame().linearized_pose;
+            updated_prior->linearization_speed_bias[0] =
+                state_->retainedFrame().linearized_speed_bias;
+        } else {
+            updated_prior->linearization_poses[0] =
+                state_->frames[kFirstActiveFrameIndex].linearized_pose;
+            updated_prior->linearization_speed_bias[0] =
+                state_->frames[kFirstActiveFrameIndex].linearized_speed_bias;
+        }
         for (int i = 2; i < window_capacity; ++i) {
-            updated_prior->linearization_poses[i - 1] = state_->frames[i].param_pose;
-            updated_prior->linearization_speed_bias[i - 1] = state_->frames[i].param_speed_bias;
+            updated_prior->linearization_poses[i - 1] = state_->frames[i].linearized_pose;
+            updated_prior->linearization_speed_bias[i - 1] =
+                state_->frames[i].linearized_speed_bias;
         }
         marginalization_prior_ = std::move(updated_prior);
     });
@@ -612,6 +522,8 @@ void Estimator::slideInitializationWindow() {
     for (int i = kFirstActiveFrameIndex; i < n - 1; ++i) {
         state_->copyFrameState(i + 1, i);
     }
+    // 尾槽代表下一帧的新状态身份：继承上一后验作为预测初值，但不能继承被移出帧的 FEJ 点。
+    state_->seedFrameState(n - 2, n - 1);
     state_->frames[n - 1].frame_id = tassel_utils::kInvalidFrameId;
     visitPreintegrators([&](auto& preintegrators) {
         preintegrators[0].reset(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), noise_);
@@ -642,12 +554,16 @@ void Estimator::migrateMarginalizedData(RetainedHostAction action) {
     }
 
     if (action != RetainedHostAction::MarginalizeOldestFrame) {
-        state_->copyFrameState(1, 0);
+        // retained 对象拥有长期身份；frame0 仅是当前 Ceres 布局所需的参数镜像。
+        state_->replaceRetainedFrame(state_->frames[1]);
+        state_->copyRetainedToFrame(0);
     }
 
     for (int i = first_movable_index; i < window_capacity - 1; ++i) {
         state_->copyFrameState(i + 1, i);
     }
+    // 尾槽复用时必须创建新的 FEJ 身份，否则固定内存槽会永久携带首次占用者的线性化点。
+    state_->seedFrameState(window_capacity - 2, window_capacity - 1);
     state_->frames[window_capacity - 1].frame_id = tassel_utils::kInvalidFrameId;
     visitPreintegrators([&](auto& preintegrators) {
         preintegrators[0].reset(state_->frames[0].accel_bias, state_->frames[0].gyro_bias, noise_);
@@ -658,57 +574,80 @@ void Estimator::migrateMarginalizedData(RetainedHostAction action) {
             state_->frames[window_capacity - 2].accel_bias,
             state_->frames[window_capacity - 2].gyro_bias, noise_);
     });
-
-    if (action != RetainedHostAction::MarginalizeOldestFrame) {
-        state_->captureGauge(kRetainedFrameIndex);
-    }
 }
 
-void Estimator::normalizeGaugeAfterOptimization(int reference_frame_index) {
-    if (!initialized_) {
-        throw std::logic_error("Gauge normalization requested before VIO initialization");
-    }
+void Estimator::normalizeCurrentGauge(
+    int reference_frame_index, const Eigen::Matrix3d& reference_rotation,
+    const Eigen::Vector3d& reference_position) {
     if (reference_frame_index < 0 || reference_frame_index > state_->latest_active_frame_index) {
         throw std::out_of_range("Gauge reference frame is outside the active window");
     }
-    if (!state_->gauge_reference) {
-        throw std::logic_error("Gauge anchor is unavailable");
+    if (marginalization_prior_ && reference_frame_index != kRetainedFrameIndex) {
+        throw std::logic_error("Prior gauge reference is not the retained frame");
     }
-
-    const FrameState& optimized_reference = state_->frames[reference_frame_index];
-    const GaugeAnchor& anchor = *state_->gauge_reference;
-    if (optimized_reference.frame_id != anchor.reference_frame_id) {
-        throw std::logic_error("Gauge anchor does not match its reference frame");
-    }
-    if (!anchor.reference_rotation.allFinite() || !anchor.reference_position.allFinite() ||
-        !optimized_reference.pos_w_i.allFinite()) {
-        throw std::logic_error("Gauge anchor or reference state is not finite");
+    const Frame& optimized_reference = state_->frames[reference_frame_index];
+    if (!reference_position.allFinite() || !optimized_reference.pos_w_i.allFinite()) {
+        throw std::logic_error("Gauge reference state is not finite");
     }
     const double yaw_correction =
-        rotationYaw(anchor.reference_rotation) - rotationYaw(optimized_reference.rot_w_i);
+        rotationYaw(reference_rotation) - rotationYaw(optimized_reference.rot_w_i);
     const Eigen::Matrix3d rotation_correction =
         Eigen::AngleAxisd(yaw_correction, Eigen::Vector3d::UnitZ()).toRotationMatrix();
     const Eigen::Vector3d optimized_reference_position = optimized_reference.pos_w_i;
-    const Eigen::Vector3d translation =
-        anchor.reference_position - rotation_correction * optimized_reference_position;
     for (int frame_index = reference_frame_index; frame_index <= state_->latest_active_frame_index;
          ++frame_index) {
-        const FrameState& frame = state_->frames[frame_index];
+        const Frame& frame = state_->frames[frame_index];
         if (!frame.pos_w_i.allFinite() || !frame.rot_w_i.allFinite() || !frame.vel_w.allFinite()) {
-            throw std::logic_error("Gauge window contains a non-finite state");
+            throw std::logic_error("Gauge window contains a non-finite current state");
         }
+        if (frame.has_linearized &&
+            (!Eigen::Map<const Eigen::Matrix<double, 6, 1>>(frame.linearized_pose.data())
+                  .allFinite() ||
+             !Eigen::Map<const Eigen::Matrix<double, 9, 1>>(frame.linearized_speed_bias.data())
+                  .allFinite())) {
+            throw std::logic_error("Gauge window contains a non-finite linearization point");
+        }
+    }
+    if (marginalization_prior_) {
+        marginalization_prior_->transformGauge(
+            rotation_correction, optimized_reference_position, reference_position);
     }
     for (int frame_index = reference_frame_index; frame_index <= state_->latest_active_frame_index;
          ++frame_index) {
-        FrameState& frame = state_->frames[frame_index];
+        Frame& frame = state_->frames[frame_index];
         frame.pos_w_i = rotation_correction * (frame.pos_w_i - optimized_reference_position) +
-                        anchor.reference_position;
+                        reference_position;
         frame.rot_w_i = rotation_correction * frame.rot_w_i;
         frame.vel_w = rotation_correction * frame.vel_w;
+        if (frame.has_linearized) {
+            const Eigen::Vector3d linearized_position(
+                frame.linearized_pose[0], frame.linearized_pose[1], frame.linearized_pose[2]);
+            const Eigen::Matrix3d linearized_rotation =
+                Sophus::SO3d::exp(Eigen::Vector3d(
+                                      frame.linearized_pose[3], frame.linearized_pose[4],
+                                      frame.linearized_pose[5]))
+                    .matrix();
+            const Eigen::Vector3d transformed_linearized_position =
+                rotation_correction * (linearized_position - optimized_reference_position) +
+                reference_position;
+            const Eigen::Vector3d transformed_linearized_phi =
+                Sophus::SO3d(rotation_correction * linearized_rotation).log();
+            const Eigen::Vector3d linearized_velocity(
+                frame.linearized_speed_bias[0], frame.linearized_speed_bias[1],
+                frame.linearized_speed_bias[2]);
+            const Eigen::Vector3d transformed_linearized_velocity =
+                rotation_correction * linearized_velocity;
+            for (int axis = 0; axis < 3; ++axis) {
+                frame.linearized_pose[axis] = transformed_linearized_position[axis];
+                frame.linearized_pose[axis + 3] = transformed_linearized_phi[axis];
+                frame.linearized_speed_bias[axis] = transformed_linearized_velocity[axis];
+            }
+        }
         frame.stateToParam();
     }
     if (marginalization_prior_) {
-        MargHelper::transformPriorGauge(*marginalization_prior_, rotation_correction, translation);
+        // retained_frame 是长期所有者，frames[0] 只是优化布局镜像；两者必须保持同一 FEJ 身份。
+        state_->replaceRetainedFrame(state_->frames[reference_frame_index]);
     }
 }
 
@@ -836,6 +775,327 @@ bool Estimator::tryInitialize() {
         "VI init: |g|={:.4f} s={:.4f} R0_yaw={:.2f}°", tassel_utils::G.norm(), s,
         yaw * 180.0 / M_PI);
     return true;
+}
+
+}  // namespace tassel_core
+
+#include <algorithm>
+#include <cmath>
+#include <memory>
+#include <stdexcept>
+#include <utility>
+
+#include <ceres/ceres.h>
+#include <ceres/loss_function.h>
+#include <spdlog/spdlog.h>
+
+#include "factor/imu_factor.h"
+#include "factor/marginalization_prior_factor.h"
+#include "factor/reprojection_factor.h"
+#include "factor/visual_frame_cache.h"
+#include "marg/marg_lin_data.h"
+#include "parameters/parameters.h"
+#include "state/state.h"
+#include "tassel_utils/macros.h"
+#include "tassel_utils/se3_right_manifold.h"
+
+namespace tassel_core {
+namespace {
+
+ceres::TrustRegionStrategyType ceresTrustRegionStrategy(
+    tassel_tools::TrustRegionStrategy strategy) {
+    switch (strategy) {
+        case tassel_tools::TrustRegionStrategy::LevenbergMarquardt:
+            return ceres::LEVENBERG_MARQUARDT;
+        case tassel_tools::TrustRegionStrategy::Dogleg:
+            return ceres::DOGLEG;
+    }
+    throw std::logic_error("Unknown trust-region strategy");
+}
+
+template <typename Range>
+bool allFinite(const Range& values) {
+    return std::all_of(
+        values.begin(), values.end(), [](double value) { return std::isfinite(value); });
+}
+
+#if defined(CERES_HAS_SCHUR_LAYOUT_CALLBACK)
+ceres::Solver::Options::SchurLayoutCallback makeSchurLayoutCallback() {
+    return [](int chunk_index, const std::vector<int>& default_block_order,
+              const std::vector<int>& block_sizes, std::vector<int>* block_order) {
+        (void)chunk_index;
+        if (block_order == nullptr) {
+            throw std::invalid_argument("Schur layout callback received a null output");
+        }
+        if (default_block_order.size() != block_sizes.size()) {
+            throw std::invalid_argument("Schur layout callback received mismatched layout data");
+        }
+
+        struct RankedBlock {
+            int priority;
+            int order;
+            int block_id;
+        };
+
+        const auto blockPriority = [](int size) {
+            if (size == 6) {
+                return 0;
+            }
+            if (size == 9) {
+                return 1;
+            }
+            if (size == 1) {
+                return 2;
+            }
+            return 3;
+        };
+        std::vector<RankedBlock> ranked;
+        ranked.reserve(default_block_order.size());
+        for (int i = 0; i < static_cast<int>(default_block_order.size()); ++i) {
+            ranked.push_back(
+                {blockPriority(block_sizes[static_cast<size_t>(i)]), i,
+                 default_block_order[static_cast<size_t>(i)]});
+        }
+        std::stable_sort(
+            ranked.begin(), ranked.end(), [](const RankedBlock& a, const RankedBlock& b) {
+                if (a.priority != b.priority) {
+                    return a.priority < b.priority;
+                }
+                return a.order < b.order;
+            });
+
+        block_order->clear();
+        block_order->reserve(ranked.size());
+        for (const RankedBlock& item : ranked) {
+            block_order->push_back(item.block_id);
+        }
+    };
+}
+#endif
+
+std::unique_ptr<VisualFrameCache> createVisualFrameCache(
+    State& state, const tassel_tools::Parameters& params) {
+    return std::make_unique<VisualFrameCache>(state, params.ric);
+}
+
+void addParameterBlocks(ceres::Problem& problem, State& state, const MargLinData* prior) {
+    for (int i = 0; i < state.max_frame_count; ++i) {
+        problem.AddParameterBlock(state.frames[i].param_pose.data(), 6, new SE3RightManifold());
+        if (i != kRetainedFrameIndex || prior == nullptr) {
+            problem.AddParameterBlock(state.frames[i].param_speed_bias.data(), 9);
+        }
+    }
+    if (prior == nullptr) {
+        // 初始化期间 frame0 为空，不参与任何物理因子。
+        problem.SetParameterBlockConstant(
+            state.frames[kRetainedFrameIndex].param_speed_bias.data());
+        problem.SetParameterBlockConstant(state.frames[kRetainedFrameIndex].param_pose.data());
+    }
+    problem.AddParameterBlock(state.getCurrentTimeDelay(), 1);
+}
+
+void configureDelayParameter(
+    ceres::Problem& problem, State& state, const tassel_tools::Parameters& params) {
+    int observable_frames = 0;
+    for (int i = 0; i <= state.latest_active_frame_index; ++i) {
+        const FrameState& frame = state.frames[i];
+        const bool angular_motion =
+            (frame.imu_gyro - frame.gyro_bias).norm() > params.delay_obs_gyro_threshold;
+        const bool linear_motion = frame.vel_w.norm() > params.delay_obs_speed_threshold;
+        if (angular_motion || linear_motion) {
+            ++observable_frames;
+        }
+    }
+    if (observable_frames < params.delay_obs_min_frames) {
+        problem.SetParameterBlockConstant(state.getCurrentTimeDelay());
+    }
+}
+
+ceres::ResidualBlockId addPriorFactor(
+    ceres::Problem& problem, State& state, const MargLinData* prior) {
+    if (prior == nullptr) {
+        return nullptr;
+    }
+    auto* factor = new MarginalizationPriorFactor(*prior);
+    std::vector<double*> blocks;
+    blocks.push_back(state.frames[0].param_pose.data());
+    for (int i = 1; i < prior->stateCount(); ++i) {
+        blocks.push_back(state.frames[i].param_pose.data());
+        blocks.push_back(state.frames[i].param_speed_bias.data());
+    }
+    blocks.push_back(state.getCurrentTimeDelay());
+    return problem.AddResidualBlock(factor, nullptr, blocks);
+}
+
+void addVisualFactors(
+    ceres::Problem& problem, VisualFrameCache& cache, State& state,
+    const tassel_tools::Parameters& params, const std::vector<std::pair<int, Feature>>& features,
+    std::vector<double>& inverse_depths, std::vector<int>& factors_per_frame) {
+    const double huber_delta = params.reproj_huber_thres * params.visual_factor_weight;
+    ceres::LossFunction* loss = new ceres::HuberLoss(huber_delta);
+    inverse_depths.resize(features.size());
+    // inverse depth 与 feature 索引一一对应，求解后按同一索引生成深度结果。
+    for (size_t k = 0; k < features.size(); ++k) {
+        const Feature& feature = features[k].second;
+        TASSEL_ASSERT(std::isfinite(feature.estimated_depth) && feature.estimated_depth > 1e-12);
+        inverse_depths[k] = 1.0 / feature.estimated_depth;
+        problem.AddParameterBlock(&inverse_depths[k], 1);
+    }
+
+    for (size_t k = 0; k < features.size(); ++k) {
+        const Feature& feature = features[k].second;
+        const int host_index = feature.host_frame_index;
+        if (host_index < 0 || host_index > state.latest_active_frame_index) {
+            throw std::logic_error("Feature host index is outside the active window");
+        }
+        for (size_t observation_index = 0; observation_index < feature.observations.size();
+             ++observation_index) {
+            const int frame_index = feature.observationFrameIndex(observation_index);
+            if (frame_index <= state.latest_active_frame_index) {
+                ++factors_per_frame[frame_index];
+            }
+        }
+        for (size_t observation_index = 1; observation_index < feature.observations.size();
+             ++observation_index) {
+            const int target_index = feature.observationFrameIndex(observation_index);
+            if (target_index > state.latest_active_frame_index) {
+                throw std::logic_error("Feature target index is outside the active window");
+            }
+            const FeaturePerFrame& host = feature.observations.front();
+            const FeaturePerFrame& target = feature.observations[observation_index];
+            if (host.sync_delay != state.frames[host_index].image_sync_delay ||
+                target.sync_delay != state.frames[target_index].image_sync_delay) {
+                throw std::logic_error("Feature sync delay does not match its frame state");
+            }
+            const Eigen::Vector2d target_pixel(target.pt.x, target.pt.y);
+            auto* cost = new ReprojectionFactor(
+                host.uv, target_pixel, params.ric, params.tic, state.frames[host_index].imu_gyro,
+                state.frames[target_index].imu_gyro, state.frames[host_index].imu_acc,
+                state.frames[target_index].imu_acc,
+                state.frames[host_index].param_speed_bias.data(),
+                state.frames[target_index].param_speed_bias.data(),
+                state.frames[host_index].param_speed_bias.data() + 6,
+                state.frames[target_index].param_speed_bias.data() + 6,
+                state.frames[host_index].param_speed_bias.data() + 3,
+                state.frames[target_index].param_speed_bias.data() + 3, state.visual_sqrt_info,
+                state.camera, host.sync_delay, target.sync_delay, &state, host_index, target_index);
+            problem.AddResidualBlock(
+                cost, loss, state.frames[host_index].param_pose.data(),
+                state.frames[target_index].param_pose.data(), state.getCurrentTimeDelay(),
+                &inverse_depths[k]);
+        }
+    }
+}
+
+ceres::Solver::Options createSolverOptions(
+    const tassel_tools::Parameters& params, State& state, const MargLinData* prior,
+    std::vector<double>& inverse_depths) {
+    ceres::Solver::Options options;
+    options.linear_solver_type = ceres::DENSE_SCHUR;
+#if defined(CERES_HAS_SCHUR_STRUCTURE_HINTS)
+    options.schur_structure_row_block_size = 2;
+    options.schur_structure_e_block_size = 1;
+    options.schur_structure_f_block_size = -1;
+#endif
+    options.trust_region_strategy_type = ceresTrustRegionStrategy(params.trust_region_strategy);
+    auto ordering = std::make_shared<ceres::ParameterBlockOrdering>();
+    for (double& inverse_depth : inverse_depths) {
+        ordering->AddElementToGroup(&inverse_depth, 0);
+    }
+    int group = 1;
+    for (int i = 0; i < state.max_frame_count; ++i) {
+        ordering->AddElementToGroup(state.frames[i].param_pose.data(), group++);
+        if (i != kRetainedFrameIndex || prior == nullptr) {
+            ordering->AddElementToGroup(state.frames[i].param_speed_bias.data(), group++);
+        }
+    }
+    ordering->AddElementToGroup(state.getCurrentTimeDelay(), group);
+    options.linear_solver_ordering = std::move(ordering);
+#if defined(CERES_HAS_SCHUR_LAYOUT_CALLBACK)
+    options.schur_layout_callback = makeSchurLayoutCallback();
+#endif
+    options.max_num_iterations = params.num_iterations;
+    if (params.max_solver_time > 0.0) {
+        options.max_solver_time_in_seconds = params.max_solver_time;
+    }
+    options.num_threads = 1;
+    options.minimizer_progress_to_stdout = false;
+    options.logging_type = ceres::SILENT;
+    return options;
+}
+
+}  // namespace
+
+void Estimator::optimize() {
+    const int latest_id = state_->latest_active_frame_index;
+    const int gauge_frame_index =
+        marginalization_prior_ ? kRetainedFrameIndex : kFirstActiveFrameIndex;
+    // 本轮参考必须来自求解前的 retained current；使用 frozen pose 会在 retained 换代时切换世界系。
+    const Eigen::Matrix3d gauge_reference_rotation = state_->frames[gauge_frame_index].rot_w_i;
+    const Eigen::Vector3d gauge_reference_position = state_->frames[gauge_frame_index].pos_w_i;
+    state_->stateToParams();
+    const auto features = feature_manager_->collectLandmarks();
+    auto visual_cache = createVisualFrameCache(*state_, params_);
+    ceres::Problem::Options problem_options;
+    problem_options.evaluation_callback = visual_cache.get();
+    ceres::Problem problem(problem_options);
+    addParameterBlocks(problem, *state_, marginalization_prior_.get());
+    configureDelayParameter(problem, *state_, params_);
+    addPriorFactor(problem, *state_, marginalization_prior_.get());
+
+    std::vector<double> inverse_depths;
+    std::vector<int> visual_factors_per_frame(latest_id + 1, 0);
+    addVisualFactors(
+        problem, *visual_cache, *state_, params_, features, inverse_depths,
+        visual_factors_per_frame);
+
+    visitPreintegrators([&](auto& preintegrators) {
+        using Integrator = typename std::decay_t<decltype(preintegrators)>::value_type;
+        const int imu_start = marginalization_prior_ ? 1 : 0;
+        for (int i = imu_start; i < latest_id; ++i) {
+            if (preintegrators[i].buffer.size() < 2) {
+                continue;
+            }
+            auto integrator = std::shared_ptr<Integrator>(&preintegrators[i], [](Integrator*) {});
+            problem.AddResidualBlock(
+                new IMUFactor<Integrator>(std::move(integrator)), nullptr,
+                state_->frames[i].param_pose.data(), state_->frames[i].param_speed_bias.data(),
+                state_->frames[i + 1].param_pose.data(),
+                state_->frames[i + 1].param_speed_bias.data());
+        }
+    });
+
+    ceres::Solver::Summary summary;
+    ceres::Solver::Options options =
+        createSolverOptions(params_, *state_, marginalization_prior_.get(), inverse_depths);
+    ceres::Solve(options, &problem, &summary);
+    bool finite_solution = std::isfinite(*state_->getCurrentTimeDelay());
+    for (int i = 0; i <= latest_id && finite_solution; ++i) {
+        finite_solution = allFinite(state_->frames[i].param_pose) &&
+                          allFinite(state_->frames[i].param_speed_bias);
+    }
+    finite_solution = finite_solution && allFinite(inverse_depths);
+    if (!summary.IsSolutionUsable() || !finite_solution) {
+        spdlog::error("Optimization rejected: {}", summary.BriefReport());
+        state_->stateToParams();
+        throw std::runtime_error("VIO optimization failed");
+    }
+
+    std::vector<std::pair<int, double>> feature_depths;
+    feature_depths.reserve(features.size());
+    for (size_t k = 0; k < features.size(); ++k) {
+        const double inverse_depth = inverse_depths[k];
+        const double depth = inverse_depth > 1e-6 ? 1.0 / inverse_depth : Feature::InvalidDepth;
+        feature_depths.emplace_back(features[k].first, depth);
+    }
+    if (visual_factor_callback_) {
+        visual_factor_callback_(
+            tassel_utils::frameIdToSeconds(state_->frames[latest_id].frame_id),
+            visual_factors_per_frame);
+    }
+    state_->paramsToState();
+    normalizeCurrentGauge(gauge_frame_index, gauge_reference_rotation, gauge_reference_position);
+    feature_manager_->updateFeatureDepths(feature_depths);
 }
 
 }  // namespace tassel_core

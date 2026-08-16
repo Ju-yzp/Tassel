@@ -17,6 +17,7 @@ public:
 
     void allocate(int num_frames, int num_obs, int dim);
 
+    // 使用当前残差和冻结雅各比构造固定坐标的一阶模型。
     void linearize(
         const Feature& feature, int target_frame_index, const State& state,
         const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic);

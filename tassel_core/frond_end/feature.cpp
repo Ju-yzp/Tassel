@@ -11,7 +11,9 @@
 
 namespace tassel_core {
 Feature::Feature(int host_frame_index, size_t max_capacity)
-    : host_frame_index(host_frame_index), estimated_depth(InvalidDepth) {
+    : host_frame_index(host_frame_index),
+      estimated_depth(InvalidDepth),
+      linearized_depth(InvalidDepth) {
     observations.reserve(max_capacity);
 }
 
@@ -89,6 +91,7 @@ void Feature::removeFrame(
             observations.erase(removed_it);
             host_frame_index = new_host_index;
             estimated_depth = InvalidDepth;
+            startNewFejGeneration();
         }
         return;
     }
@@ -121,7 +124,26 @@ bool Feature::transferHost(
     estimated_depth = pj_in_C.z();
     host_frame_index = new_host_index;
     std::iter_swap(observations.begin(), new_host_it);
+    startNewFejGeneration();
     return true;
+}
+
+void Feature::captureLinearizedDepth() {
+    if (has_linearized_depth) {
+        return;
+    }
+    if (!std::isfinite(estimated_depth) || estimated_depth <= 0.0) {
+        throw std::logic_error("Cannot linearize an invalid feature depth");
+    }
+    linearized_depth = estimated_depth;
+    has_linearized_depth = true;
+}
+
+void Feature::startNewFejGeneration() {
+    // 换宿主改变逆深度参数化，旧宿主下的 FEJ 深度不能跨 generation 复用。
+    ++fej_generation;
+    linearized_depth = InvalidDepth;
+    has_linearized_depth = false;
 }
 
 void Feature::removeFrameObservation(int frame_index) {

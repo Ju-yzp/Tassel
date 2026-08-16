@@ -498,11 +498,16 @@ int main(int argc, char** argv) {
     evaluated_poses.reserve(frame_limit);
     size_t skipped_truth_samples = 0;
     std::optional<Sophus::SE3d> latest_optimized_pose;
+    std::optional<std::array<double, 9>> latest_current_speed_bias;
+    std::optional<std::array<double, 9>> latest_linearized_speed_bias;
     estimator.setPoseCallback([&viewer, &state, &ground_truth, &ground_truth_alignment,
                                &evaluated_poses, &skipped_truth_samples, &params,
-                               &latest_optimized_pose](double ts, const Sophus::SE3d& pose) {
+                               &latest_optimized_pose, &latest_current_speed_bias,
+                               &latest_linearized_speed_bias](double ts, const Sophus::SE3d& pose) {
         latest_optimized_pose = pose;
         const FrameState& frame = state->frames[state->latest_active_frame_index];
+        latest_current_speed_bias = frame.param_speed_bias;
+        latest_linearized_speed_bias = frame.linearized_speed_bias;
         if (viewer) {
             // Odometry twist 必须表达在 child_frame_id；V 是世界系速度，gyro-Bg 是 IMU 系角速度。
             const Eigen::Vector3d body_velocity = frame.rot_w_i.transpose() * frame.vel_w;
@@ -840,11 +845,22 @@ int main(int argc, char** argv) {
     std::cout << "\n[EuRoC] done. processed=" << processed
               << ", newest frame_index=" << state->latest_active_frame_index << "\n";
     reportTrajectoryError(evaluated_poses, skipped_truth_samples);
-    if (state->latest_active_frame_index > 0) {
-        int idx = state->latest_active_frame_index;
-        std::cout << "Final pose:\n"
-                  << Sophus::SE3d(state->frames[idx].rot_w_i, state->frames[idx].pos_w_i).matrix()
-                  << "\n";
+    if (latest_optimized_pose && latest_current_speed_bias && latest_linearized_speed_bias) {
+        const Eigen::Map<const Eigen::Matrix<double, 9, 1>> current_speed_bias(
+            latest_current_speed_bias->data());
+        const Eigen::Map<const Eigen::Matrix<double, 9, 1>> linearized_speed_bias(
+            latest_linearized_speed_bias->data());
+        std::cout
+            << "Final pose:\n"
+            << latest_optimized_pose->matrix() << "\n"
+            << "Final ba current=" << current_speed_bias.segment<3>(3).transpose()
+            << " FEJ=" << linearized_speed_bias.segment<3>(3).transpose() << " delta="
+            << (current_speed_bias.segment<3>(3) - linearized_speed_bias.segment<3>(3)).transpose()
+            << "\n"
+            << "Final bg current=" << current_speed_bias.segment<3>(6).transpose()
+            << " FEJ=" << linearized_speed_bias.segment<3>(6).transpose() << " delta="
+            << (current_speed_bias.segment<3>(6) - linearized_speed_bias.segment<3>(6)).transpose()
+            << "\n";
     }
 
     return 0;

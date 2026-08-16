@@ -4,13 +4,13 @@
 
 本文定义 Tassel 滑窗 VIO 后端的目标架构、数学契约、当前实现差距和分阶段迁移方案。
 
-本次重构解决的核心问题不是管理层性能，而是：
+本次重构的核心不是管理层性能，而是建立以下长期契约：
 
 - 状态、特征、预积分和 prior 的所有权不清晰；
 - current、posterior 和 linearized 数据存在混用风险；
 - 预积分端点依赖窗口下标；
-- 当前边缘化并未统一使用 FEJ 数据；
-- prior 在优化后被 recenter 和 gauge transform，违背目标 FEJ 定义；
+- current residual、冻结 Jacobian 和 prior 仿射坐标必须严格一致；
+- gauge 规范必须保持物理状态、FEJ 身份和 prior residual 等价；
 - 保留槽依赖特殊数组下标；
 - 特征换宿主后无法继续沿用旧逆深度 FEJ 身份；
 - 零速检测通过启发式恢复 bias，缺少独立测量模型。
@@ -28,8 +28,9 @@ Tassel 采用以下策略：
 - 特征首次获得有效深度并进入优化问题时捕获 linearized 深度；
 - 边缘化 residual 使用最新 current，状态和深度 Jacobian 使用冻结 linearized 数据；
 - 生成 prior 后，参考状态、平方根 Jacobian、残差和列布局全部冻结；
-- prior 不执行 recenter、tangent transport 或 gauge transform；
-- current 窗口在优化结束后规范到保留帧的固定 linearized gauge。
+- prior 不执行以 current 为新原点的 recenter；仅允许保持同一物理 FEJ 点的 gauge 坐标
+  等价变换，并同步变换世界系 position/velocity 列；
+- 每轮优化前保存 retained current 位姿，优化后将 current 规范回该参考。
 
 这不是“所有活动因子永久冻结 Jacobian”。活动因子仍在最新 current 点重线性化，只有边缘化系统和历史 prior 使用冻结参考。
 
@@ -159,29 +160,49 @@ v_i' = R_g * v_i
 
 ### 3.3 Gauge 参考
 
-唯一 gauge 参考是保留帧的 linearized 位姿：
+每轮 gauge 参考是优化开始前保留槽的 current 位姿快照：
 
 ```text
-reference position = retained_frame.linearized_position
-reference yaw      = yaw(retained_frame.linearized_rotation)
+reference position = retained_frame.current_position_before_solve
+reference yaw      = yaw(retained_frame.current_rotation_before_solve)
 ```
 
-设保留帧 current 位姿为 `(R_c, p_c)`，冻结参考为 `(R_l, p_l)`：
+设保留帧优化后 current 位姿为 `(R_c, p_c)`，优化前快照为 `(R_r, p_r)`：
 
 ```text
-yaw_delta = yaw(R_l) - yaw(R_c)
+yaw_delta = yaw(R_r) - yaw(R_c)
 R_g       = rotation_about_gravity(yaw_delta)
-t_g       = p_l - R_g * p_c
+t_g       = p_r - R_g * p_c
 ```
 
-优化后只变换 current 窗口，不变换 prior。
+参考必须取自本轮求解前的 current，而不能切换到 retained frozen pose。规范化是内部世界
+坐标变换，不是重新线性化。设 `Q=R_g`，则 current 与 linearized 的坐标表示都必须满足：
 
-固定线性 prior 对 gauge 零空间的保持是一阶性质。对于有限且较大的 yaw 变换，流形上的 `current minus linearized` 不是全局线性函数，因此不能无条件宣称 prior 代价严格不变。工程约束是：
+```text
+p' = Q * (p - p_c) + p_r
+R' = Q * R
+v' = Q * v
+```
 
-- 每轮优化提交后立即将 current 规范回固定 retained gauge；
-- 不允许 gauge 漂移跨多轮累积；
-- 小扰动测试验证平移/yaw 零空间；
-- 有限变换测试验证物理活动因子代价不变，并验证 prior 误差符合预期的一阶模型，而不是强行要求机器精度完全相等。
+右旋转扰动在全局左乘 `Q` 下保持不变；position 和 velocity 使用世界系加法增量：
+
+```text
+delta_p' = Q * delta_p
+delta_v' = Q * delta_v
+delta_theta' = delta_theta
+```
+
+为保持 `H * delta + b` 严格不变，prior 的 position/velocity 列必须右乘 `Q^T`，旋转、
+bias、delay 列以及 `b` 不变。FEJ 物理点没有改变，改变的只是它在新世界系中的表示。
+
+工程约束是：
+
+- 每轮优化提交后立即将 current 规范回求解前 retained current gauge；
+- 不允许把 retained linearized pose 当作新的 gauge 参考，否则 retained 身份切换会造成
+  输出坐标跳变；
+- current、linearized 和 prior 必须在一次事务中完成坐标变换；
+- 有限 gauge 变换前后的 prior residual 必须在数值精度内相等；
+- retained 长期对象与 `frames[0]` 优化镜像必须同步。
 
 ### 3.4 Gauge 奇异性
 
@@ -252,15 +273,17 @@ variable layout
 frame_id mapping
 ```
 
-生成后全部冻结。禁止：
+生成后物理 FEJ 身份和仿射模型全部冻结。禁止：
 
 - recenter prior 到 current；
-- tangent transport 改写 `H`；
-- gauge transform prior 的列或参考状态；
+- 将某个 current 状态冒充新的 FEJ 点；
+- 只变换 current 而不变换 FEJ 表示和 prior 世界系列；
 - 单独替换参考点、`H` 或 `b`；
 - 依赖已经删除的历史变量重新线性化。
 
 Ceres 所需的 local-to-ambient Jacobian 转换只能写入本次 `Evaluate()` 输出，不能写回 `H`。
+唯一允许修改 `H` 的操作是完整 gauge 坐标变换中的世界系列基变换；该操作必须与全部
+linearization state 同步，并由 residual 不变性测试覆盖。
 
 ## 4. 对象模型
 
@@ -402,7 +425,18 @@ std::vector<std::unique_ptr<PreintegrationEdge>> imu_edges;
 latest active index = current_frame_count - 1
 ```
 
-窗口满时禁止覆盖对象。必须先结束当前 `Problem`、完成边缘化和窗口推进，再创建新帧。
+窗口满时禁止在 `Problem` 存活期间替换对象。完成优化、边缘化和窗口推进后，尾槽必须从
+上一帧 posterior current 建立下一帧预测种子，并清除旧 `frame_id` 和 FEJ 身份：
+
+```text
+seed current pose / velocity / ba / bg from previous posterior
+reset has_linearized
+set frame_id invalid
+capture a new FEJ point when the new frame first enters optimization
+```
+
+容器槽地址可以复用，Frame/FEJ 身份不能复用。只把尾槽 `frame_id` 设为 invalid 而保留
+`has_linearized=true`，会使所有后续新帧永久使用该槽第一次占用者的线性化点。
 
 ### 5.2 原始数据入口
 
@@ -462,11 +496,13 @@ void invalidate_current_cache();
 
 1. 将优化参数解析到临时 current 状态；
 2. 验证所有状态；
-3. 以 retained linearized pose 计算 gauge；
+3. 以求解前保存的 retained current 位姿计算 gauge；
 4. 规范全部 current pose 和 velocity；
-5. 提交 current；
-6. 标记 posterior；
-7. 失效 current cache。
+5. 对全部 Frame FEJ 表示施加同一坐标变换；
+6. 对 prior 的 FEJ 表示和世界系 position/velocity 列施加等价变换；
+7. 同步 retained 长期对象和优化镜像；
+8. 提交 current 并标记 posterior；
+9. 失效 current cache。
 
 不建议把 gauge 规范隐藏成单个帧 `paramToState()` 的副作用，因为 gauge 必须同时作用于整个窗口。它应由 `State` 的事务式提交统一完成。
 
@@ -481,7 +517,7 @@ void invalidate_current_cache();
 | 边缘化 residual | 最新 current | 最新 current depth | `r_c` |
 | 边缘化 Jacobian | linearized | linearized depth | `J_f` |
 | FEJ 常数项 | current + linearized | current + linearized depth | `b_f = r_c - J_f * delta_c` |
-| gauge 规范 | current + retained linearized reference | 深度不变 | normalized current |
+| gauge 规范 | accepted current + retained current 快照 + FEJ/prior | 深度不变 | 等价新世界系表示 |
 
 活动优化始终在最新点计算 residual 和 Jacobian。优化结果只写回 current。
 
@@ -572,25 +608,21 @@ preintegrator i connects frame i and i+1
 
 所有映射都必须显式建立并验证完整性。
 
-## 9. 当前实现差距
+## 9. 当前实现状态与剩余边界
 
-### 9.1 prior 被重新定心和变换
+### 9.1 prior 不重新定心，gauge 坐标协同变换
 
 证据：
 
-- `Estimator::optimize()` 调用 `MargHelper::recenterPrior()`；
-- `normalizeGaugeAfterOptimization()` 调用 `transformPriorGauge()`。
+- `Estimator::optimize()` 直接读取冻结的 prior；
+- `normalizeCurrentGauge()` 同步变换 current、Frame FEJ、retained 镜像和 prior；
+- `MargLinData::transformGauge()` 变换 FEJ 表示并对 position/velocity 列执行基变换；
+- gauge 不变性测试验证变换前后 `H * delta + b` 一致。
 
-问题：
+当前约束：
 
-- 改写 prior 的参考点、`H` 或 `b`；
-- 与目标“冻结原始切空间”的 FEJ 定义冲突。
-
-修改：
-
-- 删除正常路径上的 recenter；
-- 删除 gauge 对 prior 的变换；
-- 只将 current 状态规范到 retained linearized gauge。
+- prior 不 recenter 到 current，`b` 不因优化结果重写；
+- gauge 变换不创建新 FEJ 身份，只改变同一物理点和 Jacobian 的坐标表示。
 
 ### 9.2 边缘化使用 current 数据
 
@@ -601,25 +633,24 @@ preintegrator i connects frame i and i+1
 - `MarginalizationSqrt` 使用 current `VisualFrameCache`；
 - IMUBlock 从 current `FrameState` 字段线性化。
 
-问题：
+当前实现：
 
-- 尚未实现目标 FEJ Jacobian；
-- 没有构造固定 FEJ 坐标所需的 `b_f = r_c - J_f * delta_c`；
-- 边缘化 Jacobian 和活动优化共享 current cache；
-- 深度没有 linearized 版本。
+- Frame、Feature 和 delay 均保存 current/linearized 数据；
+- 视觉和 IMU 边缘化块在 current 点计算 residual，在 FEJ 点计算 Jacobian；
+- 固定坐标常数项统一使用 `b_f = r_c - J_f * delta_c`；
+- 活动优化继续在 current 点正常重线性化。
 
-修改：
+### 9.3 旧 prior 使用固定 FEJ 仿射截距
 
-- 为 Frame、Feature 和 delay 增加冻结 linearized 数据；
-- Marginalizer 同时读取版本一致的 current/linearized getter；
-- residual 使用 current，Jacobian 使用 linearized；
-- 建立私有 linearized Jacobian cache，并构造 `b_f`。
+reduced system 的列变量是相对 FEJ 点的全局增量，因此旧 prior 必须直接写入仿射截距
+`b`，而不是写入 current residual。其 current residual 为：
 
-### 9.3 旧 prior 依赖 recenter 后的 b
+```text
+r_current = H * (current minus linearized) + b
+```
 
-当前 reduced system 直接写入旧 prior 的 `H` 和 `b`。正常流程先 recenter，因此 `b` 已被改写到 current。
-
-目标方案取消 recenter 后，旧 prior 必须与持续存在的 Frame linearized 身份完全一致。构造新 prior 时只能在同一组 per-variable FEJ 坐标中复用旧 `H/b`。若身份或 generation 不一致，应抛出错误，不能做隐式 transport。
+写入边缘化系统前，prior 与 State 的 pose、velocity、ba、bg、delay 线性化点逐项验证。
+任何身份不一致都抛出异常，不能静默组装，也不能只替换 `b`。
 
 ### 9.4 保留槽和布局依赖特殊下标
 
@@ -705,23 +736,36 @@ preintegrator i connects frame i and i+1
 - retained 使用独立 `std::unique_ptr<RetainedFrame>`；
 - Ceres Problem 存活期间不替换对象。
 
-### 9.9 独立 GaugeAnchor 会重复真相
+### 9.9 独立 GaugeAnchor 已删除
 
-当前 `State::gauge_reference` 单独保存 frame ID、旋转和位置。
+当前实现不再保存 `State::gauge_reference`。每轮参考来自求解前 retained current 位姿快照；
+retained 尚未建立时，使用首个活动帧的求解前 current 位姿。FEJ 点不承担输出坐标锚的职责。
 
-问题：
+运行时约束：
 
-- 它可能与 retained linearized pose 失配；
-- 多一份 gauge 所有权。
+- retained frame ID 必须与 Ceres 窗口中的参考镜像一致；
+- gauge 规范同步变换 current、linearized 表示和 prior 世界系列；
+- bias、深度、delay 和 prior 常数项 `b` 不随 gauge 改变；
+- retained 长期对象必须在规范后从 `frames[0]` 镜像同步。
 
-修改：
+### 9.10 尾槽复用必须创建新 FEJ 身份
 
-- 删除独立 GaugeAnchor；
-- retained linearized pose 是唯一参考。
+活动窗口使用固定容量容器，但 FEJ 身份属于帧，不属于数组下标。窗口迁移完成后，尾槽通过
+`seedFrameState(previous, tail)` 继承上一后验作为预测初值，同时清除 `has_linearized`。
 
-### 9.10 零速检测不构成严格测量模型
+该契约同时适用于初始化窗口滑动和正常边缘化窗口迁移。历史错误只清除了 `frame_id`，使
+尾槽长期保留初始化阶段的零 `ba` FEJ 点，导致加速度 bias 无法收敛。修复后 MH_01 的结果为：
 
-当前实现以窗口速度阈值判断静止，然后在求解后恢复 accel bias 均值。
+```text
+estimated ba = (-0.02682, 0.13690, 0.08293)
+ground truth ≈ (-0.02550, 0.13627, 0.07640)
+ATE RMSE     = 0.333 m
+rotation RMSE= 0.0269 rad
+```
+
+### 9.11 零速检测不构成严格测量模型
+
+当前实现已经删除按窗口速度判断静止并在求解后恢复 accel bias 的启发式机制。
 
 问题：
 
@@ -729,9 +773,9 @@ preintegrator i connects frame i and i+1
 - 求解器报告的 accepted 状态随后被人工修改；
 - 优化模型和最终输出状态不一致。
 
-修改：
+当前约束：
 
-- 当前重构直接删除该机制；
+- 不允许在求解器接受后覆盖 bias；
 - 不提供替代启发式。
 
 ### 9.11 time delay 缺少双状态
@@ -748,6 +792,14 @@ preintegrator i connects frame i and i+1
 - State 管理 current delay、linearized delay 和 `has_linearized_delay`；
 - 优化器读取 current；
 - Marginalizer 读取 linearized。
+
+当前实现约定：
+
+- `param_time_delay` 是 Ceres 的唯一时间延迟参数块；`getCurrentTimeDelay()` 是优化器、视觉缓存和视觉 FEJ 当前残差的入口。
+- `time_delay` 是 `paramsToState()` 同步后的物理 current 值，供预测、三角化和跟踪快照使用；不能在优化器仍持有参数块时替代参数块。
+- 首次存在有效帧时由 `captureLinearizedTimeDelay()` 冻结 `linearized_time_delay`，之后任何优化迭代都不能覆盖；非法值直接抛出异常。
+- 视觉边缘化使用 `getLinearizedTimeDelay()`，并以 `b_f = r_current - J_f delta_current` 构造 FEJ 常量项；IMU 因子不包含时间延迟。
+- 窗口迁移不会重置时间延迟 FEJ 身份，只有 `State::reset()` 才会清除它。
 
 ## 10. 修改阶段
 
@@ -848,17 +900,17 @@ preintegrator i connects frame i and i+1
 
 范围：
 
-- 删除 recenter/transform prior；
-- retained linearized gauge；
-- current 事务式规范；
+- 删除 prior recenter，实现严格等价的 gauge 坐标变换；
+- 求解前 retained current gauge 快照；
+- current、FEJ、prior 和 retained 镜像事务式规范；
 - 删除 GaugeAnchor。
 
 验证：
 
-- prior 数据多轮优化后逐字节或数值不变；
+- prior 的物理 FEJ 身份和 `b` 多轮优化后保持不变；
 - current 改变时 prior residual 按 `H * delta + b` 改变；
 - 随机全局平移+yaw 不改变活动物理因子代价；
-- prior 的小 gauge 扰动满足一阶零空间，有限规范化误差受控且不累积；
+- 完整 gauge 坐标变换前后 prior residual 在数值精度内相等；
 - yaw 奇异输入抛出异常；
 - 不发生部分提交。
 
@@ -915,8 +967,9 @@ preintegrator i connects frame i and i+1
 - 三角化与活动优化只使用 current；
 - 边缘化 residual 使用 current、Jacobian 使用 linearized，并正确构造固定坐标常数项；
 - 换宿主建立新的特征 FEJ 身份；
-- prior 生成后不再变化；
-- gauge 只规范 current；
+- prior 不重新定心；gauge 坐标变换保持 prior residual 不变；
+- current、FEJ 表示、prior 世界系列和 retained 镜像协同规范；
+- 每个新帧从上一 posterior current 预测，并创建独立 FEJ 身份；
 - 零速检测和 bias 恢复逻辑不存在；
 - 所有矩阵布局由显式 ID 映射决定；
 - 数学不变量具有确定性测试。

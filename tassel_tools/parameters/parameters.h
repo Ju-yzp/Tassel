@@ -95,8 +95,6 @@ struct Parameters {
     double delay_obs_gyro_threshold = 0.7;
     double delay_obs_speed_threshold = 0.2;
     int delay_obs_min_frames = 3;
-    double imu_repropagate_ba_threshold = 0.02;
-    double imu_repropagate_bg_threshold = 0.002;
     tassel_utils::IntegratorType integrator_type = tassel_utils::IntegratorType::MidPoint;
 
     // IMU 模型和标定：用于 Estimator 预测、预积分和初始化。
@@ -200,8 +198,6 @@ private:
         delay_obs_gyro_threshold = parser.as<double>("delay_obs_gyro_threshold");
         delay_obs_speed_threshold = parser.as<double>("delay_obs_speed_threshold");
         delay_obs_min_frames = parser.as<int>("delay_obs_min_frames");
-        imu_repropagate_ba_threshold = parser.as<double>("imu_repropagate_ba_threshold");
-        imu_repropagate_bg_threshold = parser.as<double>("imu_repropagate_bg_threshold");
         integrator_type = parseIntegratorType(parser.as<std::string>("integrator_type"));
     }
 

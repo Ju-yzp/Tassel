@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <limits>
 #include <sophus/so3.hpp>
 
 #include "state/state.h"
@@ -33,7 +34,6 @@ TEST(StateTest, RotationParameterRoundTripIncludingNearPi) {
 TEST(StateTest, ResetClearsFrameIds) {
     State state(3);
     state.frames[0].frame_id = 1;
-    state.captureGauge(0);
     for (int i = 0; i < 3; ++i) {
         state.frames[i].frame_id = 10 * (i + 1);
     }
@@ -41,24 +41,9 @@ TEST(StateTest, ResetClearsFrameIds) {
     state.reset();
 
     for (const auto& frame : state.frames) {
-        EXPECT_EQ(frame.frame_id, tassel_utils::kInvalidFrameId);
+        ASSERT_NE(frame, nullptr);
+        EXPECT_EQ(frame->frame_id, tassel_utils::kInvalidFrameId);
     }
-    EXPECT_FALSE(state.gauge_reference.has_value());
-}
-
-TEST(StateTest, CapturesGaugeFromOptimizedFrame) {
-    State state(2);
-    state.latest_active_frame_index = 1;
-    state.frames[1].frame_id = 42;
-    state.frames[1].rot_w_i = Sophus::SO3d::exp(Eigen::Vector3d(0.1, -0.2, 0.3)).matrix();
-    state.frames[1].pos_w_i = Eigen::Vector3d(1.0, 2.0, 3.0);
-
-    state.captureGauge(1);
-
-    ASSERT_TRUE(state.gauge_reference.has_value());
-    EXPECT_EQ(state.gauge_reference->reference_frame_id, 42);
-    EXPECT_TRUE(state.gauge_reference->reference_rotation.isApprox(state.frames[1].rot_w_i));
-    EXPECT_EQ(state.gauge_reference->reference_position, state.frames[1].pos_w_i);
 }
 
 TEST(StateTest, RejectsInvalidWindowSizeBeforeAllocation) {
@@ -87,6 +72,98 @@ TEST(StateTest, CopyFrameStateCopiesCompletePhysicalState) {
     EXPECT_EQ(state.frames[0].image_sync_delay, state.frames[1].image_sync_delay);
     EXPECT_EQ(state.frames[0].frame_id, state.frames[1].frame_id);
     EXPECT_EQ(state.frames[0].frame_type, FrameType::KeyFrame);
+}
+
+TEST(StateTest, CapturesFrameAndDelayLinearizationOnlyOnce) {
+    State state(1);
+    FrameState& frame = state.frames[0];
+    frame.frame_id = 10;
+    frame.pos_w_i = Eigen::Vector3d(1.0, 2.0, 3.0);
+    frame.vel_w = Eigen::Vector3d(4.0, 5.0, 6.0);
+    state.time_delay = 0.01;
+
+    state.stateToParams();
+    const std::array<double, 6> first_pose = frame.linearized_pose;
+    const std::array<double, 9> first_speed_bias = frame.linearized_speed_bias;
+
+    frame.pos_w_i = Eigen::Vector3d(7.0, 8.0, 9.0);
+    frame.vel_w = Eigen::Vector3d(10.0, 11.0, 12.0);
+    state.time_delay = 0.02;
+    state.stateToParams();
+
+    EXPECT_EQ(frame.linearized_pose, first_pose);
+    EXPECT_EQ(frame.linearized_speed_bias, first_speed_bias);
+    EXPECT_DOUBLE_EQ(*state.getLinearizedTimeDelay(), 0.01);
+    EXPECT_DOUBLE_EQ(*state.getCurrentTimeDelay(), 0.02);
+    EXPECT_DOUBLE_EQ(frame.getCurrentPose()[0], 7.0);
+    EXPECT_DOUBLE_EQ(frame.getLinearizedPose()[0], 1.0);
+}
+
+TEST(StateTest, ExplicitTimeDelayCaptureRejectsInvalidAndDoesNotOverwrite) {
+    State state(1);
+    state.param_time_delay = 0.012;
+    state.captureLinearizedTimeDelay();
+    state.param_time_delay = 0.031;
+    state.captureLinearizedTimeDelay();
+    EXPECT_DOUBLE_EQ(*state.getLinearizedTimeDelay(), 0.012);
+
+    State invalid(1);
+    invalid.param_time_delay = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_THROW(invalid.captureLinearizedTimeDelay(), std::logic_error);
+}
+
+TEST(StateTest, SeedingNewFrameClearsInheritedLinearizationIdentity) {
+    State state(2);
+    state.frames[0].frame_id = 10;
+    state.frames[0].stateToParam();
+    ASSERT_TRUE(state.frames[0].has_linearized);
+
+    state.seedFrameState(0, 1);
+
+    EXPECT_FALSE(state.frames[1].has_linearized);
+    EXPECT_THROW(state.frames[1].getLinearizedPose(), std::logic_error);
+    EXPECT_TRUE(state.frames[1].pos_w_i.isApprox(state.frames[0].pos_w_i));
+}
+
+TEST(StateTest, FrameClonePreservesDynamicType) {
+    const std::array<std::unique_ptr<Frame>, 3> frames = {
+        std::make_unique<NormalFrame>(), std::make_unique<KeyFrame>(),
+        std::make_unique<RetainedFrame>()};
+
+    EXPECT_NE(dynamic_cast<NormalFrame*>(frames[0]->clone().get()), nullptr);
+    EXPECT_NE(dynamic_cast<KeyFrame*>(frames[1]->clone().get()), nullptr);
+    EXPECT_NE(dynamic_cast<RetainedFrame*>(frames[2]->clone().get()), nullptr);
+}
+
+TEST(StateTest, FrameStorageReplaceTypePreservesState) {
+    State state(1);
+    state.frames[0].frame_id = 77;
+    state.frames[0].pos_w_i = Eigen::Vector3d(1.0, 2.0, 3.0);
+
+    state.frames.replaceType(0, state.frames[0], true);
+    EXPECT_NE(dynamic_cast<KeyFrame*>(&state.frames[0]), nullptr);
+    EXPECT_EQ(state.frames[0].frame_id, 77);
+    EXPECT_EQ(state.frames[0].pos_w_i, Eigen::Vector3d(1.0, 2.0, 3.0));
+
+    state.frames.replaceType(0, state.frames[0], false);
+    EXPECT_NE(dynamic_cast<NormalFrame*>(&state.frames[0]), nullptr);
+    EXPECT_EQ(state.frames[0].frame_id, 77);
+    EXPECT_EQ(state.frames[0].pos_w_i, Eigen::Vector3d(1.0, 2.0, 3.0));
+}
+
+TEST(StateTest, RetainedFrameIsOwnedIndependentlyFromActiveMirror) {
+    State state(2);
+    state.frames[1].frame_id = 42;
+    state.frames[1].pos_w_i = Eigen::Vector3d(1.0, 2.0, 3.0);
+
+    state.replaceRetainedFrame(state.frames[1]);
+    state.copyRetainedToFrame(0);
+    state.frames[0].pos_w_i.x() = 9.0;
+
+    EXPECT_EQ(state.retainedFrame().frame_id, 42);
+    EXPECT_DOUBLE_EQ(state.retainedFrame().pos_w_i.x(), 1.0);
+    EXPECT_DOUBLE_EQ(state.frames[0].pos_w_i.x(), 9.0);
+    EXPECT_NE(dynamic_cast<const RetainedFrame*>(&state.retainedFrame()), nullptr);
 }
 
 }  // namespace

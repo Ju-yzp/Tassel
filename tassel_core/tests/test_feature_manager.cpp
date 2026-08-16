@@ -128,6 +128,50 @@ TEST(FeatureManagerTest, CollectsIndependentLandmarkSnapshots) {
     EXPECT_DOUBLE_EQ(fm.features().at(7).estimated_depth, 2.0);
 }
 
+TEST(FeatureManagerTest, FreezesDepthOnFirstOptimizationCollection) {
+    auto fm = manager();
+    Feature feature(0, 4);
+    feature.estimated_depth = 2.0;
+    feature.observations = {observation(), observation(0.1)};
+    fm.features().emplace(7, std::move(feature));
+
+    auto first = fm.collectLandmarks();
+    ASSERT_EQ(first.size(), 1u);
+    EXPECT_TRUE(first[0].second.has_linearized_depth);
+    EXPECT_DOUBLE_EQ(first[0].second.linearized_depth, 2.0);
+
+    fm.updateFeatureDepths({{7, 3.0}});
+    auto second = fm.collectLandmarks();
+    ASSERT_EQ(second.size(), 1u);
+    EXPECT_DOUBLE_EQ(second[0].second.estimated_depth, 3.0);
+    EXPECT_DOUBLE_EQ(second[0].second.linearized_depth, 2.0);
+}
+
+TEST(FeatureManagerTest, HostTransferStartsNewFejGeneration) {
+    auto fm = manager();
+    State state(2);
+    state.latest_active_frame_index = 1;
+    state.frames[1].pos_w_i = Eigen::Vector3d(0.1, 0.0, 0.0);
+    Feature feature(0, 2);
+    feature.estimated_depth = 2.0;
+    feature.observations = {observation(), observation(0.05)};
+    fm.features().emplace(7, std::move(feature));
+    ASSERT_EQ(fm.collectLandmarks().size(), 1u);
+
+    Feature& stored = fm.features().at(7);
+    const uint64_t old_generation = stored.fej_generation;
+    ASSERT_TRUE(
+        stored.transferHost(1, state, Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero()));
+    EXPECT_EQ(stored.fej_generation, old_generation + 1);
+    EXPECT_FALSE(stored.has_linearized_depth);
+    EXPECT_DOUBLE_EQ(stored.linearized_depth, Feature::InvalidDepth);
+
+    auto recollected = fm.collectLandmarks();
+    ASSERT_EQ(recollected.size(), 1u);
+    EXPECT_TRUE(recollected[0].second.has_linearized_depth);
+    EXPECT_DOUBLE_EQ(recollected[0].second.linearized_depth, recollected[0].second.estimated_depth);
+}
+
 TEST(FeatureManagerTest, UpdatesFeatureDepthsById) {
     auto fm = manager();
     fm.features().emplace(3, Feature(0, 2));

@@ -377,12 +377,13 @@ std::vector<ObservedLandmark> FeatureManager::exportObservedLandmarks(
     return landmarks;
 }
 
-std::vector<std::pair<int, Feature>> FeatureManager::collectLandmarks() const {
+std::vector<std::pair<int, Feature>> FeatureManager::collectLandmarks() {
     std::vector<std::pair<int, Feature>> result;
-    for (const auto& [feature_id, feature] : features_) {
+    for (auto& [feature_id, feature] : features_) {
         if (!canUseFeature(feature, min_landmark_observations_)) {
             continue;
         }
+        feature.captureLinearizedDepth();
         result.emplace_back(feature_id, feature);
     }
     return result;

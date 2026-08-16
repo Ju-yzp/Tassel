@@ -59,8 +59,8 @@ public:
 
     void reset();
 
-    // 返回与内部地址无关的 {id, Feature} 快照；深度结果必须按 ID 通过 updateFeatureDepths 写回。
-    std::vector<std::pair<int, Feature>> collectLandmarks() const;
+    // 首次收集时冻结 FEJ 深度，再返回独立快照；优化结果必须按 ID 写回 current depth。
+    std::vector<std::pair<int, Feature>> collectLandmarks();
 
     // target_frame_index < 0 选择宿主帧后的全部观测，否则只选择该目标帧的观测。
     std::vector<std::pair<int, Feature>> collectMarginalizedFeatures(

@@ -1,6 +1,8 @@
 #ifndef TASSEL_CORE_FEATURE_H_
 #define TASSEL_CORE_FEATURE_H_
 
+#include <cstdint>
+
 #include <Eigen/Core>
 #include <vector>
 
@@ -42,11 +44,19 @@ struct Feature {
         int new_host_index, const State& state, const Eigen::Matrix3d& ric,
         const Eigen::Vector3d& tic);
 
+    void captureLinearizedDepth();
+
     void removeFrameObservation(int frame_index);
 
     int host_frame_index;
     double estimated_depth;
+    double linearized_depth;
+    uint64_t fej_generation = 0;
+    bool has_linearized_depth = false;
     std::vector<FeaturePerFrame> observations;
+
+private:
+    void startNewFejGeneration();
 };
 
 }  // namespace tassel_core

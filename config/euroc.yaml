@@ -56,8 +56,6 @@ gyr_n: 0.001
 gyr_w: 3.0e-5
 g_norm: 9.81007
 acc_bias: [0.0, 0.0, 0.0]
-imu_repropagate_ba_threshold: 0.05
-imu_repropagate_bg_threshold: 0.01
 
 # 视觉惯性初始化
 init_gravity_tolerance: 0.30
