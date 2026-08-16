@@ -5,15 +5,14 @@
 #include <memory>
 #include <sophus/so3.hpp>
 
-#include "factor/integrator_base.h"
+#include "factor/midpoint_integrator.h"
 #include "tassel_utils/types.h"
 
 namespace tassel_core {
 
-template <typename Derived>
 class IMUFactor : public ceres::SizedCostFunction<15, 6, 9, 6, 9> {
 public:
-    explicit IMUFactor(std::shared_ptr<IntegratorBase<Derived>> integrator_)
+    explicit IMUFactor(std::shared_ptr<MidPointIntegrator> integrator_)
         : integrator(std::move(integrator_)) {
         Eigen::LLT<Eigen::Matrix<double, 15, 15>> covariance_llt(integrator->covariance);
         if (covariance_llt.info() == Eigen::Success) {
@@ -133,7 +132,7 @@ public:
 
         return true;
     }
-    std::shared_ptr<IntegratorBase<Derived>> integrator;
+    std::shared_ptr<MidPointIntegrator> integrator;
     Eigen::Matrix<double, 15, 15> sqrt_info = Eigen::Matrix<double, 15, 15>::Zero();
     bool sqrt_info_valid = false;
 };

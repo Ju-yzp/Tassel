@@ -21,7 +21,7 @@ FeaturePerFrame observation(double x = 0.0, double delay = 0.0) {
     return result;
 }
 
-FeatureManager manager() { return FeatureManager(3.0, 2, 1e9, 0.75, 0.1, 100.0); }
+FeatureManager manager() { return FeatureManager(3.0, 2, 1e9, 0.75, 0.1); }
 
 bool containsId(const std::vector<int>& ids, int id) {
     return std::find(ids.begin(), ids.end(), id) != ids.end();
@@ -234,7 +234,7 @@ TEST(FeatureManagerTest, RemovingMiddleFrameCompactsFeatureHostIndex) {
 }
 
 TEST(FeatureManagerTest, KeepsFrameNonKeyframeWhenConnectionsAreSufficient) {
-    FeatureManager fm(3.0, 2, 1e9, 0.5, 0.1, 100.0);
+    FeatureManager fm(3.0, 2, 1e9, 0.5, 0.1);
     EXPECT_TRUE(fm.addFeatureFrame(0, {{1, observation(0.0)}}));
     EXPECT_FALSE(fm.addFeatureFrame(1, {{1, observation(20.0)}}));
 
@@ -242,7 +242,7 @@ TEST(FeatureManagerTest, KeepsFrameNonKeyframeWhenConnectionsAreSufficient) {
 }
 
 TEST(FeatureManagerTest, StoresOnlyAcceptedInitializationKeyframes) {
-    FeatureManager fm(3.0, 2, 10.0, 0.5, 0.1, 100.0);
+    FeatureManager fm(3.0, 2, 10.0, 0.5, 0.1);
     EXPECT_TRUE(fm.tryAddInitializationKeyframe(
         1, {{1, observation(0.0)}, {2, observation(0.0)}, {3, observation(0.0)}}));
 
@@ -261,7 +261,7 @@ TEST(FeatureManagerTest, StoresOnlyAcceptedInitializationKeyframes) {
 }
 
 TEST(FeatureManagerTest, CreatesKeyframeWhenPreviousKeyframeConnectionsAreLost) {
-    FeatureManager fm(3.0, 2, 1e9, 0.75, 0.1, 100.0);
+    FeatureManager fm(3.0, 2, 1e9, 0.75, 0.1);
     EXPECT_TRUE(fm.addFeatureFrame(
         0, {{1, observation()}, {2, observation()}, {3, observation()}, {4, observation()}}));
 
@@ -291,7 +291,7 @@ TEST(FeatureManagerTest, RejectsTriangulationObservationOutsideActiveWindow) {
 }
 
 TEST(FeatureManagerTest, TriangulatesDepthBeyondExportLimit) {
-    FeatureManager fm(3.0, 2, 1e9, 0.75, 0.1, 10.0);
+    FeatureManager fm(3.0, 2, 1e9, 0.75, 0.1);
     State state(3);
     state.latest_active_frame_index = 2;
     state.frames[1].pos_w_i = Eigen::Vector3d(1.0, 0.0, 0.0);
@@ -349,7 +349,7 @@ TEST(FeatureManagerTest, TriangulationUsesThirdOrderFrameCompensation) {
 }
 
 TEST(FeatureManagerTest, RejectsTriangulatedDepthBelowThreshold) {
-    FeatureManager fm(3.0, 2, 1e9, 0.75, 0.3, 10.0);
+    FeatureManager fm(3.0, 2, 1e9, 0.75, 0.3);
     State state(2);
     state.latest_active_frame_index = 1;
     state.frames[1].pos_w_i = Eigen::Vector3d(0.1, 0.0, 0.0);
@@ -545,7 +545,7 @@ TEST(FeatureManagerTest, MapsReservedSlotIndicesToCompactSfmIndices) {
     EXPECT_EQ(features.front().observations[2].first, 2);
 }
 
-TEST(FeatureManagerTest, ExcludesDepthOutsideConfiguredRange) {
+TEST(FeatureManagerTest, ExcludesDepthBelowMinimum) {
     auto fm = manager();
     State state(1);
     state.latest_active_frame_index = 0;
@@ -556,7 +556,9 @@ TEST(FeatureManagerTest, ExcludesDepthOutsideConfiguredRange) {
         feature.observations = {observation()};
         fm.features().emplace(id, std::move(feature));
     }
-    EXPECT_TRUE(fm.exportHostLandmarks(0, state).empty());
+    const auto landmarks = fm.exportHostLandmarks(0, state);
+    ASSERT_EQ(landmarks.size(), 1u);
+    EXPECT_EQ(landmarks.front().feature_id, 3);
 }
 
 }  // namespace

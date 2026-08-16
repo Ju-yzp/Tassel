@@ -7,7 +7,7 @@
 namespace tassel_core {
 
 bool compensatedCameraPose(
-    const Frame& frame, double sync_delay, double time_delay, const Eigen::Matrix3d& ric,
+    const FrameState& frame, double sync_delay, double time_delay, const Eigen::Matrix3d& ric,
     const Eigen::Vector3d& tic, Eigen::Matrix3d& rotation, Eigen::Vector3d& position) {
     const double dt = time_delay - sync_delay;
     if (!std::isfinite(dt)) {
@@ -31,9 +31,9 @@ bool compensatedCameraPose(
 }
 
 bool hostPointToWorld(
-    const Frame& host, const Eigen::Vector3d& host_uv, double host_depth, double host_sync_delay,
-    double time_delay, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
-    Eigen::Vector3d& world_point) {
+    const FrameState& host, const Eigen::Vector3d& host_uv, double host_depth,
+    double host_sync_delay, double time_delay, const Eigen::Matrix3d& ric,
+    const Eigen::Vector3d& tic, Eigen::Vector3d& world_point) {
     if (!std::isfinite(host_depth) || host_depth <= 0.0 || !host_uv.allFinite()) {
         return false;
     }
@@ -49,7 +49,7 @@ bool hostPointToWorld(
 }
 
 bool worldPointToTargetCamera(
-    const Frame& target, const Eigen::Vector3d& world_point, double target_sync_delay,
+    const FrameState& target, const Eigen::Vector3d& world_point, double target_sync_delay,
     double time_delay, const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic,
     Eigen::Vector3d& target_point) {
     if (!world_point.allFinite()) {
@@ -66,9 +66,9 @@ bool worldPointToTargetCamera(
 }
 
 bool reprojectToTargetCamera(
-    const Frame& host, const Frame& target, const Eigen::Vector3d& host_uv, double host_depth,
-    double host_sync_delay, double target_sync_delay, double time_delay, const Eigen::Matrix3d& ric,
-    const Eigen::Vector3d& tic, Eigen::Vector3d& target_point) {
+    const FrameState& host, const FrameState& target, const Eigen::Vector3d& host_uv,
+    double host_depth, double host_sync_delay, double target_sync_delay, double time_delay,
+    const Eigen::Matrix3d& ric, const Eigen::Vector3d& tic, Eigen::Vector3d& target_point) {
     Eigen::Vector3d world_point;
     return hostPointToWorld(
                host, host_uv, host_depth, host_sync_delay, time_delay, ric, tic, world_point) &&

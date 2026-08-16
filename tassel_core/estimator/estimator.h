@@ -6,11 +6,11 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
-#include <variant>
+#include <utility>
 #include <vector>
 
-#include "factor/integrator_base.h"
 #include "frond_end/feature_manager.h"
+#include "initial/dynamic_initializer.h"
 #include "marg/marg_lin_data.h"
 #include "marg/window_action.h"
 #include "parameters/parameters.h"
@@ -85,45 +85,35 @@ public:
         const TrackingPredictionSnapshot& snapshot, tassel_utils::FrameId target_frame_id,
         const std::vector<tassel_utils::IMUMeasurement>& imu_measurements, double sync_delay) const;
 
-    void optimize();
-
     void reset();
 
 private:
-    template <typename Integrator>
-    using IntegratorVector = std::vector<Integrator>;
-    using PreintegratorStorage =
-        std::variant<IntegratorVector<MidPointIntegrator>, IntegratorVector<EulerIntegrator>>;
+    using PreintegratorStorage = DynamicInitializer::PreintegratorStorage;
 
-    void updateMarginalizationPrior(RetainedHostAction action);
+    void updatePrior(RetainedHostAction action);
 
     RetainedHostAction selectMarginalizationAction() const;
 
-    void predictFrameState(
+    void predictLatestFrame(
         int frame_index, const std::vector<tassel_utils::IMUMeasurement>& imu_measurements);
 
-    void runSlidingWindowUpdate(int latest_active_frame_index, double timestamp);
+    void processWindow(int latest_active_frame_index, double timestamp);
 
     void slideInitializationWindow();
 
-    void migrateMarginalizedData(RetainedHostAction action);
+    void slideWindow(RetainedHostAction action);
 
-    void normalizeCurrentGauge(
+    void normalizeGauge(
         int reference_frame_index, const Eigen::Matrix3d& reference_rotation,
         const Eigen::Vector3d& reference_position);
 
-    bool tryInitialize();
+    void optimizeWindow();
 
     Eigen::Matrix<double, 18, 18> initNoise() const;
 
     template <typename Fn>
-    decltype(auto) visitPreintegrators(Fn&& fn) {
-        return std::visit(std::forward<Fn>(fn), preintegrators_);
-    }
-
-    template <typename Fn>
-    decltype(auto) visitPreintegrators(Fn&& fn) const {
-        return std::visit(std::forward<Fn>(fn), preintegrators_);
+    decltype(auto) withPreintegrators(Fn&& fn) {
+        return std::forward<Fn>(fn)(preintegrators_);
     }
 
     const tassel_tools::Parameters& params_;
@@ -144,10 +134,7 @@ private:
     Eigen::Vector3d last_imu_gyro_;
 
     std::unique_ptr<MargLinData> marginalization_prior_;
-    // 动态初始化使用，存储 SFM 位姿以及 IMU 在体坐标系下的速度。
-    std::vector<Eigen::Matrix3d> Rs_;
-    std::vector<Eigen::Vector3d> Ps_;
-    std::vector<Eigen::Vector3d> Vs_;
+    std::unique_ptr<DynamicInitializer> dynamic_initializer_;
 };
 
 }  // namespace tassel_core

@@ -17,44 +17,34 @@ rows: 1024
 cols: 1024
 per_grid_rows: 70
 per_grid_cols: 70
-valid_mask_path: config/tumvi_room2_valid_mask.png
 mask_radius: 36.0
 min_feature_num: 100
 
 flow_back: true
 max_square_move_dist: 0.5
 min_gradient: 10.01
-enable_statistics: true
 
 # 特征与关键帧管理
 reproj_err_thres: 3.0
 reproj_huber_thres: 1.0
 min_landmark_observations: 3
 min_depth: 0.1
-max_depth: 10.0
-parallax_threshold: 25.0
-keyframe_min_connection_ratio: 0.75
+parallax_threshold: 28.0
+keyframe_min_connection_ratio: 0.70
 
 # 滑窗优化
 num_iterations: 6
 max_solver_time: 0.02
 max_frame_count: 9
 visual_factor_weight: 10
-num_threads: 1
 trust_region_strategy: levenberg_marquardt
 
-# 时间延迟可观测性
-delay_obs_gyro_threshold: 0.3
-delay_obs_speed_threshold: 5.0
-delay_obs_min_frames: 3
 # IMU 模型与积分
-integrator_type: midpoint
 acc_n: 0.0028
 acc_w: 0.00086
 gyr_n: 0.00016
 gyr_w: 0.000022
 g_norm: 9.81
-acc_bias: [0.0, 0.0, 0.0]
 
 # 视觉惯性初始化
 init_gravity_tolerance: 0.21

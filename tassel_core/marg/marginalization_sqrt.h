@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-#include "factor/integrator_base.h"
+#include "factor/midpoint_integrator.h"
 #include "factor/visual_frame_cache.h"
 #include "frond_end/feature.h"
 #include "marg/imu_block.h"
@@ -23,7 +23,6 @@
 
 namespace tassel_core {
 
-template <typename Derived>
 class MarginalizationSqrt {
 public:
     // retiring_features 是本次边缘化独占的值快照，其顺序与 landmark_blocks_ 一致。
@@ -31,7 +30,7 @@ public:
     MarginalizationSqrt(
         std::vector<std::pair<int, Feature>> retiring_features, int landmark_target_frame_index,
         std::unique_ptr<ceres::LossFunction> loss_function, std::shared_ptr<State> state,
-        std::vector<IntegratorBase<Derived>*>& preintegrators, const Eigen::Matrix3d& ric,
+        std::vector<MidPointIntegrator*>& preintegrators, const Eigen::Matrix3d& ric,
         const Eigen::Vector3d& tic, const MargLinData* prior = nullptr,
         int first_imu_factor_index = 0)
         : retiring_features_(std::move(retiring_features)),
@@ -72,7 +71,7 @@ public:
         num_cols_ = state_->max_frame_count * 15 + 1;
         if (!retiring_features_.empty()) {
             // 边缘化必须在同一组冻结坐标中建立；current delay 不能冒充冻结点。
-            state_->getLinearizedTimeDelay();
+            state_->linearizedTimeDelay();
             for (const auto& [feature_id, feature] : retiring_features_) {
                 if (!feature.has_linearized_depth || !std::isfinite(feature.linearized_depth) ||
                     feature.linearized_depth <= 0.0) {
@@ -93,8 +92,8 @@ public:
             auto& imu_block = imu_blocks_[i];
             const int state_i = first_imu_factor_index_ + static_cast<int>(i);
             const int state_j = state_i + 1;
-            const Frame& frame_i = state_->frames[state_i];
-            const Frame& frame_j = state_->frames[state_j];
+            const FrameState& frame_i = state_->frames[state_i];
+            const FrameState& frame_j = state_->frames[state_j];
             if (!frame_i.has_linearized || !frame_j.has_linearized) {
                 throw std::logic_error("IMU frozen frame linearization point is unavailable");
             }
@@ -153,7 +152,7 @@ public:
                 throw std::logic_error("Prior and state use different delay linearization points");
             }
             for (int frame_index = 0; frame_index < prior_->stateCount(); ++frame_index) {
-                const Frame& frame = state_->frames[frame_index];
+                const FrameState& frame = state_->frames[frame_index];
                 if (!frame.has_linearized) {
                     throw std::logic_error(
                         "Prior frame has no matching state linearization point at index " +
@@ -245,8 +244,8 @@ private:
     std::shared_ptr<State> state_;
 
     std::vector<LandmarkBlock> landmark_blocks_;
-    std::vector<IMUBlock<Derived>> imu_blocks_;
-    std::vector<IntegratorBase<Derived>*> preintegrators_;
+    std::vector<IMUBlock> imu_blocks_;
+    std::vector<MidPointIntegrator*> preintegrators_;
     std::unique_ptr<VisualFrameCache> visual_frame_cache_;
     std::vector<double> visual_inverse_depth_params_;
 

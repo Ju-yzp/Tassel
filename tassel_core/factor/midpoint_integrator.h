@@ -1,5 +1,5 @@
-#ifndef TASSEL_CORE_INTEGRATOR_BASE_H_
-#define TASSEL_CORE_INTEGRATOR_BASE_H_
+#ifndef TASSEL_CORE_FACTOR_MIDPOINT_INTEGRATOR_H_
+#define TASSEL_CORE_FACTOR_MIDPOINT_INTEGRATOR_H_
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -12,11 +12,10 @@
 
 namespace tassel_core {
 
-// 用户可以自行实现积分方法:欧拉法、中值法、龙格-库塔法等，同时设计可以避免频繁调用积分方法时的虚函数调用开销问题
-template <typename Derived>
-class IntegratorBase {
+// 唯一预积分实现；对象由窗口 vector 直接拥有并随窗口一起重置和搬移。
+class MidPointIntegrator {
 public:
-    IntegratorBase(
+    MidPointIntegrator(
         Eigen::Vector3d ba_lin, Eigen::Vector3d bg_lin, Eigen::Matrix<double, 18, 18> init_noise) {
         reset(ba_lin, bg_lin, init_noise);
     }
@@ -33,7 +32,7 @@ public:
         if (buffer.size() > 1) {
             const auto& prev = buffer[buffer.size() - 2];
             const auto& cur = buffer[buffer.size() - 1];
-            static_cast<Derived*>(this)->integrate(prev, cur);
+            integrate(prev, cur);
         }
         return true;
     }
@@ -91,12 +90,6 @@ public:
     Eigen::Matrix<double, 15, 15> covariance;
     Eigen::Matrix<double, 15, 18> jacobian;
     Eigen::Matrix<double, 18, 18> noise;
-};
-
-class MidPointIntegrator : public IntegratorBase<MidPointIntegrator> {
-public:
-    using IntegratorBase::IntegratorBase;
-
     void integrate(
         const tassel_utils::IMUMeasurement& prev, const tassel_utils::IMUMeasurement& cur) {
         double dt = cur.timestamp - prev.timestamp;
@@ -158,55 +151,6 @@ public:
     }
 };
 
-class EulerIntegrator : public IntegratorBase<EulerIntegrator> {
-public:
-    using IntegratorBase::IntegratorBase;
-
-    void integrate(
-        const tassel_utils::IMUMeasurement& prev, const tassel_utils::IMUMeasurement& cur) {
-        double dt = cur.timestamp - prev.timestamp;
-        Eigen::Vector3d gyro = prev.gyro - bg_linearized;
-        Eigen::Matrix3d temp_delta_q = final_delta_q * Sophus::SO3d::exp(gyro * dt).matrix();
-        Eigen::Vector3d acc = final_delta_q * (prev.acc - ba_linearized);
-        Eigen::Vector3d temp_delta_p = final_delta_p + final_delta_v * dt + 0.5 * acc * dt * dt;
-        Eigen::Vector3d temp_delta_v = final_delta_v + acc * dt;
-
-        Eigen::Vector3d a_x = prev.acc - ba_linearized;
-        Eigen::Matrix3d R_w_x = Sophus::SO3d::hat(gyro);
-        Eigen::Matrix3d R_a_x = Sophus::SO3d::hat(a_x);
-
-        Eigen::Matrix<double, 15, 15> F = Eigen::Matrix<double, 15, 15>::Zero();
-        F.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
-        F.block<3, 3>(0, 3) = -0.5 * final_delta_q * R_a_x * dt * dt;
-        F.block<3, 3>(0, 6) = Eigen::Matrix3d::Identity() * dt;
-        F.block<3, 3>(0, 9) = -0.5 * final_delta_q * dt * dt;
-        F.block<3, 3>(3, 3) = Eigen::Matrix3d::Identity() - R_w_x * dt;
-        F.block<3, 3>(3, 12) = -Eigen::Matrix3d::Identity() * dt;
-        F.block<3, 3>(6, 3) = -final_delta_q * R_a_x * dt;
-        F.block<3, 3>(6, 6) = Eigen::Matrix3d::Identity();
-        F.block<3, 3>(6, 9) = -final_delta_q * dt;
-        F.block<3, 3>(9, 9) = Eigen::Matrix3d::Identity();
-        F.block<3, 3>(12, 12) = Eigen::Matrix3d::Identity();
-
-        Eigen::Matrix<double, 15, 18> V = Eigen::Matrix<double, 15, 18>::Zero();
-        V.block<3, 3>(0, 0) = 0.5 * final_delta_q * dt * dt;
-        V.block<3, 3>(3, 3) = Eigen::Matrix3d::Identity() * dt;
-        V.block<3, 3>(6, 0) = final_delta_q * dt;
-        V.block<3, 3>(9, 12) = Eigen::Matrix3d::Identity() * dt;
-        V.block<3, 3>(12, 15) = Eigen::Matrix3d::Identity() * dt;
-
-        jacobian = F * jacobian;
-        covariance = F * covariance * F.transpose() + V * noise * V.transpose();
-
-        Eigen::Quaterniond q(temp_delta_q);
-        q.normalize();
-        final_delta_q = q.toRotationMatrix();
-        final_delta_p = temp_delta_p;
-        final_delta_v = temp_delta_v;
-        sum_dt += dt;
-    }
-};
-
 }  // namespace tassel_core
 
-#endif /* TASSEL_CORE_INTEGRATOR_BASE_H_ */
+#endif  // TASSEL_CORE_FACTOR_MIDPOINT_INTEGRATOR_H_

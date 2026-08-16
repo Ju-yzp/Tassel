@@ -58,8 +58,8 @@ void LandmarkBlock::linearize(
     const Eigen::Vector3d uv_i = feature.observations[0].uv;
     const double current_inverse_depth = 1.0 / feature.estimated_depth;
     const double linearized_inverse_depth = 1.0 / feature.linearized_depth;
-    const double current_delay = *state.getCurrentTimeDelay();
-    const double linearized_delay = *state.getLinearizedTimeDelay();
+    const double current_delay = *state.currentTimeDelay();
+    const double linearized_delay = *state.linearizedTimeDelay();
     State linearized_state = state;
     linearized_state.param_time_delay = linearized_delay;
     linearized_state.time_delay = linearized_delay;
@@ -69,8 +69,8 @@ void LandmarkBlock::linearize(
          observation_index < last_observation_index; ++observation_index) {
         const int target_frame = feature.observationFrameIndex(observation_index);
         const FeaturePerFrame& target_observation = feature.observations[observation_index];
-        Frame& linearized_host = linearized_state.frames[host_frame_index];
-        Frame& linearized_target = linearized_state.frames[target_frame];
+        FrameState& linearized_host = linearized_state.frames[host_frame_index];
+        FrameState& linearized_target = linearized_state.frames[target_frame];
         if (!linearized_host.has_linearized || !linearized_target.has_linearized) {
             throw std::logic_error("Visual frozen frame linearization point is unavailable");
         }
@@ -78,8 +78,8 @@ void LandmarkBlock::linearize(
         linearized_host.param_speed_bias = linearized_host.linearized_speed_bias;
         linearized_target.param_pose = linearized_target.linearized_pose;
         linearized_target.param_speed_bias = linearized_target.linearized_speed_bias;
-        linearized_host.paramToState();
-        linearized_target.paramToState();
+        linearized_host.readCurrentParams();
+        linearized_target.readCurrentParams();
 
         Eigen::Matrix<double, 2, 6, Eigen::RowMajor> jacobian_host;
         Eigen::Matrix<double, 2, 6, Eigen::RowMajor> jacobian_target;
@@ -102,7 +102,7 @@ void LandmarkBlock::linearize(
             state.camera, feature.observations[0].sync_delay, target_observation.sync_delay);
         const double* current_parameters[] = {
             state.frames[host_frame_index].param_pose.data(),
-            state.frames[target_frame].param_pose.data(), state.getCurrentTimeDelay(),
+            state.frames[target_frame].param_pose.data(), state.currentTimeDelay(),
             &current_inverse_depth};
         TASSEL_ASSERT(
             current_factor.Evaluate(current_parameters, current_residual.data(), nullptr));

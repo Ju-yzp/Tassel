@@ -32,7 +32,7 @@ class FeatureManager {
 public:
     FeatureManager(
         double reproj_err_thres, int min_landmark_observations, double parallax_threshold,
-        double keyframe_min_connection_ratio, double min_depth, double max_depth);
+        double keyframe_min_connection_ratio, double min_depth);
 
     bool addFeatureFrame(
         int frame_index, const std::unordered_map<int, FeaturePerFrame>& feature_frame);
@@ -100,7 +100,7 @@ private:
 
     double keyframe_min_connection_ratio_;
 
-    double min_depth_, max_depth_;
+    double min_depth_;
 
     std::unordered_map<int, cv::Point2f> latest_keyframe_observations_;
 

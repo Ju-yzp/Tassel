@@ -479,7 +479,7 @@ int main(int argc, char** argv) {
     auto state = std::make_shared<State>(static_cast<int>(params.max_frame_count) + 1);
     auto feature_manager = std::make_shared<FeatureManager>(
         params.reproj_err_thres, params.min_landmark_observations, params.parallax_threshold,
-        params.keyframe_min_connection_ratio, params.min_depth, params.max_depth);
+        params.keyframe_min_connection_ratio, params.min_depth);
 
     Estimator estimator(params, state, feature_manager);
     state->camera = camera_ptr;

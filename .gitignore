@@ -19,6 +19,7 @@ config/nori_valid_mask.png
 dataset
 models/
 artifacts/
+.benchmark-baseline/
 config/log.cfg
 !third_party/
 third_party/*

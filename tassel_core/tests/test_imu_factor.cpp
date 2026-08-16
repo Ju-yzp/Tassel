@@ -11,7 +11,7 @@
 #include <sophus/so3.hpp>
 
 #include "factor/imu_factor.h"
-#include "factor/integrator_base.h"
+#include "factor/midpoint_integrator.h"
 #include "imu_test_utils.h"
 #include "marg/imu_block.h"
 #include "tassel_utils/se3_right_manifold.h"
@@ -85,7 +85,7 @@ TEST_F(ImuFactorTest, AnalyticJacobiansMatchNumericDifferentiation) {
     options.relative_step_size = 1e-6;
 
     for (size_t frame = 0; frame < preintegrators_.size(); ++frame) {
-        IMUFactor<MidPointIntegrator> factor(preintegrators_[frame]);
+        IMUFactor factor(preintegrators_[frame]);
         ceres::GradientChecker checker(&factor, &manifolds, options);
         const double* parameters[] = {
             poses_[frame].data(), speed_biases_[frame].data(), poses_[frame + 1].data(),
@@ -108,7 +108,7 @@ TEST_F(ImuFactorTest, AnalyticJacobiansMatchNumericDifferentiation) {
 }
 
 TEST_F(ImuFactorTest, LinearizationReconstructsCurrentResidual) {
-    IMUBlock<MidPointIntegrator> block;
+    IMUBlock block;
     block.allocate(preintegrators_[0].get());
     const auto linearized_pose_i = poses_[0];
     const auto linearized_speed_bias_i = speed_biases_[0];
@@ -127,7 +127,7 @@ TEST_F(ImuFactorTest, LinearizationReconstructsCurrentResidual) {
         current_pose_i, current_speed_bias_i, current_pose_j, current_speed_bias_j,
         linearized_pose_i, linearized_speed_bias_i, linearized_pose_j, linearized_speed_bias_j);
 
-    IMUFactor<MidPointIntegrator> factor(preintegrators_[0]);
+    IMUFactor factor(preintegrators_[0]);
     const double* parameters[] = {
         current_pose_i.data(), current_speed_bias_i.data(), current_pose_j.data(),
         current_speed_bias_j.data()};

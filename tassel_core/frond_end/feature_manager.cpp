@@ -57,16 +57,15 @@ bool computeReprojectionError(
 
 FeatureManager::FeatureManager(
     double reproj_err_thres, int min_landmark_observations, double parallax_threshold,
-    double keyframe_min_connection_ratio, double min_depth, double max_depth)
+    double keyframe_min_connection_ratio, double min_depth)
     : reproj_err_thres_(reproj_err_thres),
       min_landmark_observations_(min_landmark_observations),
       parallax_threshold_(parallax_threshold),
       keyframe_min_connection_ratio_(keyframe_min_connection_ratio),
-      min_depth_(min_depth),
-      max_depth_(max_depth) {
+      min_depth_(min_depth) {
     if (reproj_err_thres_ <= 0.0 || min_landmark_observations_ < 2 || parallax_threshold_ < 0.0 ||
         keyframe_min_connection_ratio_ < 0.0 || keyframe_min_connection_ratio_ > 1.0 ||
-        min_depth_ <= 0.0 || max_depth_ <= min_depth_) {
+        min_depth_ <= 0.0) {
         throw std::invalid_argument("Invalid FeatureManager configuration");
     }
     features_.reserve(1000);
@@ -297,8 +296,7 @@ std::vector<HostLandmark> FeatureManager::exportHostLandmarks(
 
     for (const auto& [feature_id, feature] : features_) {
         if (feature.host_frame_index != host_frame_index || feature.observations.empty() ||
-            !std::isfinite(feature.estimated_depth) || feature.estimated_depth < min_depth_ ||
-            feature.estimated_depth > max_depth_) {
+            !std::isfinite(feature.estimated_depth) || feature.estimated_depth < min_depth_) {
             continue;
         }
 
@@ -329,7 +327,7 @@ std::unordered_map<int, Eigen::Vector3d> FeatureManager::exportObservedWorldLand
             observation_index < 0 ||
             observation_index >= static_cast<int>(feature.observations.size()) ||
             feature.observations.empty() || !std::isfinite(feature.estimated_depth) ||
-            feature.estimated_depth < min_depth_ || feature.estimated_depth > max_depth_) {
+            feature.estimated_depth < min_depth_) {
             continue;
         }
 
@@ -360,7 +358,7 @@ std::vector<ObservedLandmark> FeatureManager::exportObservedLandmarks(
             observation_index < 0 ||
             observation_index >= static_cast<int>(feature.observations.size()) ||
             feature.observations.empty() || !std::isfinite(feature.estimated_depth) ||
-            feature.estimated_depth < min_depth_ || feature.estimated_depth > max_depth_) {
+            feature.estimated_depth < min_depth_) {
             continue;
         }
         const FeaturePerFrame& observation = feature.observations[observation_index];

@@ -5,7 +5,7 @@
 
 ## 1. 初始化顺序
 
-`Estimator::tryInitialize()` 当前严格按以下顺序执行：
+`DynamicInitializer::initialize()` 当前严格按以下顺序执行：
 
 ```text
 无尺度 SFM 轨迹
@@ -338,9 +338,9 @@ s\mathbf R_{IC}\mathbf p_{C_k}^v
 
 | 机制 | 实现位置 |
 | --- | --- |
-| 初始化控制流 | `Estimator::tryInitialize()` |
+| 初始化控制流 | `DynamicInitializer::initialize()` |
 | 陀螺仪偏置修正量最小二乘 | `solveGyroBiasCorrection()` |
-| 偏置重传播 | `IntegratorBase::repropagate()` |
+| 偏置重传播 | `MidPointIntegrator::repropagate()` |
 | 速度、重力、尺度线性解 | `linearAlignment()` |
 | 重力二维切空间精化 | `refineGravitySpeeds()` |
-| 世界规范和状态写回 | `Estimator::tryInitialize()` |
+| 世界规范和状态写回 | `DynamicInitializer::initialize()` |

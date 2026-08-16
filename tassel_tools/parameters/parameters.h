@@ -10,7 +10,6 @@
 #include <string>
 
 #include "parameters/params_parser.h"
-#include "tassel_utils/types.h"
 
 namespace tassel_tools {
 
@@ -67,13 +66,11 @@ struct Parameters {
     // 图像和特征跟踪器配置：用于 FeatureTracker 和相机创建。
     int rows, cols;
     int per_grid_rows, per_grid_cols;
-    std::string valid_mask_path;
     double mask_radius;
     int min_feature_num;
     bool flow_back;
     double max_square_move_dist;
     double min_gradient;
-    bool enable_statistics;
 
     // 路标和关键帧管理：用于 FeatureManager。
     double reproj_err_thres;
@@ -81,29 +78,21 @@ struct Parameters {
     double parallax_threshold;
     int min_landmark_observations;
     double min_depth;
-    double max_depth;
     double keyframe_min_connection_ratio;
 
-    // 滑窗优化：用于 Estimator::optimize、先验更新和 reset。
+    // 滑窗优化：用于 Estimator::optimizeWindow、先验更新和 reset。
     int num_iterations;
     double max_solver_time = 0.0;
     // 活动图像状态数量；估计器会额外分配一个保留宿主槽。
     size_t max_frame_count;
     double visual_factor_weight;
-    int num_threads = 1;
     TrustRegionStrategy trust_region_strategy = TrustRegionStrategy::LevenbergMarquardt;
-    double delay_obs_gyro_threshold = 0.7;
-    double delay_obs_speed_threshold = 0.2;
-    int delay_obs_min_frames = 3;
-    tassel_utils::IntegratorType integrator_type = tassel_utils::IntegratorType::MidPoint;
-
     // IMU 模型和标定：用于 Estimator 预测、预积分和初始化。
     double acc_n, acc_w;
     double gyr_n, gyr_w;
     double g_norm;
-    Eigen::Vector3d acc_bias = Eigen::Vector3d::Zero();
 
-    // 视觉惯性初始化和 SFM：用于 Estimator::tryInitialize。
+    // 视觉惯性初始化和 SFM：用于 DynamicInitializer::initialize。
     double init_gravity_tolerance = 0.17;
     double init_min_scale = 0.01;
     int sfm_min_points = 10;
@@ -117,19 +106,14 @@ struct Parameters {
 
 private:
     void validate() const {
-        if (!(min_depth > 0.0 && max_depth > min_depth)) {
-            throw std::invalid_argument("Expected 0 < min_depth < max_depth");
+        if (!(min_depth > 0.0)) {
+            throw std::invalid_argument("Expected min_depth to be positive");
         }
         if (max_frame_count < 3) {
             throw std::invalid_argument("max_frame_count must be at least 3");
         }
-        if (num_iterations <= 0 || max_solver_time < 0.0 || num_threads <= 0 ||
-            visual_factor_weight <= 0.0) {
+        if (num_iterations <= 0 || max_solver_time < 0.0 || visual_factor_weight <= 0.0) {
             throw std::invalid_argument("Invalid optimization parameters");
-        }
-        if (delay_obs_gyro_threshold < 0.0 || delay_obs_speed_threshold < 0.0 ||
-            delay_obs_min_frames <= 0) {
-            throw std::invalid_argument("Invalid time-delay excitation parameters");
         }
         if (acc_n <= 0.0 || acc_w <= 0.0 || gyr_n <= 0.0 || gyr_w <= 0.0 || g_norm <= 0.0) {
             throw std::invalid_argument("IMU noise and gravity parameters must be positive");
@@ -168,13 +152,11 @@ private:
         cols = parser.as<int>("cols");
         per_grid_rows = parser.as<int>("per_grid_rows");
         per_grid_cols = parser.as<int>("per_grid_cols");
-        valid_mask_path = parser.as<std::string>("valid_mask_path");
         mask_radius = parser.as<double>("mask_radius");
         min_feature_num = parser.as<int>("min_feature_num");
         flow_back = parser.as<bool>("flow_back");
         max_square_move_dist = parser.as<double>("max_square_move_dist");
         min_gradient = parser.as<double>("min_gradient");
-        enable_statistics = parser.as<bool>("enable_statistics");
     }
 
     void loadFeatureManager(ParamsParser& parser) {
@@ -182,7 +164,6 @@ private:
         reproj_huber_thres = parser.as<double>("reproj_huber_thres");
         min_landmark_observations = parser.as<int>("min_landmark_observations");
         min_depth = parser.as<double>("min_depth");
-        max_depth = parser.as<double>("max_depth");
         keyframe_min_connection_ratio = parser.as<double>("keyframe_min_connection_ratio");
         parallax_threshold = parser.as<double>("parallax_threshold");
     }
@@ -192,13 +173,8 @@ private:
         max_solver_time = parser.as<double>("max_solver_time");
         max_frame_count = parser.as<size_t>("max_frame_count");
         visual_factor_weight = parser.as<double>("visual_factor_weight");
-        num_threads = parser.as<int>("num_threads");
         trust_region_strategy =
             parseTrustRegionStrategy(parser.as<std::string>("trust_region_strategy"));
-        delay_obs_gyro_threshold = parser.as<double>("delay_obs_gyro_threshold");
-        delay_obs_speed_threshold = parser.as<double>("delay_obs_speed_threshold");
-        delay_obs_min_frames = parser.as<int>("delay_obs_min_frames");
-        integrator_type = parseIntegratorType(parser.as<std::string>("integrator_type"));
     }
 
     void loadImu(ParamsParser& parser) {
@@ -207,7 +183,6 @@ private:
         gyr_n = parser.as<double>("gyr_n");
         gyr_w = parser.as<double>("gyr_w");
         g_norm = parser.as<double>("g_norm");
-        acc_bias = parser.as<Eigen::Vector3d>("acc_bias");
     }
 
     void loadInitialization(ParamsParser& parser) {
@@ -238,20 +213,6 @@ private:
             return static_cast<char>(std::tolower(ch));
         });
         return value;
-    }
-
-    static tassel_utils::IntegratorType parseIntegratorType(
-        const std::string& integrator_name_raw) {
-        const std::string integrator_name = normalizeToken(integrator_name_raw);
-        if (integrator_name == "midpoint") {
-            return tassel_utils::IntegratorType::MidPoint;
-        }
-        if (integrator_name == "euler") {
-            return tassel_utils::IntegratorType::Euler;
-        }
-        throw std::runtime_error(
-            "Invalid integrator_type: \"" + integrator_name_raw +
-            "\". Supported values: midpoint, euler");
     }
 };
 

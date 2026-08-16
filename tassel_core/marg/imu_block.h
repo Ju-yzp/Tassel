@@ -5,19 +5,17 @@
 #include <memory>
 
 #include "factor/imu_factor.h"
-#include "factor/integrator_base.h"
+#include "factor/midpoint_integrator.h"
 #include "tassel_utils/macros.h"
 #include "tassel_utils/se3_right_manifold.h"
 
 namespace tassel_core {
-template <typename Derived>
 class IMUBlock {
 public:
-    void allocate(IntegratorBase<Derived>* integrator) {
+    void allocate(MidPointIntegrator* integrator) {
         TASSEL_ASSERT(integrator != nullptr);
-        auto pint_ptr =
-            std::shared_ptr<IntegratorBase<Derived>>(integrator, [](IntegratorBase<Derived>*) {});
-        imu_factor_ = std::make_unique<IMUFactor<Derived>>(pint_ptr);
+        auto pint_ptr = std::shared_ptr<MidPointIntegrator>(integrator, [](MidPointIntegrator*) {});
+        imu_factor_ = std::make_unique<IMUFactor>(pint_ptr);
     }
 
     void linearize(
@@ -95,7 +93,7 @@ public:
     const Eigen::Matrix<double, 15, 1>& residual() const { return b_; }
 
 private:
-    std::unique_ptr<IMUFactor<Derived>> imu_factor_;
+    std::unique_ptr<IMUFactor> imu_factor_;
     Eigen::Matrix<double, 15, 30> Jp_;
     Eigen::Matrix<double, 15, 1> b_;
 };

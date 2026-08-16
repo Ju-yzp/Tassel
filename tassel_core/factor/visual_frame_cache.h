@@ -58,7 +58,7 @@ public:
 
 private:
     void updateFrames() {
-        const double time_delay = *state_->getCurrentTimeDelay();
+        const double time_delay = *state_->currentTimeDelay();
         if (!std::isfinite(time_delay)) {
             throw std::runtime_error("Visual frame cache delay parameter must be finite");
         }
